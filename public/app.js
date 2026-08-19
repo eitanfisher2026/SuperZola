@@ -1014,10 +1014,10 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 function SettingsScreen({ uid, onBack }) {
   const [profiles, setProfiles] = useState(null);
+  const [branchCache, setBranchCache] = useState({}); // { vendorId: { branchId: {name,address,city} } | "loading" }
   const [addingVendor, setAddingVendor] = useState("");
-  const [branches, setBranches] = useState(null);
+  const [branchQuery, setBranchQuery] = useState("");
   const [branchId, setBranchId] = useState("");
-  const [loadingBranches, setLoadingBranches] = useState(false);
   const [ai, setAi] = useState(null);
   const [aiDraft, setAiDraft] = useState({ provider: "", geminiApiKey: "", openaiApiKey: "", anthropicApiKey: "" });
   const [savingAi, setSavingAi] = useState(false);
@@ -1036,16 +1036,31 @@ function SettingsScreen({ uid, onBack }) {
     if (data.ai) setAiDraft(prev => Object.assign({}, prev, data.ai));
   }), [uid]);
 
+  function loadBranches(vendorId) {
+    setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
+    fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
+      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: res.data.branches || {} }));
+    }).catch(() => {
+      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
+      setToast("שגיאה בטעינת סניפים");
+    });
+  }
+
+  // Fetch branch names/addresses for every vendor already in the user's
+  // profile list, purely so those rows can show a real place name instead
+  // of a bare branch number.
+  useEffect(() => {
+    (profiles || []).forEach(p => {
+      if (!branchCache[p.vendor]) loadBranches(p.vendor);
+    });
+    // eslint-disable-next-line
+  }, [profiles]);
+
   function pickVendor(vendorId) {
     setAddingVendor(vendorId);
     setBranchId("");
-    setBranches(null);
-    if (!vendorId) return;
-    setLoadingBranches(true);
-    fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
-      setLoadingBranches(false);
-      setBranches(res.data.branches || {});
-    }).catch(() => { setLoadingBranches(false); setBranches({}); setToast("שגיאה בטעינת סניפים"); });
+    setBranchQuery("");
+    if (vendorId && !branchCache[vendorId]) loadBranches(vendorId);
   }
 
   function addProfile() {
@@ -1057,7 +1072,7 @@ function SettingsScreen({ uid, onBack }) {
     });
     setAddingVendor("");
     setBranchId("");
-    setBranches(null);
+    setBranchQuery("");
   }
   function toggleProfile(p) {
     db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).update({ active: !p.active });
@@ -1071,6 +1086,27 @@ function SettingsScreen({ uid, onBack }) {
     db.collection("users").doc(uid).update({ ai: aiDraft }).then(() => { setSavingAi(false); setToast("נשמר"); });
   }
 
+  function branchLabel(vendorId, id) {
+    const b = branchCache[vendorId];
+    const info = b && b !== "loading" ? b[id] : null;
+    if (!info) return "סניף " + parseInt(id, 10);
+    return info.name + (info.address ? " — " + info.address : "");
+  }
+
+  const addingBranches = addingVendor ? branchCache[addingVendor] : null;
+  const q = branchQuery.trim().toLowerCase();
+  const branchEntries = addingBranches && addingBranches !== "loading"
+    ? Object.entries(addingBranches)
+        .filter(([id, b]) => {
+          if (!q) return true;
+          const hay = ((b.name || "") + " " + (b.address || "") + " " + (b.city || "") + " " + id).toLowerCase();
+          return hay.indexOf(q) !== -1;
+        })
+        .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || "", "he"))
+    : [];
+
+  const activeCount = (profiles || []).filter(p => p.active).length;
+
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
@@ -1080,44 +1116,60 @@ function SettingsScreen({ uid, onBack }) {
 
       <div className="p-4 space-y-6">
         <div>
-          <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות להשוואת מחירים</h2>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות להשוואת מחירים</h2>
+            {profiles && profiles.length > 0 && (
+              <span className="text-xs text-[#8A7F66]">פעילים להשוואה: {activeCount} מתוך {profiles.length}</span>
+            )}
+          </div>
           <p className="text-xs text-[#8A7F66] mb-3">הוסיפו את הסניפים שאתם קונים בהם — מחירים אמיתיים יופיעו על הפריטים ברשימות.</p>
 
           <div className="flex flex-col gap-2 mb-3">
             {profiles === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
             {profiles && profiles.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו סניפים עדיין</div>}
             {profiles && profiles.map(p => (
-              <div key={p.id} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5 flex items-center gap-2">
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
+                (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0">
+                  <span className="font-semibold">{vendorLabel(p.vendor)}</span>
+                  <span className="text-[#8A7F66]"> — {branchLabel(p.vendor, p.branchId)}</span>
+                </span>
                 <button onClick={() => toggleProfile(p)}
-                  className={"w-9 h-5 rounded-full relative flex-shrink-0 " + (p.active ? "bg-[#2E4A3B]" : "bg-[#E0D4B4]")}>
-                  <span className={"absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all " + (p.active ? "right-0.5" : "right-4")} />
+                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                  {p.active ? "פעיל" : "כבוי"}
                 </button>
-                <span className="flex-1 text-sm text-[#2B2418]">{vendorLabel(p.vendor)} · סניף {p.branchId}</span>
-                <button onClick={() => removeProfile(p)} className="text-[#C7B78E] text-sm px-1">✕</button>
+                <button onClick={() => removeProfile(p)} className="text-[#C7B78E] text-sm px-1 flex-shrink-0">✕</button>
               </div>
             ))}
           </div>
 
           <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+            <div className="text-xs font-semibold text-[#8A7F66]">הוספת סניף להשוואה</div>
             <select value={addingVendor} onChange={e => pickVendor(e.target.value)}
               className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
               <option value="">בחירת רשת...</option>
               {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
             {addingVendor && (
-              loadingBranches ? (
-                <div className="text-xs text-[#8A7F66] py-1">טוען סניפים...</div>
-              ) : branches && Object.keys(branches).length > 0 ? (
-                <select value={branchId} onChange={e => setBranchId(e.target.value)}
-                  className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
-                  <option value="">בחירת סניף...</option>
-                  {Object.entries(branches).map(([id, b]) => (
-                    <option key={id} value={id}>{b.name}{b.city ? " · " + b.city : ""}</option>
-                  ))}
-                </select>
-              ) : branches ? (
-                <div className="text-xs text-[#8A7F66] py-1">לא נמצאו סניפים</div>
-              ) : null
+              addingBranches === "loading" ? (
+                <div className="text-xs text-[#8A7F66] py-1 flex items-center gap-2"><Spinner /> טוען סניפים...</div>
+              ) : (
+                <React.Fragment>
+                  <input value={branchQuery} onChange={e => setBranchQuery(e.target.value)}
+                    placeholder="חיפוש סניף לפי שם, כתובת, עיר או מספר..."
+                    className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+                  <select value={branchId} onChange={e => setBranchId(e.target.value)}
+                    className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
+                    <option value="">
+                      {branchEntries.length > 0 ? `בחירת סניף... (${branchEntries.length})` : "לא נמצאו סניפים"}
+                    </option>
+                    {branchEntries.map(([id, b]) => (
+                      <option key={id} value={id}>{b.name} — {b.address}{b.city ? ", " + b.city : ""} (סניף {parseInt(id, 10)})</option>
+                    ))}
+                  </select>
+                </React.Fragment>
+              )
             )}
             <button onClick={addProfile} disabled={!addingVendor || !branchId}
               className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">

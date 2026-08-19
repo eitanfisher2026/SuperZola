@@ -294,7 +294,7 @@ const LAIBCATALOG_BASE_URL = 'https://laibcatalog.co.il';
 const HAZI_HINAM_BASE_URL = 'https://shop.hazi-hinam.co.il';
 const WOLT_BASE_URL = 'https://wm-gateway.wolt.com/isr-prices/public/v1';
 const CATALOG_STALENESS_MS = 18 * 60 * 60 * 1000; // 18h — matches the feed's own refresh cadence
-const DEFAULT_MAX_ACTIVE_VENDORS = 3;
+const DEFAULT_MAX_ACTIVE_VENDORS = 8;
 
 function asArray(x) { return x === undefined || x === null ? [] : Array.isArray(x) ? x : [x]; }
 function docKey(vendor, branchId) { return `${vendor}__${branchId}`; }
