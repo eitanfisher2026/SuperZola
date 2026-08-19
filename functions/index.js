@@ -299,6 +299,39 @@ const DEFAULT_MAX_ACTIVE_VENDORS = 8;
 function asArray(x) { return x === undefined || x === null ? [] : Array.isArray(x) ? x : [x]; }
 function docKey(vendor, branchId) { return `${vendor}__${branchId}`; }
 
+// A full vendor catalog (5,000-20,000+ items) blows straight through
+// Firestore's 1MB-per-document limit as a single map field — a real chain's
+// catalog silently failed to save that way (the small index doc committed
+// fine, the big catalog doc didn't, leaving a permanent "looks ready but is
+// actually empty" state). Each item is its own tiny document in a
+// subcollection instead, which also turns a per-barcode price lookup into a
+// cheap point read instead of downloading the whole catalog.
+async function writeCatalogItems(key, items) {
+  const barcodes = Object.keys(items);
+  const BATCH_SIZE = 400; // Firestore caps a batch at 500 writes; keep margin
+  for (let i = 0; i < barcodes.length; i += BATCH_SIZE) {
+    const batch = db.batch();
+    barcodes.slice(i, i + BATCH_SIZE).forEach(bc => {
+      batch.set(db.collection('vendorCatalogs').doc(key).collection('items').doc(bc), items[bc]);
+    });
+    await batch.commit();
+  }
+}
+async function readAllCatalogItems(key) {
+  const snap = await db.collection('vendorCatalogs').doc(key).collection('items').get();
+  const items = {};
+  snap.forEach(d => { items[d.id] = d.data(); });
+  return items;
+}
+async function readCatalogItemPrice(key, barcode) {
+  const snap = await db.collection('vendorCatalogs').doc(key).collection('items').doc(barcode).get();
+  return snap.exists ? (snap.data().price ?? null) : null;
+}
+async function readCatalogItemName(key, barcode) {
+  const snap = await db.collection('vendorCatalogs').doc(key).collection('items').doc(barcode).get();
+  return snap.exists ? (snap.data().name || '') : '';
+}
+
 function decodeXmlBuffer(buf) {
   const text = (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) ? buf.toString('utf16le') : buf.toString('utf8');
   return text.replace(/^﻿/, '');
@@ -637,10 +670,8 @@ async function ingestVendorCatalog(vendor, branchId) {
   const sizeBytes = Buffer.byteLength(JSON.stringify(items));
   const updatedAt = Date.now();
   const key = docKey(vendor, branchId);
-  await Promise.all([
-    db.collection('vendorCatalogs').doc(key).set({ items, updatedAt, sizeBytes }),
-    db.collection('vendorCatalogIndex').doc(key).set({ updatedAt, sizeBytes, itemCount: Object.keys(items).length }),
-  ]);
+  await writeCatalogItems(key, items);
+  await db.collection('vendorCatalogIndex').doc(key).set({ updatedAt, sizeBytes, itemCount: Object.keys(items).length });
   console.log('ingestVendorCatalog: saved', vendor, branchId);
   return items;
 }
@@ -680,8 +711,7 @@ async function ensureFreshCatalog(vendor, branchId, force) {
   const indexSnap = await db.collection('vendorCatalogIndex').doc(key).get();
   const updatedAt = indexSnap.exists ? indexSnap.data().updatedAt : null;
   if (!force && updatedAt) {
-    const snap = await db.collection('vendorCatalogs').doc(key).get();
-    const items = (snap.data() || {}).items || {};
+    const items = await readAllCatalogItems(key);
     if (Date.now() - updatedAt >= CATALOG_STALENESS_MS) {
       ingestVendorCatalog(vendor, branchId).catch(() => {});
     }
@@ -849,9 +879,8 @@ exports.resolveItemBarcodes = onCall(
     await Promise.all(VENDOR_IDS.filter(v => !catalogsByVendor[v]).map(async (vendor) => {
       const idxSnap = await db.collection('vendorCatalogIndex').orderBy(admin.firestore.FieldPath.documentId()).startAt(vendor + '__').endAt(vendor + '__' + String.fromCharCode(0xFFFF)).limit(1).get();
       if (idxSnap.empty) return;
-      const catSnap = await db.collection('vendorCatalogs').doc(idxSnap.docs[0].id).get();
-      const catalogItems = (catSnap.data() || {}).items;
-      if (catalogItems) extraCatalogsByVendor[vendor] = catalogItems;
+      const catalogItems = await readAllCatalogItems(idxSnap.docs[0].id);
+      if (Object.keys(catalogItems).length > 0) extraCatalogsByVendor[vendor] = catalogItems;
     }));
     const searchCatalogsByVendor = Object.assign({}, catalogsByVendor, extraCatalogsByVendor);
     const searchedVendors = Object.keys(searchCatalogsByVendor);
@@ -930,8 +959,7 @@ exports.getBasketPrices = onCall(
             const idxSnap = await db.collection('vendorCatalogIndex').doc(dKey).get();
             if (sameIsraelDate((idxSnap.data() || {}).updatedAt, Date.now())) {
               skippedBranches.push(key);
-              const snap = await db.collection('vendorCatalogs').doc(dKey).get();
-              return (snap.data() || {}).items || {};
+              return readAllCatalogItems(dKey);
             }
             refreshedBranches.push(key);
             return ingestVendorCatalog(p.vendor, p.branchId).catch(() => ({}));
@@ -961,18 +989,14 @@ exports.getBasketPrices = onCall(
 
     await Promise.all(relevantProfiles.map(async (p) => {
       const dKey = docKey(p.vendor, p.branchId);
-      const [catSnap, promoSnap] = await Promise.all([
-        db.collection('vendorCatalogs').doc(dKey).get(),
-        db.collection('vendorPromoPrices').doc(dKey).get(),
-      ]);
-      const items = (catSnap.data() || {}).items || {};
+      const promoSnap = await db.collection('vendorPromoPrices').doc(dKey).get();
       const promoMap = promoSnap.data() || {};
       prices[p.id] = {}; promoPrices[p.id] = {};
-      barcodesByVendor[p.vendor].forEach(barcode => {
-        const price = items[barcode]?.price ?? null;
+      await Promise.all(barcodesByVendor[p.vendor].map(async (barcode) => {
+        const price = await readCatalogItemPrice(dKey, barcode);
         prices[p.id][barcode] = price;
         promoPrices[p.id][barcode] = effectivePromoInfo(promoMap[barcode], price);
-      });
+      }));
     }));
     return { prices, promoPrices, profiles: activeProfiles };
   }
@@ -998,13 +1022,15 @@ exports.getVendorPromotions = onCall(
       const key = `${p.vendor}:${p.branchId}`;
       const promotions = await promosByBranch[key];
       const barcodes = [...new Set(promotions.flatMap(promo => promo.items.map(i => i.barcode)))];
-      const catSnap = await db.collection('vendorCatalogs').doc(docKey(p.vendor, p.branchId)).get();
-      const items = (catSnap.data() || {}).items || {};
+      const dKey = docKey(p.vendor, p.branchId);
+      const names = {};
+      await Promise.all(barcodes.map(async (bc) => { names[bc] = await readCatalogItemName(dKey, bc); }));
       promotionsByProfile[p.id] = promotions.map(promo => ({
         ...promo,
-        items: promo.items.map(item => ({ ...item, name: (items[item.barcode] || {}).name || '' })),
+        items: promo.items.map(item => ({ ...item, name: names[item.barcode] || '' })),
       }));
     }));
     return { promotionsByProfile, profiles: activeProfiles };
   }
 );
+
