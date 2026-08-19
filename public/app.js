@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.3";
+const VERSION = "v1.4";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -377,6 +377,12 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
       return next;
     });
     setCandidates(null);
+    // A vendor-scoped search (tapping a single row's own "מצא מחיר") leaves
+    // searchScope pointed at that vendor — the row display forces the
+    // magnifying-glass icon for as long as that's true, regardless of
+    // whether a price now exists. Clearing it is what actually reveals the
+    // price that was just matched.
+    setSearchScope(null);
 
     fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm })
       .catch(() => showToast("ההתאמה נשמרה לפריט זה, אך לא נשמרה לשימוש עתידי"));
