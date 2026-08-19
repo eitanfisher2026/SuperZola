@@ -318,12 +318,19 @@ function withTimeout(promise, ms, label) {
 }
 
 async function ftpConnect(vendor) {
+  console.log('ftpConnect: connecting', vendor, FTP_HOST);
   const ftp = require('basic-ftp');
   const client = new ftp.Client(20000);
-  await withTimeout(client.access({
-    host: FTP_HOST, user: VENDORS[vendor].ftpUser, password: VENDORS[vendor].ftpPassword || '',
-    secure: true, secureOptions: { rejectUnauthorized: false },
-  }), 20000, 'FTP connect');
+  try {
+    await withTimeout(client.access({
+      host: FTP_HOST, user: VENDORS[vendor].ftpUser, password: VENDORS[vendor].ftpPassword || '',
+      secure: true, secureOptions: { rejectUnauthorized: false },
+    }), 20000, 'FTP connect');
+  } catch (e) {
+    console.error('ftpConnect: FAILED', vendor, e && e.message);
+    throw e;
+  }
+  console.log('ftpConnect: access ok', vendor);
   if (VENDORS[vendor].ftpPath) await withTimeout(client.cd(VENDORS[vendor].ftpPath), 10000, 'FTP cd');
   return client;
 }
@@ -602,24 +609,31 @@ async function pickFile(vendor, branchId, kind) {
 }
 
 async function ingestVendorCatalog(vendor, branchId) {
+  console.log('ingestVendorCatalog: start', vendor, branchId);
   let obj;
   const picked = await pickFile(vendor, branchId, 'price');
+  console.log('ingestVendorCatalog: pickFile done', vendor, branchId, 'ftp=', !!picked.ftp);
   if (picked.ftp) {
     const client = await ftpConnect(vendor);
+    console.log('ingestVendorCatalog: FTP connected', vendor);
     try {
       const list = await withTimeout(client.list(), 20000, 'FTP list');
+      console.log('ingestVendorCatalog: FTP list done', vendor, 'fileCount=', list.length);
       const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
       let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
       if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
       candidates.sort((a, b) => b.name.localeCompare(a.name));
       const pick = candidates[0];
       if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
+      console.log('ingestVendorCatalog: downloading', vendor, pick.name);
       obj = await ftpDownloadXmlObject(client, pick);
+      console.log('ingestVendorCatalog: download done', vendor);
     } finally { client.close(); }
   } else {
     obj = picked.obj;
   }
   const items = itemsFromPriceXml(obj);
+  console.log('ingestVendorCatalog: parsed', vendor, branchId, 'itemCount=', Object.keys(items).length);
   const sizeBytes = Buffer.byteLength(JSON.stringify(items));
   const updatedAt = Date.now();
   const key = docKey(vendor, branchId);
@@ -627,6 +641,7 @@ async function ingestVendorCatalog(vendor, branchId) {
     db.collection('vendorCatalogs').doc(key).set({ items, updatedAt, sizeBytes }),
     db.collection('vendorCatalogIndex').doc(key).set({ updatedAt, sizeBytes, itemCount: Object.keys(items).length }),
   ]);
+  console.log('ingestVendorCatalog: saved', vendor, branchId);
   return items;
 }
 
@@ -772,10 +787,15 @@ exports.getVendorBranches = onCall(
   async (request) => {
     requireSignedIn(request);
     const { vendor } = request.data || {};
+    console.log('getVendorBranches: start', vendor);
     if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
     const snap = await db.collection('vendorBranches').doc(vendor).get();
     let branches = (snap.data() || {}).branches;
-    if (!branches || Object.keys(branches).length === 0) branches = await ingestVendorBranches(vendor);
+    if (!branches || Object.keys(branches).length === 0) {
+      console.log('getVendorBranches: no cache, ingesting', vendor);
+      branches = await ingestVendorBranches(vendor);
+    }
+    console.log('getVendorBranches: done', vendor, 'count=', Object.keys(branches || {}).length);
     return { branches: branches || {} };
   }
 );
@@ -800,9 +820,11 @@ exports.resolveItemBarcodes = onCall(
   async (request) => {
     requireSignedIn(request);
     const { items, force, vendors } = request.data || {};
+    console.log('resolveItemBarcodes: start', { uid: request.auth.uid, items, force, vendors });
     if (!Array.isArray(items) || items.length === 0) throw new HttpsError('invalid-argument', 'items array required');
 
     const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    console.log('resolveItemBarcodes: activeProfiles', activeProfiles);
     const repProfileByVendor = {};
     activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
     const vendorIds = Object.keys(repProfileByVendor).filter(v => !Array.isArray(vendors) || vendors.includes(v));
@@ -813,10 +835,12 @@ exports.resolveItemBarcodes = onCall(
     await Promise.all(vendorIds.map(async (vendor) => {
       const p = repProfileByVendor[vendor];
       const key = docKey(vendor, p.branchId);
+      console.log('resolveItemBarcodes: fetching catalog for', vendor, p.branchId);
       const [items2, promoSnap] = await Promise.all([
-        ensureFreshCatalog(vendor, p.branchId, false).catch(() => ({})),
+        ensureFreshCatalog(vendor, p.branchId, false).catch((e) => { console.error('resolveItemBarcodes: catalog fetch failed', vendor, p.branchId, e && e.message); return {}; }),
         db.collection('vendorPromoPrices').doc(key).get(),
       ]);
+      console.log('resolveItemBarcodes: catalog ready for', vendor, 'itemCount', Object.keys(items2 || {}).length);
       catalogsByVendor[vendor] = items2;
       promoPricesByVendor[vendor] = promoSnap.data() || {};
     }));
@@ -842,8 +866,11 @@ exports.resolveItemBarcodes = onCall(
       if (cached) vendorIds.forEach(v => { if (cached[v]) barcodes[v] = cached[v]; });
       const missingVendors = vendorIds.filter(v => !barcodes[v]);
       if (missingVendors.length === 0) { results[name] = { barcodes, missingVendors: [] }; continue; }
-      results[name] = { barcodes, missingVendors, searchedVendors, candidates: fuzzyMatchCatalogs(name, searchCatalogsByVendor, promoPricesByVendor) };
+      const candidates = fuzzyMatchCatalogs(name, searchCatalogsByVendor, promoPricesByVendor);
+      console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length);
+      results[name] = { barcodes, missingVendors, searchedVendors, candidates };
     }
+    console.log('resolveItemBarcodes: done', Object.keys(results).length, 'names processed');
     return { results };
   }
 );

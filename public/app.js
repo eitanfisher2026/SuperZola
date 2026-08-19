@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.0";
+const VERSION = "v1.1";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -29,29 +29,53 @@ function formatPrice(n) {
   return "₪" + n.toFixed(2);
 }
 
-const CATEGORIES = [
-  { id: "vegetables", label: "ירקות ופירות",   emoji: "🥦" },
-  { id: "pantry",     label: "קפה ושימורים",   emoji: "☕" },
-  { id: "cleaning",   label: "חומרי ניקוי",    emoji: "🧴" },
-  { id: "dairy",      label: "מוצרי חלב",      emoji: "🥛" },
-  { id: "eggs",       label: "ביצים",           emoji: "🥚" },
-  { id: "paper",      label: "מוצרי נייר",     emoji: "🧻" },
-  { id: "other",      label: "שונות",           emoji: "🛍️" },
+// Seeded into Firestore (categories collection) the first time it's empty —
+// from then on this is only the emergency fallback if that read ever fails.
+const DEFAULT_CATEGORIES = [
+  { id: "vegetables", label: "ירקות ופירות",   emoji: "🥦", order: 0 },
+  { id: "pantry",     label: "קפה ושימורים",   emoji: "☕", order: 1 },
+  { id: "cleaning",   label: "חומרי ניקוי",    emoji: "🧴", order: 2 },
+  { id: "dairy",      label: "מוצרי חלב",      emoji: "🥛", order: 3 },
+  { id: "eggs",       label: "ביצים",           emoji: "🥚", order: 4 },
+  { id: "paper",      label: "מוצרי נייר",     emoji: "🧻", order: 5 },
+  { id: "other",      label: "שונות",           emoji: "🛍️", order: 6 },
 ];
 const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופסה", "חבילה", "צרור"];
 
-function categoryOrder(label) {
-  const i = CATEGORIES.findIndex(c => c.label === label);
-  return i === -1 ? CATEGORIES.length : i;
+// Live categories from Firestore, ordered per the admin-managed sort order
+// (Settings). Seeds the collection with the defaults above the first time
+// it's genuinely empty, so a brand-new project isn't left with no
+// categories at all until someone visits Settings.
+function useCategories() {
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  useEffect(() => {
+    return db.collection("categories").onSnapshot(snap => {
+      if (snap.empty) {
+        const batch = db.batch();
+        DEFAULT_CATEGORIES.forEach(cat => batch.set(db.collection("categories").doc(cat.id), cat));
+        batch.commit().catch(() => {});
+        return;
+      }
+      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+      setCategories(rows);
+    });
+  }, []);
+  return categories;
 }
-function groupByCategory(items) {
+
+function categoryOrder(label, categories) {
+  const i = categories.findIndex(c => c.label === label);
+  return i === -1 ? categories.length : i;
+}
+function groupByCategory(items, categories) {
   const map = {};
   items.forEach(item => {
     const label = item.category || "שונות";
     if (!map[label]) map[label] = { label, emoji: item.categoryEmoji || "🛍️", items: [] };
     map[label].items.push(item);
   });
-  return Object.values(map).sort((a, b) => categoryOrder(a.label) - categoryOrder(b.label));
+  return Object.values(map).sort((a, b) => categoryOrder(a.label, categories) - categoryOrder(b.label, categories));
 }
 
 // ── VENDOR PRICE COMPARISON — shared helpers ─────────────────────────────────
@@ -468,16 +492,15 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
 }
 
 // ── ITEM DIALOG (add / edit) ─────────────────────────────────────────────────
-function ItemDialog({ mode, item, activeProfiles, onInsert, onSave, onClose, showToast }) {
+function ItemDialog({ mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast }) {
   const isEdit = mode === "edit";
   const blankDraft = () => {
-    const other = CATEGORIES.find(c => c.id === "other") || CATEGORIES[CATEGORIES.length - 1];
-    return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", price: "", barcodes: {}, matchedNames: {} };
+    const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
+    return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
   };
   const [draft, setDraft] = useState(() => {
     if (!isEdit || !item) return blankDraft();
     return Object.assign({}, blankDraft(), item, {
-      price: typeof item.price === "number" ? String(item.price) : "",
       barcodes: Object.assign({}, item.barcodes || {}),
       matchedNames: Object.assign({}, item.matchedNames || {}),
     });
@@ -511,20 +534,16 @@ function ItemDialog({ mode, item, activeProfiles, onInsert, onSave, onClose, sho
 
   const set = (patch) => setDraft(prev => Object.assign({}, prev, patch));
 
-  const toPayload = (d) => {
-    const parsedPrice = d.price !== "" ? parseFloat(String(d.price).replace(",", ".")) : null;
-    return {
-      name: d.name.trim(),
-      category: d.category,
-      categoryEmoji: d.categoryEmoji,
-      quantity: parseFloat(d.quantity) || 1,
-      unit: d.unit,
-      note: d.note.trim(),
-      price: Number.isFinite(parsedPrice) ? parsedPrice : null,
-      barcodes: d.barcodes || {},
-      matchedNames: d.matchedNames || {},
-    };
-  };
+  const toPayload = (d) => ({
+    name: d.name.trim(),
+    category: d.category,
+    categoryEmoji: d.categoryEmoji,
+    quantity: parseFloat(d.quantity) || 1,
+    unit: d.unit,
+    note: d.note.trim(),
+    barcodes: d.barcodes || {},
+    matchedNames: d.matchedNames || {},
+  });
 
   const doSave = (quitAfter) => {
     if (!draft.name.trim() || saving) return;
@@ -627,30 +646,18 @@ function ItemDialog({ mode, item, activeProfiles, onInsert, onSave, onClose, sho
 
             <div>
               <label className="text-xs text-[#8A7F66] block mb-1">קטגוריה</label>
-              <div className="flex flex-wrap gap-1.5">
-                {CATEGORIES.map(cat => {
-                  const selected = draft.category === cat.label;
-                  return (
-                    <button key={cat.id} type="button"
-                      onClick={() => set({ category: cat.label, categoryEmoji: cat.emoji })}
-                      className={"text-xs px-2.5 py-1.5 rounded-full border transition " +
-                        (selected ? "bg-[#2E4A3B] text-[#FBF4E7] border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
-                      {cat.emoji} {cat.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-[#8A7F66] block mb-1">מחיר משוער (אופציונלי)</label>
-              <input
-                value={draft.price}
-                onChange={e => set({ price: e.target.value })}
-                inputMode="decimal"
-                placeholder="₪"
-                className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none"
-              />
+              <select
+                value={draft.category}
+                onChange={e => {
+                  const cat = categories.find(c => c.label === e.target.value);
+                  if (cat) set({ category: cat.label, categoryEmoji: cat.emoji });
+                }}
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none"
+              >
+                {categories.slice().sort((a, b) => a.label.localeCompare(b.label, "he")).map(cat => (
+                  <option key={cat.id} value={cat.label}>{cat.emoji} {cat.label}</option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -676,6 +683,97 @@ function ItemDialog({ mode, item, activeProfiles, onInsert, onSave, onClose, sho
         )}
       </div>
     </Modal>
+  );
+}
+
+// ── PRICE COMPARISON TABLE ────────────────────────────────────────────────────
+// One row per item, one column per active vendor branch — lets you compare
+// prices at a glance instead of reading them off each item's own chips.
+function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem }) {
+  const notDone = items.filter(i => !i.done);
+  const done = items.filter(i => i.done);
+  const ordered = notDone.concat(done);
+
+  const totals = {};
+  activeProfiles.forEach(p => { totals[p.id] = { sum: 0, count: 0 }; });
+  notDone.forEach(item => {
+    const qty = item.quantity || 1;
+    itemProfilePrices(item, activeProfiles, priceMap, promoMap).forEach(e => {
+      if (e.price == null) return;
+      const effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
+      totals[e.profile.id].sum += effective * qty;
+      totals[e.profile.id].count++;
+    });
+  });
+
+  if (activeProfiles.length === 0) {
+    return <p className="text-center text-[#A79A7C] text-sm py-10">אין סניפים פעילים להשוואה — הוסיפו סניף בהגדרות</p>;
+  }
+
+  return (
+    <div className="overflow-x-auto -mx-3 border border-[#E0D4B4] rounded-xl">
+      <table className="min-w-full text-xs" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+        <thead>
+          <tr>
+            <th className="sticky right-0 bg-[#F3ECD9] z-10 font-semibold text-[#5B5749] text-right px-3 py-2 border-b border-[#E0D4B4]" style={{ minWidth: 140 }}>פריט</th>
+            {activeProfiles.map(p => (
+              <th key={p.id} className="font-semibold text-[#5B5749] text-center px-3 py-2 border-b border-[#E0D4B4] whitespace-nowrap">{profileLabel(p, activeProfiles)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {ordered.map(item => {
+            const priced = itemProfilePrices(item, activeProfiles, priceMap, promoMap);
+            const byId = {};
+            priced.forEach(e => { byId[e.profile.id] = e; });
+            const qty = item.quantity || 1;
+            return (
+              <tr key={item.id} className="cursor-pointer active:bg-[#FBF4E7]" onClick={() => onEditItem(item)}>
+                <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right " + (item.done ? "line-through text-[#A79A7C]" : "text-[#2B2418]")}>
+                  {item.name}{qty !== 1 && <span className="text-[#A79A7C]"> ({qty})</span>}
+                </td>
+                {activeProfiles.map(p => {
+                  const bc = itemVendorBarcode(item, p.vendor);
+                  const vendorPrices = priceMap[p.id];
+                  const fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+                  const price = fetched ? vendorPrices[bc] : null;
+                  const promo = byId[p.id] ? byId[p.id].promo : null;
+                  const promoActive = !!(promo && promo.active);
+                  const effectivePrice = promoActive ? promo.price : price;
+                  const others = priced.filter(e => e.profile.id !== p.id).map(e => (e.promo && e.promo.active) ? e.promo.price : e.price);
+                  const cellClass = !bc ? "text-[#DECBA1]" : !fetched ? "text-[#DECBA1]" : cheapestTextClass(effectivePrice, others);
+                  return (
+                    <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}>
+                      {!bc ? "—" : !fetched ? "…" : price != null ? (
+                        <div className="leading-tight">
+                          {promoActive ? (
+                            <div>
+                              <div className="font-bold">₪{(promo.price * qty).toFixed(2)}*</div>
+                              <div className="text-[10px] text-[#A79A7C]">(₪{(price * qty).toFixed(2)})</div>
+                            </div>
+                          ) : (
+                            <div>₪{(price * qty).toFixed(2)}</div>
+                          )}
+                        </div>
+                      ) : "אין"}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td className="sticky right-0 bg-[#F3ECD9] z-10 font-bold px-3 py-2 border-t-2 border-[#DECBA1] text-right">סה"כ</td>
+            {activeProfiles.map(p => {
+              const others = activeProfiles.filter(o => o.id !== p.id).map(o => totals[o.id].sum);
+              return <td key={p.id} className={"font-bold text-center px-3 py-2 border-t-2 border-[#DECBA1] " + cheapestTextClass(totals[p.id].sum, others)}>₪{totals[p.id].sum.toFixed(2)}</td>;
+            })}
+          </tr>
+        </tfoot>
+      </table>
+    </div>
   );
 }
 
@@ -733,9 +831,6 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete,
         {qty ? (
           <span className="text-xs font-medium text-[#8A7F66] bg-[#EFE4C6] px-2 py-0.5 rounded-full flex-shrink-0">{qty}</span>
         ) : null}
-        {typeof item.price === "number" && (
-          <span className="text-[14px] font-bold text-[#2E4A3B] tabular-nums flex-shrink-0">{formatPrice(item.price)}</span>
-        )}
         <button onClick={() => onDelete(item)} className="text-[#C7B78E] text-[13px] px-1 flex-shrink-0">✕</button>
       </div>
 
@@ -755,7 +850,7 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete,
 }
 
 // ── BULK ADD (AI) ─────────────────────────────────────────────────────────────
-function BulkAddModal({ hasAi, onInsertMany, onClose }) {
+function BulkAddModal({ categories, hasAi, onInsertMany, onClose }) {
   const [text, setText] = useState("");
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
@@ -765,7 +860,7 @@ function BulkAddModal({ hasAi, onInsertMany, onClose }) {
     if (!t) return;
     setProcessing(true);
     setError("");
-    fns.httpsCallable("parseItems")({ text: t, categories: CATEGORIES.map(c => ({ label: c.label })) }).then(res => {
+    fns.httpsCallable("parseItems")({ text: t, categories: categories.map(c => ({ label: c.label })) }).then(res => {
       setProcessing(false);
       onInsertMany(res.data.items || []);
       onClose();
@@ -1002,6 +1097,10 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
         </div>
       )}
 
+      <div className="text-center py-8 text-[11px] text-[#C7B78E]">
+        SuperZola {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
+      </div>
+
       {renaming && (
         <RenameDialog title="שינוי שם הרשימה" initialValue={renaming.name}
           onSave={name => renameList(renaming, name)} onClose={() => setRenaming(null)} />
@@ -1151,6 +1250,70 @@ function SettingsScreen({ uid, onBack }) {
     db.collection("users").doc(uid).update({ ai: aiDraft }).then(() => { setSavingAi(false); setToast("נשמר"); });
   }
 
+  // ── Categories ──
+  const categories = useCategories();
+  const [editingCatId, setEditingCatId] = useState(null);
+  const [editCatLabel, setEditCatLabel] = useState("");
+  const [editCatEmoji, setEditCatEmoji] = useState("");
+  const [newCatLabel, setNewCatLabel] = useState("");
+  const [newCatEmoji, setNewCatEmoji] = useState("📦");
+  const [confirmDeleteCat, setConfirmDeleteCat] = useState(null);
+
+  function addCategory() {
+    if (!newCatLabel.trim()) return;
+    const id = "cat_" + Date.now();
+    db.collection("categories").doc(id).set({
+      label: newCatLabel.trim(), emoji: newCatEmoji.trim() || "📦", order: categories.length,
+    }).then(() => setToast("קטגוריה נוספה"));
+    setNewCatLabel("");
+    setNewCatEmoji("📦");
+  }
+  function saveEditCategory(cat) {
+    if (!editCatLabel.trim()) return;
+    db.collection("categories").doc(cat.id).update({ label: editCatLabel.trim(), emoji: editCatEmoji.trim() || "📦" });
+    setEditingCatId(null);
+  }
+  function deleteCategory(cat) {
+    db.collection("categories").doc(cat.id).delete().then(() => setToast("קטגוריה נמחקה"));
+  }
+  function moveCategory(idx, dir) {
+    const j = idx + dir;
+    if (j < 0 || j >= categories.length) return;
+    const batch = db.batch();
+    batch.update(db.collection("categories").doc(categories[idx].id), { order: j });
+    batch.update(db.collection("categories").doc(categories[j].id), { order: idx });
+    batch.commit();
+  }
+
+  // ── Store category-order profiles (aisle layout per chain) ──
+  const [storeOrders, setStoreOrders] = useState(null);
+  const [addingStoreVendor, setAddingStoreVendor] = useState("");
+  const [editStoreOrder, setEditStoreOrder] = useState(null); // { vendor, order } | null
+
+  useEffect(() => db.collection("vendorCategoryOrder")
+    .onSnapshot(snap => setStoreOrders(snap.docs.map(d => ({ vendor: d.id, ...d.data() })))), []);
+
+  function addStoreOrder() {
+    if (!addingStoreVendor) return;
+    if ((storeOrders || []).some(s => s.vendor === addingStoreVendor)) { setToast("כבר קיים סידור לרשת הזו"); return; }
+    const order = categories.map(c => c.label);
+    db.collection("vendorCategoryOrder").doc(addingStoreVendor).set({ categoryOrder: order })
+      .then(() => setToast("סידור נוסף"));
+    setAddingStoreVendor("");
+  }
+  function removeStoreOrder(vendor) {
+    db.collection("vendorCategoryOrder").doc(vendor).delete();
+  }
+  function moveStoreOrderCat(idx, dir) {
+    if (!editStoreOrder) return;
+    const order = editStoreOrder.order.slice();
+    const j = idx + dir;
+    if (j < 0 || j >= order.length) return;
+    const tmp = order[idx]; order[idx] = order[j]; order[j] = tmp;
+    setEditStoreOrder(Object.assign({}, editStoreOrder, { order }));
+    db.collection("vendorCategoryOrder").doc(editStoreOrder.vendor).update({ categoryOrder: order });
+  }
+
   function branchLabel(vendorId, id) {
     const b = branchCache[vendorId];
     const info = b && b !== "loading" ? b[id] : null;
@@ -1247,7 +1410,118 @@ function SettingsScreen({ uid, onBack }) {
             <p className="text-[11px] text-[#A79A7C]">המפתח נשמר בחשבון שלך בלבד ומשמש להוספה מהירה של פריטים מטקסט חופשי.</p>
           </div>
         </div>
+
+        <div>
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>קטגוריות</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">סדר ברירת המחדל של הקטגוריות ברשימה</p>
+          <div className="flex flex-col gap-2 mb-3">
+            {categories.map((cat, idx) => (
+              <div key={cat.id} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5">
+                {editingCatId === cat.id ? (
+                  <div className="flex gap-2 items-center">
+                    <input value={editCatEmoji} onChange={e => setEditCatEmoji(e.target.value)} maxLength={2}
+                      className="w-12 border border-[#C7B78E] rounded-lg text-center text-xl py-1.5 outline-none" />
+                    <input value={editCatLabel} onChange={e => setEditCatLabel(e.target.value)} autoFocus
+                      onKeyDown={e => e.key === "Enter" && saveEditCategory(cat)}
+                      className="flex-1 border border-[#C7B78E] rounded-lg px-3 py-1.5 text-right text-sm outline-none" />
+                    <button onClick={() => saveEditCategory(cat)} className="text-[#2E7D4F] text-xl font-bold w-8 text-center">✓</button>
+                    <button onClick={() => setEditingCatId(null)} className="text-[#A79A7C] text-xl w-8 text-center">✕</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-0.5">
+                      <button onClick={() => moveCategory(idx, -1)} disabled={idx === 0}
+                        className="w-7 h-7 flex items-center justify-center text-[#A79A7C] disabled:opacity-20 text-sm">↑</button>
+                      <button onClick={() => moveCategory(idx, 1)} disabled={idx === categories.length - 1}
+                        className="w-7 h-7 flex items-center justify-center text-[#A79A7C] disabled:opacity-20 text-sm">↓</button>
+                    </div>
+                    <span className="text-xl">{cat.emoji}</span>
+                    <span className="flex-1 font-medium text-[#2B2418] text-sm text-right">{cat.label}</span>
+                    <button onClick={() => { setEditingCatId(cat.id); setEditCatLabel(cat.label); setEditCatEmoji(cat.emoji); }}
+                      className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm">✏️</button>
+                    <button onClick={() => setConfirmDeleteCat(cat)}
+                      className="w-7 h-7 flex items-center justify-center text-[#C7B78E] text-base">🗑️</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3">
+            <div className="text-xs font-semibold text-[#8A7F66] mb-2">קטגוריה חדשה</div>
+            <div className="flex gap-2">
+              <input value={newCatEmoji} onChange={e => setNewCatEmoji(e.target.value)} maxLength={2}
+                className="w-12 border border-[#C7B78E] rounded-lg text-center text-xl py-2 outline-none" />
+              <input value={newCatLabel} onChange={e => setNewCatLabel(e.target.value)}
+                placeholder="שם הקטגוריה..." onKeyDown={e => e.key === "Enter" && addCategory()}
+                className="flex-1 border border-[#C7B78E] rounded-lg px-3 py-2 text-right text-sm outline-none" />
+            </div>
+            <button onClick={addCategory} disabled={!newCatLabel.trim()}
+              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 mt-2">
+              + הוספת קטגוריה
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סידור בחנות 🏪</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">סדר קטגוריות מותאם לכל רשת, לפי סדר המדפים בסניף</p>
+          <div className="flex flex-col gap-2 mb-3">
+            {storeOrders === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
+            {storeOrders && storeOrders.length === 0 && <div className="text-[#8A7F66] text-sm">אין עדיין סידורים</div>}
+            {storeOrders && storeOrders.map(s => (
+              <div key={s.vendor} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5 flex items-center gap-2">
+                <button onClick={() => setEditStoreOrder({ vendor: s.vendor, order: s.categoryOrder || categories.map(c => c.label) })}
+                  className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm">✏️</button>
+                <span className="flex-1 font-medium text-[#2B2418] text-sm text-right">{vendorLabel(s.vendor)}</span>
+                <button onClick={() => removeStoreOrder(s.vendor)} className="w-7 h-7 flex items-center justify-center text-[#C7B78E] text-base">🗑️</button>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+            <select value={addingStoreVendor} onChange={e => setAddingStoreVendor(e.target.value)}
+              className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
+              <option value="">בחירת רשת...</option>
+              {VENDOR_LIST.filter(v => !(storeOrders || []).some(s => s.vendor === v.id)).map(v => (
+                <option key={v.id} value={v.id}>{v.label}</option>
+              ))}
+            </select>
+            <button onClick={addStoreOrder} disabled={!addingStoreVendor}
+              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+              + הוספת סידור
+            </button>
+          </div>
+        </div>
       </div>
+
+      {editStoreOrder && (
+        <Modal onClose={() => setEditStoreOrder(null)}>
+          <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>{vendorLabel(editStoreOrder.vendor)}</h3>
+          <p className="text-xs text-[#8A7F66] text-center mb-4">לחצו על החצים לשינוי הסדר</p>
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {editStoreOrder.order.map((label, idx) => {
+              const cat = categories.find(c => c.label === label);
+              return (
+                <div key={label} className="flex items-center gap-2 bg-[#F3ECD9]/60 rounded-xl px-3 py-2">
+                  <div className="flex gap-0.5">
+                    <button onClick={() => moveStoreOrderCat(idx, -1)} disabled={idx === 0}
+                      className="w-7 h-7 flex items-center justify-center text-[#A79A7C] disabled:opacity-20 text-sm">↑</button>
+                    <button onClick={() => moveStoreOrderCat(idx, 1)} disabled={idx === editStoreOrder.order.length - 1}
+                      className="w-7 h-7 flex items-center justify-center text-[#A79A7C] disabled:opacity-20 text-sm">↓</button>
+                  </div>
+                  <span className="text-lg">{cat ? cat.emoji : "📦"}</span>
+                  <span className="flex-1 text-sm font-medium text-[#2B2418] text-right">{label}</span>
+                  <span className="text-xs text-[#DECBA1]">{idx + 1}</span>
+                </div>
+              );
+            })}
+          </div>
+          <button onClick={() => setEditStoreOrder(null)} className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold mt-4">סיום</button>
+        </Modal>
+      )}
+      {confirmDeleteCat && (
+        <ConfirmDialog message={`למחוק את הקטגוריה "${confirmDeleteCat.label}"?`}
+          onConfirm={() => deleteCategory(confirmDeleteCat)} onClose={() => setConfirmDeleteCat(null)} />
+      )}
 
       {toast && <Toast msg={toast} />}
     </div>
@@ -1268,8 +1542,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [promoMap, setPromoMap] = useState({});
   const [hasAi, setHasAi] = useState(false);
   const [toast, setToast] = useState(null);
+  const [viewMode, setViewMode] = useState("list");
 
   const activeProfiles = useActiveVendorProfiles(uid);
+  const categories = useCategories();
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1328,7 +1604,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     const now = Date.now();
     valid.forEach((raw, i) => {
       const name = (raw.name || raw.item || "").trim();
-      const cat = CATEGORIES.find(c => c.label === raw.category) || CATEGORIES[CATEGORIES.length - 1];
+      const cat = categories.find(c => c.label === raw.category) || categories[categories.length - 1];
       const ref = db.collection("lists").doc(listId).collection("items").doc();
       batch.set(ref, {
         name,
@@ -1337,7 +1613,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
         quantity: parseFloat(raw.quantity) || 1,
         unit: raw.unit || "יחידות",
         note: raw.note || "",
-        price: null,
         done: false,
         addedBy: uid,
         addedAt: firebase.firestore.Timestamp.fromMillis(now + i),
@@ -1371,9 +1646,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
     onBack();
   }
 
-  const total = (items || []).reduce((sum, it) => sum + (typeof it.price === "number" ? it.price : 0), 0);
   const doneCount = (items || []).filter(it => it.done).length;
-  const groups = groupByCategory(items || []);
+  const groups = groupByCategory(items || [], categories);
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7] flex flex-col">
@@ -1381,6 +1655,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
         <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
         <span className="text-[12px] text-[#C9BE9E] flex-shrink-0">{items ? `${doneCount} מתוך ${items.length}` : ""}</span>
+        {activeProfiles.length > 0 && (
+          <button onClick={() => setViewMode(viewMode === "list" ? "table" : "list")}
+            className="text-[#F3ECD9] text-base w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0"
+            title={viewMode === "list" ? "תצוגת טבלה" : "תצוגת רשימה"}>
+            {viewMode === "list" ? "📊" : "📋"}
+          </button>
+        )}
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
 
@@ -1389,20 +1670,24 @@ function ListScreen({ uid, listId, listName, onBack }) {
         {items !== null && items.length === 0 && (
           <div className="text-[#8A7F66] text-sm py-6 text-center">הרשימה ריקה</div>
         )}
-        {groups.map(group => (
-          <div key={group.label} className="mb-5">
-            <div className="text-xs font-semibold text-[#8A9A72] mb-1.5 flex items-center gap-1.5 uppercase tracking-wide px-1">
-              <span>{group.emoji}</span><span>{group.label}</span>
+        {items !== null && items.length > 0 && viewMode === "table" ? (
+          <PriceComparisonTable items={items} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onEditItem={setEditItem} />
+        ) : (
+          groups.map(group => (
+            <div key={group.label} className="mb-5">
+              <div className="text-xs font-semibold text-[#8A9A72] mb-1.5 flex items-center gap-1.5 uppercase tracking-wide px-1">
+                <span>{group.emoji}</span><span>{group.label}</span>
+              </div>
+              <div>
+                {group.items.map(item => (
+                  <ItemRow key={item.id} item={item} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap}
+                    onToggle={toggleItem} onDelete={deleteItem} onEdit={setEditItem}
+                    onUpdateNote={note => updateNote(item, note)} />
+                ))}
+              </div>
             </div>
-            <div>
-              {group.items.map(item => (
-                <ItemRow key={item.id} item={item} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap}
-                  onToggle={toggleItem} onDelete={deleteItem} onEdit={setEditItem}
-                  onUpdateNote={note => updateNote(item, note)} />
-              ))}
-            </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2">
@@ -1420,19 +1705,14 @@ function ListScreen({ uid, listId, listName, onBack }) {
         </button>
       </div>
 
-      <div className="bg-[#26361F] px-4 pt-3 pb-6 flex items-center justify-between">
-        <span className="text-[#F3ECD9] text-[15px]">סה"כ</span>
-        <span className="text-[#F3ECD9] text-xl font-bold tabular-nums">{formatPrice(total)}</span>
-      </div>
-
       {showAdd && (
-        <ItemDialog mode="add" activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
+        <ItemDialog mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
       {editItem && (
-        <ItemDialog mode="edit" item={editItem} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
+        <ItemDialog mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
       )}
       {showBulkAdd && (
-        <BulkAddModal hasAi={hasAi} onInsertMany={insertMany} onClose={() => setShowBulkAdd(false)} />
+        <BulkAddModal categories={categories} hasAi={hasAi} onInsertMany={insertMany} onClose={() => setShowBulkAdd(false)} />
       )}
 
       {showMenu && (
