@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v0.6.0";
+const VERSION = "v1.0";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -305,7 +305,7 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
     setIsResolving(true);
     const payload = { items: [q], force: true };
     if (vendorId) payload.vendors = [vendorId];
-    fns.httpsCallable("resolveItemBarcodes")(payload).then(res => {
+    fns.httpsCallable("resolveItemBarcodes", { timeout: 120000 })(payload).then(res => {
       setIsResolving(false);
       const r = (res.data.results || {})[q];
       setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
@@ -383,6 +383,9 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
         className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
         כל הרשתות
       </button>
+      {isResolving && (
+        <p className="text-xs text-[#A79A7C] text-center py-1">מחפש... בדיקה ראשונה אצל רשת עשויה לקחת עד דקה.</p>
+      )}
 
       {candidates && (
         <div className="border-2 border-[#E3A939]/40 bg-[#FDF6E5] rounded-2xl p-2">
@@ -499,7 +502,7 @@ function ItemDialog({ mode, item, activeProfiles, onInsert, onSave, onClose, sho
       if (bc) { payload[p.vendor] = payload[p.vendor] || []; if (payload[p.vendor].indexOf(bc) === -1) payload[p.vendor].push(bc); }
     });
     if (Object.keys(payload).length === 0) return;
-    fns.httpsCallable("getBasketPrices")({ barcodesByVendor: payload }).then(res => {
+    fns.httpsCallable("getBasketPrices", { timeout: 120000 })({ barcodesByVendor: payload }).then(res => {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
     }).catch(() => {});
@@ -1011,12 +1014,72 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
   );
 }
 
+// A branch list can run into the hundreds for a big chain, so this is a
+// live-filtered dropdown (opens as soon as you start typing) rather than a
+// plain <select> the user has to open separately and scroll through.
+function BranchPicker({ branches, branchId, onPick }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const loading = branches === "loading";
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickAway = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    window.addEventListener("click", onClickAway);
+    return () => window.removeEventListener("click", onClickAway);
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const entries = (branches && !loading)
+    ? Object.entries(branches)
+        .filter(([id, b]) => {
+          if (!q) return true;
+          const hay = ((b.name || "") + " " + (b.address || "") + " " + (b.city || "") + " " + id).toLowerCase();
+          return hay.indexOf(q) !== -1;
+        })
+        .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || "", "he"))
+        .slice(0, 60)
+    : [];
+  const selected = (branches && !loading) ? branches[branchId] : null;
+  const displayValue = open ? query : (selected ? selected.name + (selected.city ? " · " + selected.city : "") : query);
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <div className="relative">
+        <input
+          value={displayValue}
+          onChange={e => { onPick(""); setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          placeholder="חיפוש סניף לפי שם, כתובת, עיר או מספר..."
+          disabled={loading}
+          className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm disabled:bg-[#F7F2E4]"
+        />
+        {loading && <span className="absolute left-3 top-1/2 -translate-y-1/2"><Spinner /></span>}
+      </div>
+      {open && !loading && (
+        <div className="absolute z-10 mt-1 w-full bg-white border border-[#DECBA1] rounded-xl shadow-lg max-h-56 overflow-y-auto">
+          {entries.length === 0 ? (
+            <div className="text-xs text-[#8A7F66] text-center py-3">לא נמצאו סניפים</div>
+          ) : entries.map(([id, b]) => (
+            <button key={id} type="button"
+              onClick={() => { onPick(id); setQuery(""); setOpen(false); }}
+              className="w-full text-right px-3 py-2 text-sm hover:bg-[#FBF4E7] border-b border-[#F0E9D4] last:border-0">
+              <div className="text-[#2B2418]">{b.name}</div>
+              <div className="text-[11px] text-[#A79A7C]">{b.address}{b.city ? ", " + b.city : ""} · סניף {parseInt(id, 10)}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 function SettingsScreen({ uid, onBack }) {
   const [profiles, setProfiles] = useState(null);
   const [branchCache, setBranchCache] = useState({}); // { vendorId: { branchId: {name,address,city} } | "loading" }
   const [addingVendor, setAddingVendor] = useState("");
-  const [branchQuery, setBranchQuery] = useState("");
   const [branchId, setBranchId] = useState("");
   const [ai, setAi] = useState(null);
   const [aiDraft, setAiDraft] = useState({ provider: "", geminiApiKey: "", openaiApiKey: "", anthropicApiKey: "" });
@@ -1059,7 +1122,6 @@ function SettingsScreen({ uid, onBack }) {
   function pickVendor(vendorId) {
     setAddingVendor(vendorId);
     setBranchId("");
-    setBranchQuery("");
     if (vendorId && !branchCache[vendorId]) loadBranches(vendorId);
   }
 
@@ -1070,9 +1132,12 @@ function SettingsScreen({ uid, onBack }) {
     db.collection("users").doc(uid).collection("vendorProfiles").add({
       vendor: addingVendor, branchId, active: true, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
+    // Fire-and-forget: starts warming this branch's catalog in the
+    // background right away, so the first real price search against it
+    // doesn't have to pay for a cold FTP ingest.
+    fns.httpsCallable("prewarmVendorCatalog")({ vendor: addingVendor, branchId }).catch(() => {});
     setAddingVendor("");
     setBranchId("");
-    setBranchQuery("");
   }
   function toggleProfile(p) {
     db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).update({ active: !p.active });
@@ -1094,17 +1159,6 @@ function SettingsScreen({ uid, onBack }) {
   }
 
   const addingBranches = addingVendor ? branchCache[addingVendor] : null;
-  const q = branchQuery.trim().toLowerCase();
-  const branchEntries = addingBranches && addingBranches !== "loading"
-    ? Object.entries(addingBranches)
-        .filter(([id, b]) => {
-          if (!q) return true;
-          const hay = ((b.name || "") + " " + (b.address || "") + " " + (b.city || "") + " " + id).toLowerCase();
-          return hay.indexOf(q) !== -1;
-        })
-        .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || "", "he"))
-    : [];
-
   const activeCount = (profiles || []).filter(p => p.active).length;
 
   return (
@@ -1152,24 +1206,7 @@ function SettingsScreen({ uid, onBack }) {
               {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
             {addingVendor && (
-              addingBranches === "loading" ? (
-                <div className="text-xs text-[#8A7F66] py-1 flex items-center gap-2"><Spinner /> טוען סניפים...</div>
-              ) : (
-                <React.Fragment>
-                  <input value={branchQuery} onChange={e => setBranchQuery(e.target.value)}
-                    placeholder="חיפוש סניף לפי שם, כתובת, עיר או מספר..."
-                    className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-                  <select value={branchId} onChange={e => setBranchId(e.target.value)}
-                    className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
-                    <option value="">
-                      {branchEntries.length > 0 ? `בחירת סניף... (${branchEntries.length})` : "לא נמצאו סניפים"}
-                    </option>
-                    {branchEntries.map(([id, b]) => (
-                      <option key={id} value={id}>{b.name} — {b.address}{b.city ? ", " + b.city : ""} (סניף {parseInt(id, 10)})</option>
-                    ))}
-                  </select>
-                </React.Fragment>
-              )
+              <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
             )}
             <button onClick={addProfile} disabled={!addingVendor || !branchId}
               className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
@@ -1267,7 +1304,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     if (!barcodeKey || activeProfiles.length === 0) { setPriceMap({}); setPromoMap({}); return; }
     const payload = {};
     Object.keys(barcodesByVendor).forEach(v => { payload[v] = Array.from(barcodesByVendor[v]); });
-    fns.httpsCallable("getBasketPrices")({ barcodesByVendor: payload, force: !!force }).then(res => {
+    fns.httpsCallable("getBasketPrices", { timeout: 120000 })({ barcodesByVendor: payload, force: !!force }).then(res => {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
       if (force) setToast("המחירים עודכנו");

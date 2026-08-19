@@ -306,21 +306,32 @@ function decodeXmlBuffer(buf) {
 function normalizeItemName(name) { return String(name || '').trim().toLowerCase().replace(/\s+/g, ' '); }
 function itemNameKey(name) { return require('crypto').createHash('sha1').update(normalizeItemName(name)).digest('hex'); }
 
+// basic-ftp's own client timeout doesn't reliably abort every stuck TLS
+// handshake in a Cloud Run container — an explicit outer race turns a real
+// network hang into a clean rejection instead of the caller waiting up to
+// the full function timeout with no feedback.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error((label || 'operation') + ' timed out after ' + ms + 'ms')), ms)),
+  ]);
+}
+
 async function ftpConnect(vendor) {
   const ftp = require('basic-ftp');
-  const client = new ftp.Client(30000);
-  await client.access({
+  const client = new ftp.Client(20000);
+  await withTimeout(client.access({
     host: FTP_HOST, user: VENDORS[vendor].ftpUser, password: VENDORS[vendor].ftpPassword || '',
     secure: true, secureOptions: { rejectUnauthorized: false },
-  });
-  if (VENDORS[vendor].ftpPath) await client.cd(VENDORS[vendor].ftpPath);
+  }), 20000, 'FTP connect');
+  if (VENDORS[vendor].ftpPath) await withTimeout(client.cd(VENDORS[vendor].ftpPath), 10000, 'FTP cd');
   return client;
 }
 async function ftpDownloadBuffer(client, fileName) {
   const { Writable } = require('stream');
   const chunks = [];
   const sink = new Writable({ write(chunk, enc, cb) { chunks.push(chunk); cb(); } });
-  await client.downloadTo(sink, fileName);
+  await withTimeout(client.downloadTo(sink, fileName), 60000, 'FTP download');
   return Buffer.concat(chunks);
 }
 function parseXmlBuffer(buf, isGz) {
@@ -336,13 +347,15 @@ async function ftpDownloadXmlObject(client, fileEntry) {
 
 function httpGet(url) {
   return new Promise((resolve, reject) => {
-    require('https').get(url, (res) => {
+    const req = require('https').get(url, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) { reject(new Error(`HTTP ${res.statusCode} fetching ${url}`)); res.resume(); return; }
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve(Buffer.concat(chunks)));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(25000, () => { req.destroy(new Error('HTTP request timed out fetching ' + url)); });
   });
 }
 async function shufersalListFiles(catId, storeId) {
@@ -545,7 +558,7 @@ async function ingestVendorBranches(vendor) {
   } else {
     const client = await ftpConnect(vendor);
     try {
-      const list = await client.list();
+      const list = await withTimeout(client.list(), 20000, 'FTP list');
       const storeFiles = list.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
       if (storeFiles.length === 0) return null;
       obj = await ftpDownloadXmlObject(client, storeFiles[0]);
@@ -594,7 +607,7 @@ async function ingestVendorCatalog(vendor, branchId) {
   if (picked.ftp) {
     const client = await ftpConnect(vendor);
     try {
-      const list = await client.list();
+      const list = await withTimeout(client.list(), 20000, 'FTP list');
       const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
       let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
       if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
@@ -623,7 +636,7 @@ async function ingestVendorPromotions(vendor, branchId) {
   if (picked.ftp) {
     const client = await ftpConnect(vendor);
     try {
-      const list = await client.list();
+      const list = await withTimeout(client.list(), 20000, 'FTP list');
       const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
       let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
       if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));
@@ -764,6 +777,21 @@ exports.getVendorBranches = onCall(
     let branches = (snap.data() || {}).branches;
     if (!branches || Object.keys(branches).length === 0) branches = await ingestVendorBranches(vendor);
     return { branches: branches || {} };
+  }
+);
+
+// Fired (without the client waiting on it) right after a vendor+branch is
+// added in Settings, so the first real price search against it doesn't have
+// to pay for a cold catalog ingest — by the time someone opens an item
+// dialog and searches, the branch's catalog is very likely already cached.
+exports.prewarmVendorCatalog = onCall(
+  { timeoutSeconds: 120, memory: '512MiB', region: REGION },
+  async (request) => {
+    requireSignedIn(request);
+    const { vendor, branchId } = request.data || {};
+    if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
+    await ensureFreshCatalog(vendor, String(branchId), false).catch(() => {});
+    return { ok: true };
   }
 );
 
