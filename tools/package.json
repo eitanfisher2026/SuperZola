@@ -1,0 +1,9 @@
+{
+  "name": "superzola-build-tools",
+  "private": true,
+  "description": "Deploy-time JSX precompile for public/app.js — never deployed itself (lives outside public/).",
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-react": "^7.24.0"
+  }
+}

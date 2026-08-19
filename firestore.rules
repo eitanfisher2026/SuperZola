@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function myRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function isAdmin() {
+      return signedIn() && myRole() == 'admin';
+    }
+    function isEditor() {
+      return signedIn() && (myRole() == 'editor' || myRole() == 'admin');
+    }
+
+    // Every user's own profile. The document itself is created server-side
+    // by the onUserCreate auth trigger (functions/index.js) with role:
+    // 'user' — the client never creates it and never writes role, so
+    // there's no client-side privilege field to defend at all. Clients may
+    // only update their own non-role fields (e.g. lastLoginAt, displayName)
+    // once the doc exists; admin can change anything, including role.
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow update: if isAdmin()
+                    || (signedIn() && request.auth.uid == uid
+                        && request.resource.data.role == resource.data.role);
+    }
+
+    // A list and its items belong to exactly one owner. No sharedWith.
+    match /lists/{listId} {
+      allow read, update, delete: if signedIn()
+                                   && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+
+      match /items/{itemId} {
+        allow read, write: if signedIn()
+                            && (get(/databases/$(database)/documents/lists/$(listId)).data.ownerId == request.auth.uid
+                                || isAdmin());
+      }
+    }
+
+    // Shared, editor-managed reference data. Every signed-in user reads it
+    // to render their own lists; only editors/admin can change it.
+    match /categories/{categoryId} {
+      allow read: if signedIn();
+      allow write: if isEditor();
+    }
+    match /vendorCategoryOrder/{vendor} {
+      allow read: if signedIn();
+      allow write: if isEditor();
+    }
+
+    // Vendor/catalog data is server-only — every access goes through a
+    // Cloud Function using the Admin SDK, which bypasses these rules
+    // entirely. No client path ever needs read or write here.
+    match /vendorBranches/{vendor}/{branchId} {
+      allow read, write: if false;
+    }
+    match /catalogRefs/{key} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+    match /catalogs/{key}/items/{barcode} {
+      allow read, write: if false;
+    }
+
+    // AI spend ledger — a user can see their own usage, never edit it.
+    // Cloud Functions (Admin SDK) write it; nested by month so quota checks
+    // read one small document instead of the user's whole history.
+    match /costLedger/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if false;
+      match /months/{month} {
+        allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+        allow write: if false;
+      }
+    }
+  }
+}

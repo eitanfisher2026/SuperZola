@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl" translate="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="google" content="notranslate">
+  <title>SuperZola</title>
+  <meta name="theme-color" content="#2563eb">
+  <link rel="stylesheet" href="styles.css?v=0.1.0">
+  <script>
+    // Boot watchdog: if the app hasn't rendered anything into #root within
+    // BOOT_TIMEOUT_MS, self-heal once (drop any cached service worker/cache,
+    // reload) before falling back to a plain-HTML retry screen. Ported from
+    // Buli, where this replaced "clear your cache" as the only recovery path
+    // a non-technical user had for a blank white screen.
+    (function() {
+      var BOOT_TIMEOUT_MS = 10000;
+      var RETRY_FLAG = 'sz_boot_retry';
+      var handled = false;
+
+      function cleanupAndReload() {
+        var jobs = [];
+        if ('serviceWorker' in navigator) {
+          jobs.push(navigator.serviceWorker.getRegistrations()
+            .then(function(rs) { return Promise.all(rs.map(function(r) { return r.unregister(); })); })
+            .catch(function() {}));
+        }
+        if (window.caches && caches.keys) {
+          jobs.push(caches.keys()
+            .then(function(keys) { return Promise.all(keys.map(function(k) { return caches.delete(k); })); })
+            .catch(function() {}));
+        }
+        Promise.all(jobs).then(function() { location.reload(); }, function() { location.reload(); });
+      }
+
+      function showFallback() {
+        var root = document.getElementById('root');
+        if (!root) return;
+        root.innerHTML =
+          '<div style="min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center;font-family:sans-serif;direction:rtl;">' +
+            '<div style="font-size:40px;">⚠️</div>' +
+            '<div style="font-size:15px;color:#555;max-width:280px;">האפליקציה לא הצליחה להיטען. בדקו את החיבור לאינטרנט ונסו שוב.</div>' +
+            '<button id="szRetryBtn" style="background:#2563eb;color:#fff;border:none;padding:14px 28px;border-radius:16px;font-size:15px;font-weight:600;">נסה שוב</button>' +
+          '</div>';
+        document.getElementById('szRetryBtn').addEventListener('click', function() {
+          try { sessionStorage.removeItem(RETRY_FLAG); } catch(e) {}
+          cleanupAndReload();
+        });
+      }
+
+      window.__szBootFailed = function() {
+        if (handled) return;
+        handled = true;
+        var already = false;
+        try { already = !!sessionStorage.getItem(RETRY_FLAG); } catch(e) {}
+        if (already) { showFallback(); return; }
+        try { sessionStorage.setItem(RETRY_FLAG, '1'); } catch(e) {}
+        cleanupAndReload();
+      };
+
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          var root = document.getElementById('root');
+          var booted = root && root.children && root.children.length > 0;
+          if (!booted) {
+            window.__szBootFailed();
+          } else {
+            try { sessionStorage.removeItem(RETRY_FLAG); } catch(e) {}
+          }
+        }, BOOT_TIMEOUT_MS);
+      });
+    })();
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" onerror="window.__szBootFailed()"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" onerror="window.__szBootFailed()"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" onerror="window.__szBootFailed()"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js" onerror="window.__szBootFailed()"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js" onerror="window.__szBootFailed()"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js" onerror="window.__szBootFailed()"></script>
+  <script src="https://cdn.tailwindcss.com" onerror="window.__szBootFailed()"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="app.compiled.js?v=0.1.0" onerror="window.__szBootFailed()"></script>
+</body>
+</html>
