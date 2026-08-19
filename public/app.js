@@ -6,12 +6,12 @@
     // TODO: replace once the Firebase project exists — copy this block from
     // Project settings → General → Your apps → SDK setup and configuration.
     const FIREBASE_CONFIG = {
-      apiKey: "TODO",
-      authDomain: "TODO.firebaseapp.com",
-      projectId: "TODO",
-      storageBucket: "TODO.firebasestorage.app",
-      messagingSenderId: "TODO",
-      appId: "TODO"
+      apiKey: "AIzaSyAGgVfSLivPF_UPvp_0ZjlFzTmj8sqT-rU",
+      authDomain: "superzola.firebaseapp.com",
+      projectId: "superzola",
+      storageBucket: "superzola.firebasestorage.app",
+      messagingSenderId: "1010693964960",
+      appId: "1:1010693964960:web:423a4f829bc94e8aa235c5"
     };
 
     // ── FIREBASE ──────────────────────────────────────────────────────────────────
