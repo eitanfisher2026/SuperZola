@@ -1,6 +1,6 @@
     const { useState, useEffect } = React;
 
-    const VERSION = "v0.1.0";
+    const VERSION = "v0.2.0";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     // TODO: replace once the Firebase project exists — copy this block from
