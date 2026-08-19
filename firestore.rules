@@ -26,6 +26,14 @@ service cloud.firestore {
       allow update: if isAdmin()
                     || (signedIn() && request.auth.uid == uid
                         && request.resource.data.role == resource.data.role);
+
+      // A user's own tracked vendor+branch pairs for price comparison
+      // (vendor, branchId, active, addedAt). Catalog data itself
+      // (vendorBranches/vendorCatalogs/etc., top-level collections) is
+      // server-only — the client only ever sees it through callables.
+      match /vendorProfiles/{profileId} {
+        allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
+      }
     }
 
     // A list and its items belong to exactly one owner. No sharedWith.
