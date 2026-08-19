@@ -338,7 +338,7 @@ async function ftpDownloadBuffer(client, fileName) {
   const { Writable } = require('stream');
   const chunks = [];
   const sink = new Writable({ write(chunk, enc, cb) { chunks.push(chunk); cb(); } });
-  await withTimeout(client.downloadTo(sink, fileName), 60000, 'FTP download');
+  await withTimeout(client.downloadTo(sink, fileName), 90000, 'FTP download');
   return Buffer.concat(chunks);
 }
 function parseXmlBuffer(buf, isGz) {
@@ -565,7 +565,7 @@ async function ingestVendorBranches(vendor) {
   } else {
     const client = await ftpConnect(vendor);
     try {
-      const list = await withTimeout(client.list(), 20000, 'FTP list');
+      const list = await withTimeout(client.list(), 45000, 'FTP list');
       const storeFiles = list.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
       if (storeFiles.length === 0) return null;
       obj = await ftpDownloadXmlObject(client, storeFiles[0]);
@@ -617,7 +617,7 @@ async function ingestVendorCatalog(vendor, branchId) {
     const client = await ftpConnect(vendor);
     console.log('ingestVendorCatalog: FTP connected', vendor);
     try {
-      const list = await withTimeout(client.list(), 20000, 'FTP list');
+      const list = await withTimeout(client.list(), 45000, 'FTP list');
       console.log('ingestVendorCatalog: FTP list done', vendor, 'fileCount=', list.length);
       const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
       let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
@@ -651,7 +651,7 @@ async function ingestVendorPromotions(vendor, branchId) {
   if (picked.ftp) {
     const client = await ftpConnect(vendor);
     try {
-      const list = await withTimeout(client.list(), 20000, 'FTP list');
+      const list = await withTimeout(client.list(), 45000, 'FTP list');
       const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
       let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
       if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));

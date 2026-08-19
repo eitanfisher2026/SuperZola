@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.1";
+const VERSION = "v1.2";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -329,7 +329,7 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
     setIsResolving(true);
     const payload = { items: [q], force: true };
     if (vendorId) payload.vendors = [vendorId];
-    fns.httpsCallable("resolveItemBarcodes", { timeout: 120000 })(payload).then(res => {
+    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
       setIsResolving(false);
       const r = (res.data.results || {})[q];
       setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
@@ -408,7 +408,7 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
         כל הרשתות
       </button>
       {isResolving && (
-        <p className="text-xs text-[#A79A7C] text-center py-1">מחפש... בדיקה ראשונה אצל רשת עשויה לקחת עד דקה.</p>
+        <p className="text-xs text-[#A79A7C] text-center py-1">מחפש... בדיקה ראשונה אצל רשת עשויה לקחת עד כ-2 דקות.</p>
       )}
 
       {candidates && (
@@ -525,7 +525,7 @@ function ItemDialog({ mode, item, categories, activeProfiles, onInsert, onSave, 
       if (bc) { payload[p.vendor] = payload[p.vendor] || []; if (payload[p.vendor].indexOf(bc) === -1) payload[p.vendor].push(bc); }
     });
     if (Object.keys(payload).length === 0) return;
-    fns.httpsCallable("getBasketPrices", { timeout: 120000 })({ barcodesByVendor: payload }).then(res => {
+    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
     }).catch(() => {});
@@ -1580,7 +1580,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     if (!barcodeKey || activeProfiles.length === 0) { setPriceMap({}); setPromoMap({}); return; }
     const payload = {};
     Object.keys(barcodesByVendor).forEach(v => { payload[v] = Array.from(barcodesByVendor[v]); });
-    fns.httpsCallable("getBasketPrices", { timeout: 120000 })({ barcodesByVendor: payload, force: !!force }).then(res => {
+    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload, force: !!force }).then(res => {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
       if (force) setToast("המחירים עודכנו");
