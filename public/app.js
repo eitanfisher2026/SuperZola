@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.2";
+const VERSION = "v1.3";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -316,8 +316,6 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
   searchScope, setSearchScope, searchQuery, setSearchQuery,
   candidates, setCandidates, isResolving, setIsResolving,
   priceMap, setPriceMap, promoMap, setPromoMap }) {
-  const [confirmingBarcode, setConfirmingBarcode] = useState(null);
-
   const selectScope = (vendorId) => {
     setSearchScope(vendorId);
     if (!searchQuery.trim()) setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
@@ -347,38 +345,41 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
     const searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
     const vendorsToConfirm = searchedVendors.filter(v => c.prices && c.prices[v] != null);
     if (vendorsToConfirm.length === 0) return;
-    setConfirmingBarcode(c.barcode);
-    setIsResolving(true);
-    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).then(() => {
-      setDraft(prev => {
-        const nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
-        vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
-        return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+
+    // Update the screen immediately — everything needed (barcode, name,
+    // price, promo) is already sitting in the search result the user just
+    // tapped. confirmItemBarcode only writes the shared name->barcode
+    // cache other searches read later; it doesn't need to finish before
+    // this item's own price can show.
+    setDraft(prev => {
+      const nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
+      vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+    });
+    setPriceMap(prev => {
+      const next = Object.assign({}, prev);
+      (activeProfiles || []).forEach(p => {
+        if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+        next[p.id] = Object.assign({}, next[p.id]);
+        next[p.id][c.barcode] = c.prices[p.vendor];
       });
-      setPriceMap(prev => {
-        const next = Object.assign({}, prev);
-        (activeProfiles || []).forEach(p => {
-          if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
-          next[p.id] = Object.assign({}, next[p.id]);
-          next[p.id][c.barcode] = c.prices[p.vendor];
-        });
-        return next;
+      return next;
+    });
+    setPromoMap(prev => {
+      const next = Object.assign({}, prev);
+      (activeProfiles || []).forEach(p => {
+        if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+        const promoInfo = c.promoPrices && c.promoPrices[p.vendor];
+        if (!promoInfo) return;
+        next[p.id] = Object.assign({}, next[p.id]);
+        next[p.id][c.barcode] = promoInfo;
       });
-      setPromoMap(prev => {
-        const next = Object.assign({}, prev);
-        (activeProfiles || []).forEach(p => {
-          if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
-          const promoInfo = c.promoPrices && c.promoPrices[p.vendor];
-          if (!promoInfo) return;
-          next[p.id] = Object.assign({}, next[p.id]);
-          next[p.id][c.barcode] = promoInfo;
-        });
-        return next;
-      });
-      setCandidates(null);
-      setConfirmingBarcode(null);
-      setIsResolving(false);
-    }, () => { showToast("שגיאה באישור התאמה"); setConfirmingBarcode(null); setIsResolving(false); });
+      return next;
+    });
+    setCandidates(null);
+
+    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm })
+      .catch(() => showToast("ההתאמה נשמרה לפריט זה, אך לא נשמרה לשימוש עתידי"));
   };
 
   const rows = (activeProfiles || []).map(p => {
@@ -422,13 +423,9 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
               <p className="text-center text-[#A79A7C] text-xs py-4">לא נמצאו התאמות</p>
             ) : candidates.list.map(c => {
               const searchedVendors = candidates.vendors || [];
-              const isConfirming = confirmingBarcode === c.barcode;
               return (
-                <button key={c.barcode} onClick={() => pickCandidate(c)} disabled={!!confirmingBarcode}
-                  className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-[#FBF4E7] border border-[#E5D8B5] disabled:opacity-50 relative">
-                  {isConfirming && (
-                    <div className="absolute inset-0 bg-white/70 rounded-xl flex items-center justify-center"><Spinner /></div>
-                  )}
+                <button key={c.barcode} onClick={() => pickCandidate(c)}
+                  className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-[#FBF4E7] border border-[#E5D8B5] relative">
                   <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
                   <div className="text-xs text-[#A79A7C] mb-1">
                     {c.manufacturer ? "יצרן/מותג: " + c.manufacturer + " · " : ""}ברקוד: {c.barcode}

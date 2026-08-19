@@ -735,20 +735,24 @@ exports.refreshActiveVendorCatalogs = onSchedule(
   }
 );
 
+// Tiers are spaced 100+ apart on purpose — fuzzyMatchCatalogs adds a small
+// (+20 max) bonus for a barcode priced at every searched vendor, and that
+// bonus must never be able to push a weaker match above a stronger one
+// (e.g. a "contains the word" hit at 3 vendors outranking an exact-name hit
+// at 1 vendor). Exact name, then starts-with, then same-lead-word, then
+// "has every query word somewhere", then a loose single-word substring.
 function scoreCatalogName(name, q, qTokens) {
   const nameTokens = name.split(' ').filter(Boolean);
-  if (name === q) return 100;
+  if (name === q) return 1000;
   if (qTokens.length > 1 && !nameTokens.includes(qTokens[0])) return null;
   const overlap = qTokens.filter(t => nameTokens.includes(t)).length;
   if (overlap > 0 && overlap === qTokens.length) {
-    let score = 70;
-    if (nameTokens.slice(0, qTokens.length).join(' ') === q) score += 20;
-    else if (nameTokens[0] === qTokens[0]) score += 10;
-    return score;
+    if (nameTokens.slice(0, qTokens.length).join(' ') === q) return 900;
+    if (nameTokens[0] === qTokens[0]) return 800;
+    return 700;
   }
   if (qTokens.length > 1) return null;
-  if (overlap > 0) return 15 + Math.round((overlap / qTokens.length) * 15);
-  if (name.includes(q) || q.includes(name)) return 15;
+  if (name.includes(q) || q.includes(name)) return 100;
   return null;
 }
 
