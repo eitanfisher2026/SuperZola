@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.14";
+const VERSION = "v1.15";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -35,6 +35,17 @@ function formatRelativeUpdatedAt(ms) {
   if (diffDays === 1) return "אתמול";
   if (diffDays < 7) return `לפני ${diffDays} ימים`;
   return new Date(ms).toLocaleDateString("he-IL");
+}
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+function formatDistance(m) {
+  return m < 1000 ? Math.round(m) + " מ׳" : (m / 1000).toFixed(1) + ' ק"מ';
 }
 
 // Seeded into Firestore (categories collection) the first time it's empty —
@@ -1397,12 +1408,111 @@ function BranchPicker({ branches, branchId, onPick }) {
   );
 }
 
+// Finds branches of the already-selected vendor within a radius of either
+// the browser's geolocation or a geocoded address — a separate mode from
+// BranchPicker's text search, not a replacement (some chains' feeds don't
+// carry coordinates at all, so text search always has to keep working).
+// Address geocoding goes through Nominatim (OpenStreetMap) — free, no API
+// key, no billing risk; browser-side requests identify themselves via the
+// page's own referrer, which is what its usage policy asks for.
+function NearbyBranchPicker({ branches, branchId, onPick }) {
+  const [origin, setOrigin] = useState(null); // { lat, lng } | null
+  const [locating, setLocating] = useState(false);
+  const [addressQuery, setAddressQuery] = useState("");
+  const [geocoding, setGeocoding] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [radius, setRadius] = useState(2000);
+  const loading = branches === "loading";
+
+  function useMyLocation() {
+    if (!navigator.geolocation) { setErrorMsg("המכשיר לא תומך באיתור מיקום"); return; }
+    setLocating(true);
+    setErrorMsg("");
+    navigator.geolocation.getCurrentPosition(pos => {
+      setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      setLocating(false);
+    }, () => { setLocating(false); setErrorMsg("לא הצלחנו לאתר את המיקום שלך"); }, { timeout: 10000 });
+  }
+
+  function searchAddress() {
+    const q = addressQuery.trim();
+    if (!q) return;
+    setGeocoding(true);
+    setErrorMsg("");
+    fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=il&q=" + encodeURIComponent(q))
+      .then(r => r.json())
+      .then(results => {
+        setGeocoding(false);
+        if (!results || results.length === 0) { setErrorMsg("הכתובת לא נמצאה"); return; }
+        setOrigin({ lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) });
+      }, () => { setGeocoding(false); setErrorMsg("שגיאה בחיפוש הכתובת"); });
+  }
+
+  const withCoords = (branches && !loading) ? Object.entries(branches).filter(([, b]) => b.lat != null && b.lng != null) : [];
+  const results = origin
+    ? withCoords
+        .map(([id, b]) => ({ id, b, dist: haversineMeters(origin.lat, origin.lng, b.lat, b.lng) }))
+        .filter(r => r.dist <= radius)
+        .sort((a, b) => a.dist - b.dist)
+    : [];
+
+  return (
+    <div className="space-y-2">
+      <button type="button" onClick={useMyLocation} disabled={loading || locating}
+        className="w-full border border-[#C7B78E] bg-white rounded-lg px-3 py-2.5 text-sm text-[#2E4A3B] font-medium disabled:opacity-50">
+        {locating ? <Spinner2 /> : "📍 המיקום שלי"}
+      </button>
+      <div className="flex gap-2">
+        <input value={addressQuery} onChange={e => setAddressQuery(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") searchAddress(); }}
+          placeholder="או הקלידו כתובת..."
+          className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+        <button type="button" onClick={searchAddress} disabled={!addressQuery.trim() || geocoding}
+          className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+          {geocoding ? <Spinner /> : "חיפוש"}
+        </button>
+      </div>
+      {errorMsg && <p className="text-xs text-[#B8462F]">{errorMsg}</p>}
+      {origin && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-[#8A7F66] flex-shrink-0">רדיוס חיפוש:</span>
+          <input type="number" min="100" step="100" value={radius}
+            onChange={e => setRadius(Math.max(100, parseInt(e.target.value, 10) || 2000))}
+            className="w-24 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-sm text-center outline-none" />
+          <span className="text-xs text-[#8A7F66]">מטר</span>
+        </div>
+      )}
+      {loading && <div className="flex justify-center py-4"><Spinner2 /></div>}
+      {origin && !loading && withCoords.length === 0 && (
+        <p className="text-xs text-[#A79A7C] text-center py-3">אין נתוני מיקום זמינים לרשת הזו — נסו חיפוש טקסט</p>
+      )}
+      {origin && !loading && withCoords.length > 0 && (
+        <div className="max-h-56 overflow-y-auto space-y-1">
+          {results.length === 0 ? (
+            <p className="text-xs text-[#A79A7C] text-center py-3">אין סניפים ברדיוס שנבחר — נסו להגדיל אותו</p>
+          ) : results.map(r => (
+            <button key={r.id} type="button" onClick={() => onPick(r.id)}
+              className={"w-full text-right rounded-lg px-3 py-2 text-sm border " + (branchId === r.id ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[#2B2418]">{r.b.name}</span>
+                <span className="text-[11px] text-[#8A7F66] flex-shrink-0">{formatDistance(r.dist)}</span>
+              </div>
+              <div className="text-[11px] text-[#A79A7C]">{r.b.address}{r.b.city ? ", " + r.b.city : ""}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 function SettingsScreen({ uid, onBack }) {
   const [profiles, setProfiles] = useState(null);
   const [branchCache, setBranchCache] = useState({}); // { vendorId: { branchId: {name,address,city} } | "loading" }
   const [addingVendor, setAddingVendor] = useState("");
   const [branchId, setBranchId] = useState("");
+  const [pickerMode, setPickerMode] = useState("text"); // "text" | "nearby"
   const [ai, setAi] = useState(null);
   const [aiDraft, setAiDraft] = useState({ provider: "", geminiApiKey: "", openaiApiKey: "", anthropicApiKey: "" });
   const [savingAi, setSavingAi] = useState(false);
@@ -1471,6 +1581,7 @@ function SettingsScreen({ uid, onBack }) {
   function pickVendor(vendorId) {
     setAddingVendor(vendorId);
     setBranchId("");
+    setPickerMode("text");
     if (vendorId && !branchCache[vendorId]) loadBranches(vendorId);
   }
 
@@ -1630,7 +1741,23 @@ function SettingsScreen({ uid, onBack }) {
               {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
             {addingVendor && (
-              <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
+              <React.Fragment>
+                <div className="flex bg-[#F7F2E4] rounded-full p-0.5 w-fit">
+                  <button type="button" onClick={() => setPickerMode("text")}
+                    className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "text" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
+                    חיפוש טקסט
+                  </button>
+                  <button type="button" onClick={() => setPickerMode("nearby")}
+                    className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "nearby" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
+                    📍 סניפים קרובים
+                  </button>
+                </div>
+                {pickerMode === "text" ? (
+                  <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
+                ) : (
+                  <NearbyBranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
+                )}
+              </React.Fragment>
             )}
             <button onClick={addProfile} disabled={!addingVendor || !branchId}
               className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
@@ -1639,8 +1766,9 @@ function SettingsScreen({ uid, onBack }) {
           </div>
         </div>
 
+        {role === "admin" && (
         <div>
-          <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הגדרות AI (להוספה מרובה)</h2>
+          <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הגדרות AI</h2>
           <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
             <select value={aiDraft.provider || ""} onChange={e => setAiDraft(Object.assign({}, aiDraft, { provider: e.target.value }))}
               className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
@@ -1671,6 +1799,7 @@ function SettingsScreen({ uid, onBack }) {
             <p className="text-[11px] text-[#A79A7C]">המפתח נשמר בחשבון שלך בלבד ומשמש להוספה מהירה של פריטים מטקסט חופשי.</p>
           </div>
         </div>
+        )}
 
         {isEditorOrAdmin && (
         <React.Fragment>
@@ -1911,6 +2040,16 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
 // shows — matching/pricing keeps running for it in the background so
 // un-hiding it later doesn't need a fresh search.
 function VendorVisibilityModal({ activeProfiles, hiddenVendorIds, onToggle, onClose }) {
+  const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
+
+  useEffect(() => {
+    fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
+      const map = {};
+      (res.data.timestamps || []).forEach(t => { map[t.id] = t.updatedAt; });
+      setCatalogTimestamps(map);
+    }).catch(() => {});
+  }, []);
+
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות מוצגות</h3>
@@ -1922,12 +2061,15 @@ function VendorVisibilityModal({ activeProfiles, hiddenVendorIds, onToggle, onCl
         {(activeProfiles || []).map(p => {
           const isVisible = hiddenVendorIds.indexOf(p.id) === -1;
           return (
-            <div key={p.id} className="flex items-center justify-between rounded-xl px-3 py-2.5 bg-[#F7F2E4]">
-              <span className="text-sm text-[#2B2418]">{profileLabel(p, activeProfiles)}</span>
-              <button onClick={() => onToggle(p.id)}
-                className={"text-xs font-bold rounded-full px-3 py-1 " + (isVisible ? "text-[#256A3F] bg-[#DDEEDA]" : "text-[#8A7F66] bg-[#EFE4C6]")}>
-                {isVisible ? "מוצג" : "מוסתר"}
-              </button>
+            <div key={p.id} className="rounded-xl px-3 py-2.5 bg-[#F7F2E4]">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[#2B2418]">{profileLabel(p, activeProfiles)}</span>
+                <button onClick={() => onToggle(p.id)}
+                  className={"text-xs font-bold rounded-full px-3 py-1 " + (isVisible ? "text-[#256A3F] bg-[#DDEEDA]" : "text-[#8A7F66] bg-[#EFE4C6]")}>
+                  {isVisible ? "מוצג" : "מוסתר"}
+                </button>
+              </div>
+              <div className="text-[11px] text-[#A79A7C] mt-1">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</div>
             </div>
           );
         })}

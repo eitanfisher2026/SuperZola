@@ -480,10 +480,17 @@ function branchesFromStoresXml(obj) {
     for (const s of asArray(subChain.Stores?.Store)) {
       const id = String(s.StoreID ?? '').padStart(3, '0');
       if (!id || id === '000') continue;
+      // Latitude/Longitude aren't in every chain's feed (some leave them
+      // blank or 0) — null rather than a bogus 0,0 coordinate so "nearby
+      // branches" can skip these instead of showing them at the equator.
+      const lat = parseFloat(s.Latitude);
+      const lng = parseFloat(s.Longitude);
       branches[id] = {
         name: String(s.StoreName ?? '').trim() || `Store ${id}`,
         address: String(s.Address ?? '').replace(/&#x0?[dDaA];/g, '').replace(/[\r\n]+/g, '').trim(),
         city: String(s.City ?? '').trim(),
+        lat: Number.isFinite(lat) && lat !== 0 ? lat : null,
+        lng: Number.isFinite(lng) && lng !== 0 ? lng : null,
       };
     }
   }
@@ -612,7 +619,11 @@ async function ingestVendorBranches(vendor) {
   }
   const branches = branchesFromStoresXml(obj);
   if (Object.keys(branches).length === 0) return null;
-  await db.collection('vendorBranches').doc(vendor).set({ branches, updatedAt: Date.now() });
+  // schemaVersion 2 = branches carry lat/lng — bumping it forces a one-time
+  // re-ingest of anything cached under the old (coordinate-less) schema,
+  // without permanently re-fetching chains whose feed just doesn't have
+  // coordinates at all.
+  await db.collection('vendorBranches').doc(vendor).set({ branches, updatedAt: Date.now(), schemaVersion: 2 });
   return branches;
 }
 
@@ -830,9 +841,10 @@ exports.getVendorBranches = onCall(
     console.log('getVendorBranches: start', vendor);
     if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
     const snap = await db.collection('vendorBranches').doc(vendor).get();
-    let branches = (snap.data() || {}).branches;
-    if (!branches || Object.keys(branches).length === 0) {
-      console.log('getVendorBranches: no cache, ingesting', vendor);
+    const cached = snap.data() || {};
+    let branches = cached.branches;
+    if (!branches || Object.keys(branches).length === 0 || cached.schemaVersion !== 2) {
+      console.log('getVendorBranches: no cache or stale schema, ingesting', vendor);
       branches = await ingestVendorBranches(vendor);
     }
     console.log('getVendorBranches: done', vendor, 'count=', Object.keys(branches || {}).length);
