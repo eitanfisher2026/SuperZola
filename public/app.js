@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.15";
+const VERSION = "v1.16";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1474,12 +1474,17 @@ function NearbyBranchPicker({ branches, branchId, onPick }) {
       </div>
       {errorMsg && <p className="text-xs text-[#B8462F]">{errorMsg}</p>}
       {origin && (
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-[#8A7F66] flex-shrink-0">רדיוס חיפוש:</span>
-          <input type="number" min="100" step="100" value={radius}
-            onChange={e => setRadius(Math.max(100, parseInt(e.target.value, 10) || 2000))}
-            className="w-24 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-sm text-center outline-none" />
-          <span className="text-xs text-[#8A7F66]">מטר</span>
+        <div>
+          <span className="text-xs text-[#8A7F66] block mb-1">רדיוס חיפוש</span>
+          <div className="flex flex-wrap gap-1.5">
+            {[500, 1000, 2000, 5000, 10000].map(r => (
+              <button key={r} type="button" onClick={() => setRadius(r)}
+                className={"text-xs px-3 py-1.5 rounded-full font-medium border " +
+                  (radius === r ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
+                {r < 1000 ? r + " מ׳" : (r / 1000) + ' ק"מ'}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {loading && <div className="flex justify-center py-4"><Spinner2 /></div>}
