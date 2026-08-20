@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.11";
+const VERSION = "v1.12";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -424,15 +424,17 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                   const promoActive = !!(promo && promo.active);
                   const effectivePrice = promoActive ? promo.price : price;
                   const others = priced.filter(e => e.profile.id !== p.id).map(e => (e.promo && e.promo.active) ? e.promo.price : e.price);
-                  const cellClass = !bc ? "text-[#DECBA1]" : !fetched ? "text-[#DECBA1]" : cheapestTextClass(effectivePrice, others);
+                  const known = others.filter(o => o != null);
+                  const isCheapest = fetched && bc && effectivePrice != null && (known.length === 0 || known.every(o => effectivePrice < o));
+                  const cellClass = !bc || !fetched ? "text-[#DECBA1]" : isCheapest ? "text-[#2E7D4F] font-bold" : "text-[#5B5749]";
                   return (
                     <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}>
                       {!bc ? "—" : !fetched ? "…" : price != null ? (
                         <div className="leading-tight">
                           {promoActive ? (
                             <div>
-                              <div className="font-bold">₪{(promo.price * qty).toFixed(2)}*</div>
-                              <div className="text-[10px] text-[#A79A7C]">(₪{(price * qty).toFixed(2)})</div>
+                              <div>₪{(promo.price * qty).toFixed(2)}*</div>
+                              <div className="text-[10px] text-[#A79A7C] font-normal">(₪{(price * qty).toFixed(2)})</div>
                             </div>
                           ) : (
                             <div>
@@ -738,7 +740,10 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
         <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 mb-2 flex items-start justify-between gap-2">
           <div className="text-sm font-medium text-[#2B2418] truncate min-w-0">{itemDisplayName(draft)}</div>
           {!replacing && (
-            <button onClick={startReplace} className="text-xs text-[#B8462F] font-bold flex-shrink-0">🔄 החלפה</button>
+            <button onClick={startReplace} className="text-xs text-[#B8462F] font-bold flex-shrink-0 flex items-center gap-1">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/></svg>
+              החלפה
+            </button>
           )}
         </div>
       )}
