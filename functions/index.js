@@ -852,6 +852,56 @@ exports.getVendorBranches = onCall(
   }
 );
 
+// Geocodes one small batch of a vendor's still-uncoordinated branches via
+// Nominatim (OpenStreetMap) — free, no API key, but its usage policy caps
+// requests at ~1/second, so a full chain (hundreds of branches) has to be
+// walked in batches across several client-driven calls rather than done in
+// one shot. Results are written back into the same vendorBranches doc the
+// branch list already lives in, so once a branch is geocoded every user
+// benefits from it, not just whoever triggered it. A branch that fails to
+// geocode is marked geocodeFailed so it's skipped on future batches instead
+// of being retried (and re-delaying) forever.
+exports.geocodeVendorBranchesBatch = onCall(
+  { timeoutSeconds: 60, memory: '256MiB', region: REGION },
+  async (request) => {
+    requireSignedIn(request);
+    const { vendor } = request.data || {};
+    if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
+    const batchSize = 15;
+    const ref = db.collection('vendorBranches').doc(vendor);
+    const snap = await ref.get();
+    const data = snap.data() || {};
+    const branches = data.branches || {};
+    const ids = Object.keys(branches);
+    const pending = ids.filter(id => branches[id].lat == null && !branches[id].geocodeFailed);
+    const toProcess = pending.slice(0, batchSize);
+
+    for (let i = 0; i < toProcess.length; i++) {
+      const id = toProcess[i];
+      const b = branches[id];
+      const q = [b.address, b.city, 'ישראל'].filter(Boolean).join(', ');
+      try {
+        const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=il&q=' + encodeURIComponent(q), {
+          headers: { 'User-Agent': 'SuperZola/1.0 (https://superzola.web.app)' },
+        });
+        const results = await res.json();
+        if (Array.isArray(results) && results.length > 0) {
+          branches[id] = { ...b, lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) };
+        } else {
+          branches[id] = { ...b, geocodeFailed: true };
+        }
+      } catch (e) {
+        branches[id] = { ...b, geocodeFailed: true };
+      }
+      if (i < toProcess.length - 1) await new Promise(r => setTimeout(r, 1100));
+    }
+
+    if (toProcess.length > 0) await ref.update({ branches });
+    const remaining = ids.filter(id => branches[id].lat == null && !branches[id].geocodeFailed).length;
+    return { processed: toProcess.length, remaining, total: ids.length, branches };
+  }
+);
+
 // Fired (without the client waiting on it) right after a vendor+branch is
 // added in Settings, so the first real price search against it doesn't have
 // to pay for a cold catalog ingest — by the time someone opens an item

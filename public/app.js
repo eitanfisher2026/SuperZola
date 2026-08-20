@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.16";
+const VERSION = "v1.17";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1415,14 +1415,46 @@ function BranchPicker({ branches, branchId, onPick }) {
 // Address geocoding goes through Nominatim (OpenStreetMap) — free, no API
 // key, no billing risk; browser-side requests identify themselves via the
 // page's own referrer, which is what its usage policy asks for.
-function NearbyBranchPicker({ branches, branchId, onPick }) {
+function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUpdated }) {
   const [origin, setOrigin] = useState(null); // { lat, lng } | null
   const [locating, setLocating] = useState(false);
   const [addressQuery, setAddressQuery] = useState("");
   const [geocoding, setGeocoding] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [radius, setRadius] = useState(2000);
+  const [warmingUp, setWarmingUp] = useState(false);
+  const [warmupProgress, setWarmupProgress] = useState(null); // { done, total } | null
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const loading = branches === "loading";
+
+  // Branch coordinates aren't in the vendor's own feed at all (see the
+  // comment below) — this walks the chain's branches through free
+  // OpenStreetMap geocoding a batch at a time (its usage policy caps
+  // requests at ~1/second, so hundreds of branches can take minutes).
+  // Resumable: whatever's already geocoded is cached server-side, so
+  // closing and reopening this picker later just continues where it
+  // left off instead of starting over.
+  async function warmUpCoordinates() {
+    setWarmingUp(true);
+    setErrorMsg("");
+    let keepGoing = true;
+    while (keepGoing && mountedRef.current) {
+      let res;
+      try {
+        res = await fns.httpsCallable("geocodeVendorBranchesBatch", { timeout: 60000 })({ vendor: vendorId });
+      } catch (e) {
+        if (mountedRef.current) { setErrorMsg("שגיאה באיתור מיקומי הסניפים"); setWarmingUp(false); }
+        return;
+      }
+      if (!mountedRef.current) return;
+      const { processed, remaining, total, branches: updated } = res.data;
+      setWarmupProgress({ done: total - remaining, total });
+      if (onBranchesUpdated) onBranchesUpdated(updated);
+      keepGoing = remaining > 0 && processed > 0;
+    }
+    if (mountedRef.current) setWarmingUp(false);
+  }
 
   function useMyLocation() {
     if (!navigator.geolocation) { setErrorMsg("המכשיר לא תומך באיתור מיקום"); return; }
@@ -1448,7 +1480,9 @@ function NearbyBranchPicker({ branches, branchId, onPick }) {
       }, () => { setGeocoding(false); setErrorMsg("שגיאה בחיפוש הכתובת"); });
   }
 
-  const withCoords = (branches && !loading) ? Object.entries(branches).filter(([, b]) => b.lat != null && b.lng != null) : [];
+  const allEntries = (branches && !loading) ? Object.entries(branches) : [];
+  const withCoords = allEntries.filter(([, b]) => b.lat != null && b.lng != null);
+  const needsWarmup = allEntries.length > 0 && withCoords.length < allEntries.length;
   const results = origin
     ? withCoords
         .map(([id, b]) => ({ id, b, dist: haversineMeters(origin.lat, origin.lng, b.lat, b.lng) }))
@@ -1458,6 +1492,19 @@ function NearbyBranchPicker({ branches, branchId, onPick }) {
 
   return (
     <div className="space-y-2">
+      {!loading && needsWarmup && (
+        <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-lg px-3 py-2.5">
+          <p className="text-xs text-[#8A5A15] mb-2">
+            מיקומי הסניפים של הרשת הזו עדיין לא אותרו — פעולה חד־פעמית, אחריה החיפוש יעבוד מיד לכולם.
+          </p>
+          <button type="button" onClick={warmUpCoordinates} disabled={warmingUp}
+            className="w-full bg-[#8A5A15] text-white rounded-lg py-2 text-xs font-bold disabled:opacity-50">
+            {warmingUp
+              ? `מאתר מיקומים... ${warmupProgress ? warmupProgress.done + "/" + warmupProgress.total : ""}`
+              : "📍 איתור מיקומי סניפים"}
+          </button>
+        </div>
+      )}
       <button type="button" onClick={useMyLocation} disabled={loading || locating}
         className="w-full border border-[#C7B78E] bg-white rounded-lg px-3 py-2.5 text-sm text-[#2E4A3B] font-medium disabled:opacity-50">
         {locating ? <Spinner2 /> : "📍 המיקום שלי"}
@@ -1488,8 +1535,8 @@ function NearbyBranchPicker({ branches, branchId, onPick }) {
         </div>
       )}
       {loading && <div className="flex justify-center py-4"><Spinner2 /></div>}
-      {origin && !loading && withCoords.length === 0 && (
-        <p className="text-xs text-[#A79A7C] text-center py-3">אין נתוני מיקום זמינים לרשת הזו — נסו חיפוש טקסט</p>
+      {origin && !loading && withCoords.length === 0 && !needsWarmup && (
+        <p className="text-xs text-[#A79A7C] text-center py-3">לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט</p>
       )}
       {origin && !loading && withCoords.length > 0 && (
         <div className="max-h-56 overflow-y-auto space-y-1">
@@ -1760,7 +1807,8 @@ function SettingsScreen({ uid, onBack }) {
                 {pickerMode === "text" ? (
                   <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
                 ) : (
-                  <NearbyBranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
+                  <NearbyBranchPicker vendorId={addingVendor} branches={addingBranches} branchId={branchId} onPick={setBranchId}
+                    onBranchesUpdated={updated => setBranchCache(prev => Object.assign({}, prev, { [addingVendor]: updated }))} />
                 )}
               </React.Fragment>
             )}
