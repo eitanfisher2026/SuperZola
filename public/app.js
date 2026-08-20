@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.6";
+const VERSION = "v1.7";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -160,6 +160,19 @@ function promoTagPhrase(promo) {
   if (promo.discountRate != null) return "-" + Math.round(promo.discountRate) + "%";
   return "";
 }
+// True only once `active` has stayed true for `delayMs` — lets a search
+// show a plain "מחפש..." for the common (fast, already-warm) case, and only
+// mention a possible longer wait once it's actually taking a while.
+function useDelayedFlag(active, delayMs) {
+  const [long, setLong] = useState(false);
+  useEffect(() => {
+    if (!active) { setLong(false); return; }
+    const t = setTimeout(() => setLong(true), delayMs);
+    return () => clearTimeout(t);
+  }, [active, delayMs]);
+  return long;
+}
+
 function useActiveVendorProfiles(uid) {
   const [profiles, setProfiles] = useState([]);
   useEffect(() => {
@@ -316,6 +329,7 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
   searchScope, setSearchScope, searchQuery, setSearchQuery,
   candidates, setCandidates, isResolving, setIsResolving,
   priceMap, setPriceMap, promoMap, setPromoMap }) {
+  const searchTakingLong = useDelayedFlag(isResolving, 4000);
   const selectScope = (vendorId) => {
     setSearchScope(vendorId);
     if (!searchQuery.trim()) setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
@@ -415,7 +429,9 @@ function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
         כל הרשתות
       </button>
       {isResolving && (
-        <p className="text-xs text-[#A79A7C] text-center py-1">מחפש... בדיקה ראשונה אצל רשת עשויה לקחת עד כ-2 דקות.</p>
+        <p className="text-xs text-[#A79A7C] text-center py-1">
+          {searchTakingLong ? "עדיין מחפש — ברשתות חדשות זה לוקח קצת יותר זמן." : "מחפש..."}
+        </p>
       )}
 
       {candidates && (
@@ -908,6 +924,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
+  const searchTakingLong = useDelayedFlag(isResolving, 4000);
 
   const runSearch = (vendorId, queryOverride) => {
     const q = (queryOverride || searchQuery || draft.name || "").trim();
@@ -1008,7 +1025,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
       )}
 
       {isResolving && (
-        <p className="text-xs text-[#A79A7C] text-center py-2">מחפש... בדיקה ראשונה אצל רשת עשויה לקחת עד כ-2 דקות.</p>
+        <p className="text-xs text-[#A79A7C] text-center py-2">
+          {searchTakingLong ? "עדיין מחפש — ברשתות חדשות זה לוקח קצת יותר זמן." : "מחפש..."}
+        </p>
       )}
 
       {candidates && !isResolving && (
