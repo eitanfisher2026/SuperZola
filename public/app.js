@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.7";
+const VERSION = "v1.8";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -102,24 +102,6 @@ function vendorLabel(id) {
 }
 function itemVendorBarcode(item, vendorId) {
   return (item.barcodes && item.barcodes[vendorId]) || null;
-}
-function itemHasAnyBarcode(item) {
-  return !!(item.barcodes && Object.keys(item.barcodes).length > 0);
-}
-function itemHasMixedVendorMatches(item, relevantVendorIds) {
-  const barcodes = item.barcodes || {};
-  const vendorIds = relevantVendorIds || Object.keys(barcodes);
-  const uniq = {};
-  let count = 0;
-  vendorIds.forEach(v => {
-    const raw = barcodes[v];
-    if (!raw) return;
-    const bc = String(raw).trim();
-    if (!bc || uniq[bc]) return;
-    uniq[bc] = true;
-    count++;
-  });
-  return count > 1;
 }
 function profileLabel(profile, allProfiles) {
   let label = vendorLabel(profile.vendor);
@@ -321,387 +303,6 @@ function SignInScreen() {
         התחברות עם Google
       </button>
     </div>
-  );
-}
-
-// ── VENDOR MATCH PANEL (search + confirm a product across active vendors) ────
-function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
-  searchScope, setSearchScope, searchQuery, setSearchQuery,
-  candidates, setCandidates, isResolving, setIsResolving,
-  priceMap, setPriceMap, promoMap, setPromoMap }) {
-  const searchTakingLong = useDelayedFlag(isResolving, 4000);
-  const selectScope = (vendorId) => {
-    setSearchScope(vendorId);
-    if (!searchQuery.trim()) setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
-  };
-
-  const runSearchWith = (vendorId, query) => {
-    const q = (query || "").trim();
-    if (!q) return;
-    setIsResolving(true);
-    const payload = { items: [q], force: true };
-    if (vendorId) payload.vendors = [vendorId];
-    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
-      setIsResolving(false);
-      const r = (res.data.results || {})[q];
-      setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
-    }, () => { setIsResolving(false); showToast("שגיאה בחיפוש"); });
-  };
-  const runSearch = () => runSearchWith(searchScope, searchQuery);
-  const findPriceForVendor = (vendorId) => {
-    const q = (draft.name || "").trim();
-    setSearchScope(vendorId);
-    setSearchQuery(q);
-    runSearchWith(vendorId, q);
-  };
-
-  const pickCandidate = (c) => {
-    const searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
-    const vendorsToConfirm = searchedVendors.filter(v => c.prices && c.prices[v] != null);
-    if (vendorsToConfirm.length === 0) return;
-
-    // Update the screen immediately — everything needed (barcode, name,
-    // price, promo) is already sitting in the search result the user just
-    // tapped. confirmItemBarcode only writes the shared name->barcode
-    // cache other searches read later; it doesn't need to finish before
-    // this item's own price can show.
-    setDraft(prev => {
-      const nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
-      vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
-      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
-    });
-    setPriceMap(prev => {
-      const next = Object.assign({}, prev);
-      (activeProfiles || []).forEach(p => {
-        if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
-        next[p.id] = Object.assign({}, next[p.id]);
-        next[p.id][c.barcode] = c.prices[p.vendor];
-      });
-      return next;
-    });
-    setPromoMap(prev => {
-      const next = Object.assign({}, prev);
-      (activeProfiles || []).forEach(p => {
-        if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
-        const promoInfo = c.promoPrices && c.promoPrices[p.vendor];
-        if (!promoInfo) return;
-        next[p.id] = Object.assign({}, next[p.id]);
-        next[p.id][c.barcode] = promoInfo;
-      });
-      return next;
-    });
-    setCandidates(null);
-    // A vendor-scoped search (tapping a single row's own "מצא מחיר") leaves
-    // searchScope pointed at that vendor — the row display forces the
-    // magnifying-glass icon for as long as that's true, regardless of
-    // whether a price now exists. Clearing it is what actually reveals the
-    // price that was just matched.
-    setSearchScope(null);
-
-    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm })
-      .catch(() => showToast("ההתאמה נשמרה לפריט זה, אך לא נשמרה לשימוש עתידי"));
-  };
-
-  const rows = (activeProfiles || []).map(p => {
-    const bc = draft.barcodes[p.vendor] || null;
-    const vendorPrices = priceMap[p.id];
-    const fetched = !!(bc && vendorPrices && (bc in vendorPrices));
-    const price = fetched ? vendorPrices[bc] : null;
-    const promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
-    const promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
-    return { p, bc, fetched, price, promo, promoActive, effective: promoActive ? promo.price : price };
-  });
-
-  return (
-    <div className="space-y-2">
-      <div className="flex gap-2">
-        <input value={searchQuery} placeholder="שם המוצר לחיפוש" autoFocus
-          onChange={e => setSearchQuery(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") runSearch(); }}
-          className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
-        <button onClick={runSearch} disabled={!searchQuery.trim() || isResolving}
-          className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-          {isResolving ? <Spinner /> : "חיפוש"}
-        </button>
-      </div>
-      <button onClick={() => selectScope(null)}
-        className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
-        כל הרשתות
-      </button>
-      {isResolving && (
-        <p className="text-xs text-[#A79A7C] text-center py-1">
-          {searchTakingLong ? "עדיין מחפש — ברשתות חדשות זה לוקח קצת יותר זמן." : "מחפש..."}
-        </p>
-      )}
-
-      {candidates && (
-        <div className="border-2 border-[#E3A939]/40 bg-[#FDF6E5] rounded-2xl p-2">
-          <div className="flex items-center justify-between mb-1">
-            <div className="text-xs font-semibold text-[#8A7F66]">תוצאות חיפוש</div>
-            <button onClick={() => setCandidates(null)} className="text-[#A79A7C] text-lg leading-none w-6 h-6 flex items-center justify-center flex-shrink-0">✕</button>
-          </div>
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {candidates.list.length === 0 ? (
-              <p className="text-center text-[#A79A7C] text-xs py-4">לא נמצאו התאמות</p>
-            ) : candidates.list.map(c => {
-              const searchedVendors = candidates.vendors || [];
-              return (
-                <button key={c.barcode} onClick={() => pickCandidate(c)}
-                  className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-[#FBF4E7] border border-[#E5D8B5] relative">
-                  <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
-                  <div className="text-xs text-[#A79A7C] mb-1">
-                    {c.manufacturer ? "יצרן/מותג: " + c.manufacturer + " · " : ""}ברקוד: {c.barcode}
-                  </div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {searchedVendors.map(v => {
-                      const price = c.prices ? c.prices[v] : null;
-                      const promo = c.promoPrices ? c.promoPrices[v] : null;
-                      const promoActive = !!(promo && price != null && promo.price < price);
-                      return (
-                        <span key={v} className="text-xs bg-white border border-[#E5D8B5] rounded-full px-2 py-0.5">
-                          {vendorLabel(v)}: {promoActive ? "₪" + promo.price.toFixed(2) + "*" : (price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן")}
-                        </span>
-                      );
-                    })}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-1.5">
-        {rows.map(row => {
-          const others = rows.filter(r => r.p.id !== row.p.id).map(r => r.effective);
-          const textClass = (!row.bc || !row.fetched || row.price == null) ? "text-[#A79A7C]" : cheapestTextClass(row.effective, others);
-          const needsAction = !row.bc || (row.fetched && row.price == null);
-          let statusText;
-          if (needsAction) statusText = null;
-          else if (!row.fetched) statusText = "בודק מחיר...";
-          else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
-          else statusText = "₪" + row.price.toFixed(2);
-          const matchedName = draft.matchedNames[row.p.vendor];
-          return (
-            <button key={row.p.id} onClick={() => {
-              if (needsAction) { findPriceForVendor(row.p.vendor); return; }
-              selectScope(searchScope === row.p.vendor ? null : row.p.vendor);
-            }}
-              className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-[#F0E9D4] text-right " + (searchScope === row.p.vendor ? "bg-[#FDF6E5] ring-1 ring-[#E3A939]/50" : "bg-[#F3ECD9]/60")}>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-[#5B5749]">{profileLabel(row.p, activeProfiles)}</div>
-                {(matchedName || row.bc) && (
-                  <div className="text-[10px] text-[#A79A7C] truncate flex items-center gap-1">
-                    {matchedName && <span>{matchedName}</span>}
-                    {row.bc && <span dir="ltr">{row.bc}</span>}
-                  </div>
-                )}
-              </div>
-              {needsAction || searchScope === row.p.vendor ? (
-                <span className="text-xs flex-shrink-0 font-semibold text-[#2E4A3B] bg-[#E3A939]/25 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
-              ) : (
-                <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ── ITEM DIALOG (add / edit) ─────────────────────────────────────────────────
-function ItemDialog({ mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast }) {
-  const isEdit = mode === "edit";
-  const blankDraft = () => {
-    const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
-    return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
-  };
-  const [draft, setDraft] = useState(() => {
-    if (!isEdit || !item) return blankDraft();
-    return Object.assign({}, blankDraft(), item, {
-      barcodes: Object.assign({}, item.barcodes || {}),
-      matchedNames: Object.assign({}, item.matchedNames || {}),
-    });
-  });
-  const [saving, setSaving] = useState(false);
-  const [savingQuit, setSavingQuit] = useState(false);
-  const pricingEnabled = (activeProfiles || []).length > 0;
-  const [tab, setTab] = useState("details");
-  const [searchScope, setSearchScope] = useState(null);
-  const [searchQuery, setSearchQuery] = useState(isEdit && item ? (item.name || "") : "");
-  const [candidates, setCandidates] = useState(null);
-  const [isResolving, setIsResolving] = useState(false);
-  const [priceMap, setPriceMap] = useState({});
-  const [promoMap, setPromoMap] = useState({});
-
-  useEffect(() => {
-    if (!isEdit || !item || !item.barcodes || Object.keys(item.barcodes).length === 0) return;
-    if (!activeProfiles || activeProfiles.length === 0) return;
-    const payload = {};
-    activeProfiles.forEach(p => {
-      const bc = item.barcodes[p.vendor];
-      if (bc) { payload[p.vendor] = payload[p.vendor] || []; if (payload[p.vendor].indexOf(bc) === -1) payload[p.vendor].push(bc); }
-    });
-    if (Object.keys(payload).length === 0) return;
-    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
-      setPriceMap(res.data.prices || {});
-      setPromoMap(res.data.promoPrices || {});
-    }).catch(() => {});
-    // eslint-disable-next-line
-  }, []);
-
-  const set = (patch) => setDraft(prev => Object.assign({}, prev, patch));
-
-  const toPayload = (d) => ({
-    name: d.name.trim(),
-    category: d.category,
-    categoryEmoji: d.categoryEmoji,
-    quantity: parseFloat(d.quantity) || 1,
-    unit: d.unit,
-    note: d.note.trim(),
-    barcodes: d.barcodes || {},
-    matchedNames: d.matchedNames || {},
-  });
-
-  const doSave = (quitAfter) => {
-    if (!draft.name.trim() || saving) return;
-    setSaving(true);
-    setSavingQuit(!!quitAfter);
-    if (isEdit) {
-      onSave(toPayload(draft));
-      return;
-    }
-    onInsert(toPayload(draft), () => {
-      setSaving(false);
-      if (quitAfter) { onClose(); return; }
-      setDraft(blankDraft());
-      setTab("details");
-      setSearchScope(null);
-      setSearchQuery("");
-      setCandidates(null);
-      setPriceMap({});
-      setPromoMap({});
-    });
-  };
-
-  const showVendorsTab = pricingEnabled && tab === "vendors";
-  const mixedMatch = pricingEnabled && itemHasMixedVendorMatches(draft, activeProfiles.map(p => p.vendor));
-
-  return (
-    <Modal onClose={onClose} disableClose={!isEdit} footer={
-      isEdit ? (
-        <button onClick={() => doSave(true)} disabled={!draft.name.trim() || saving}
-          className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-          {saving ? <Spinner /> : "שמירת שינויים"}
-        </button>
-      ) : (
-        <div className="flex gap-2">
-          <button onClick={() => doSave(false)} disabled={!draft.name.trim() || saving}
-            className="flex-1 bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-            {saving && !savingQuit ? <Spinner /> : "+ הוספה"}
-          </button>
-          <button onClick={() => doSave(true)} disabled={!draft.name.trim() || saving}
-            className="flex-1 py-3 rounded-2xl border border-[#DECBA1] text-[#8A7F66] font-medium text-sm disabled:opacity-40">
-            {saving && savingQuit ? <Spinner /> : "סיום"}
-          </button>
-        </div>
-      )
-    }>
-      <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>
-        {isEdit ? "עריכת פריט" : "הוספת פריט"}
-      </h3>
-
-      {pricingEnabled && (
-        <div className="flex bg-[#F0E9D4] rounded-xl p-1 mb-4">
-          {[["details", "פרטי פריט"], ["vendors", isEdit ? "רשתות" : "בדיקת מחירים"]].map(([key, label]) => (
-            <button key={key} onClick={() => {
-              if (key === "vendors" && !searchQuery.trim() && draft.name.trim()) setSearchQuery(draft.name);
-              setTab(key);
-            }}
-              className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (tab === key ? "bg-white shadow text-[#2E4A3B]" : "text-[#8A7F66]")}>
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div style={{ minHeight: 320 }}>
-        {!showVendorsTab && (
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs text-[#8A7F66] block mb-1">שם</label>
-              <input
-                autoFocus={!isEdit}
-                value={draft.name}
-                onChange={e => set({ name: e.target.value })}
-                className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-xs text-[#8A7F66] block mb-1">כמות</label>
-                <div className="flex items-center gap-1">
-                  <button type="button"
-                    onClick={() => set({ quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })}
-                    className="w-10 h-11 rounded-xl bg-[#EFE4C6] text-[#8A7F66] text-xl font-bold flex items-center justify-center flex-shrink-0">−</button>
-                  <input type="number" min="0.1" step="0.1" value={draft.quantity}
-                    onChange={e => set({ quantity: e.target.value })}
-                    className="w-full min-w-0 border border-[#C7B78E] bg-white rounded-xl px-1 py-3 text-center outline-none" />
-                  <button type="button"
-                    onClick={() => set({ quantity: Math.round(((parseFloat(draft.quantity) || 0) + 1) * 10) / 10 })}
-                    className="w-10 h-11 rounded-xl bg-[#E3A939]/25 text-[#8A5A15] text-xl font-bold flex items-center justify-center flex-shrink-0">+</button>
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-[#8A7F66] block mb-1">יחידה</label>
-                <select value={draft.unit} onChange={e => set({ unit: e.target.value })}
-                  className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none">
-                  {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs text-[#8A7F66] block mb-1">קטגוריה</label>
-              <select
-                value={draft.category}
-                onChange={e => {
-                  const cat = categories.find(c => c.label === e.target.value);
-                  if (cat) set({ category: cat.label, categoryEmoji: cat.emoji });
-                }}
-                className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none"
-              >
-                {categories.slice().sort((a, b) => a.label.localeCompare(b.label, "he")).map(cat => (
-                  <option key={cat.id} value={cat.label}>{cat.emoji} {cat.label}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs text-[#8A7F66] block mb-1">הערה</label>
-              <input value={draft.note} onChange={e => set({ note: e.target.value })} placeholder="אופציונלי"
-                className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
-            </div>
-          </div>
-        )}
-
-        {showVendorsTab && (
-          <div className="space-y-2">
-            <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast || (() => {})}
-              searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
-              candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
-              priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
-            {mixedMatch && (
-              <div className="text-[11px] text-[#8A5A15] bg-[#FDF6E5] border border-[#E3A939]/40 rounded-xl px-3 py-2">
-                ⚠️ הרשתות מותאמות לברקודים שונים — ייתכן שאלו מוצרים שונים
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </Modal>
   );
 }
 
@@ -913,18 +514,28 @@ function BulkAddModal({ categories, hasAi, onInsertMany, onClose }) {
   );
 }
 
-// ── ADD ITEM WIZARD (experimental alternative to ItemDialog's "add" mode) ────
-// Item details, then price matching as its own explicit step instead of a
-// tab — see the "Add Item Flow" proposal. Lives alongside the existing add
-// flow, not in place of it; ItemDialog is untouched.
-function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
+// ── ITEM WIZARD (add + edit) ─────────────────────────────────────────────────
+// Item details first, price matching as its own explicit step — replaces
+// the old tabbed ItemDialog entirely, for both adding and editing.
+//
+// The price step's own behavior is driven by data, not a mode flag: once
+// draft.barcodes has ANY vendor in it (a fresh pick mid-add, or an item
+// being edited that was already matched), it switches from "search openly"
+// to "manage" — a settled summary of what's matched, a scoped search per
+// still-missing vendor only (so a gap-fill can never overwrite a working
+// match), and one explicit "🔄 החלפה" action that clears everything and
+// starts over. See the "Edit Item Flow" proposal for the reasoning.
+function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, setPriceMap, promoMap, setPromoMap }) {
   const [searchQuery, setSearchQuery] = useState(draft.name || "");
   const [candidates, setCandidates] = useState(null);
   const [isResolving, setIsResolving] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
-  const [priceMap, setPriceMap] = useState({});
-  const [promoMap, setPromoMap] = useState({});
   const searchTakingLong = useDelayedFlag(isResolving, 4000);
+
+  const matchedVendorIds = Object.keys(draft.barcodes || {});
+  const hasAnyMatch = matchedVendorIds.length > 0;
+  const missingProfiles = (activeProfiles || []).filter(p => matchedVendorIds.indexOf(p.vendor) === -1);
+  const matchedProductName = hasAnyMatch ? draft.matchedNames[matchedVendorIds[0]] : null;
 
   const runSearch = (vendorId, queryOverride) => {
     const q = (queryOverride || searchQuery || draft.name || "").trim();
@@ -941,7 +552,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
   };
 
   useEffect(() => {
-    runSearch(null, draft.name);
+    if (!hasAnyMatch) runSearch(null, draft.name);
     // eslint-disable-next-line
   }, []);
 
@@ -978,8 +589,16 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
     fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
   };
 
-  const matchedVendorIds = Object.keys(draft.barcodes || {});
-  const missingProfiles = (activeProfiles || []).filter(p => matchedVendorIds.indexOf(p.vendor) === -1);
+  function replaceMatch() {
+    if (!window.confirm("להסיר את ההתאמה הקיימת בכל הרשתות ולחפש מוצר אחר?")) return;
+    setDraft(prev => Object.assign({}, prev, { barcodes: {}, matchedNames: {} }));
+    setPriceMap({});
+    setPromoMap({});
+    setCandidates(null);
+    setSearchQuery(draft.name || "");
+    runSearch(null, draft.name);
+  }
+
   let cheapest = null;
   itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
     const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
@@ -988,22 +607,27 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
 
   return (
     <div>
-      {/* Matched/still-missing status is only meaningful — and only shown —
-          once at least one vendor has actually been matched. Showing "לא
-          נמצא" for every vendor before any search even ran read as an
-          instant wall of failures sitting on top of results that worked. */}
-      {matchedVendorIds.length > 0 && (
+      {hasAnyMatch && (
         <React.Fragment>
           <div className="bg-[#26361F] rounded-xl px-3 py-2.5 mb-2 text-[#F3ECD9] text-sm">
             ✓ הותאם ב-{matchedVendorIds.length} מתוך {(activeProfiles || []).length} רשתות
             {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
           </div>
+          {matchedProductName && (
+            <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 mb-3 flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-[#2B2418] truncate">{matchedProductName}</div>
+                <div className="text-[11px] text-[#5B7A63] mt-0.5">המוצר שהותאם</div>
+              </div>
+              <button onClick={replaceMatch} className="text-xs text-[#B8462F] font-bold flex-shrink-0">🔄 החלפה</button>
+            </div>
+          )}
           {missingProfiles.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-3">
               {missingProfiles.map(p => (
-                <button key={p.id} onClick={() => runSearch(p.vendor)}
-                  className="text-xs bg-[#F0E9D4] text-[#8A7F66] rounded-full px-2.5 py-1 flex items-center gap-1">
-                  {profileLabel(p, activeProfiles)} <span className="underline text-[#5B5749]">חפש שוב</span>
+                <button key={p.id} onClick={() => runSearch(p.vendor)} disabled={isResolving}
+                  className="text-xs bg-[#FBEAE5] text-[#B8462F] rounded-full px-2.5 py-1 flex items-center gap-1 disabled:opacity-50">
+                  {profileLabel(p, activeProfiles)} <span className="underline font-bold">חפש שוב</span>
                 </button>
               ))}
             </div>
@@ -1011,16 +635,18 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
         </React.Fragment>
       )}
 
-      <div className="flex gap-2 mb-2">
-        <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") runSearch(null); }}
-          className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
-        <button onClick={() => runSearch(null)} disabled={!searchQuery.trim() || isResolving}
-          className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-          {isResolving ? <Spinner /> : "חיפוש"}
-        </button>
-      </div>
-      {hasSearched && !isResolving && candidates && (
+      {!hasAnyMatch && (
+        <div className="flex gap-2 mb-2">
+          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") runSearch(null); }}
+            className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
+          <button onClick={() => runSearch(null)} disabled={!searchQuery.trim() || isResolving}
+            className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+            {isResolving ? <Spinner /> : "חיפוש"}
+          </button>
+        </div>
+      )}
+      {!hasAnyMatch && hasSearched && !isResolving && candidates && (
         <p className="text-xs text-[#A79A7C] mb-2">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
       )}
 
@@ -1033,10 +659,11 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
       {candidates && !isResolving && (
         <div className="space-y-2">
           {candidates.list.length === 0 ? (
-            <p className="text-center text-[#A79A7C] text-sm py-6">לא נמצאו התאמות ל"{draft.name}"</p>
+            <p className="text-center text-[#A79A7C] text-sm py-6">
+              {hasAnyMatch ? "לא נמצאה התאמה לרשת החסרה" : `לא נמצאו התאמות ל"${draft.name}"`}
+            </p>
           ) : candidates.list.map(c => {
             const searchedVendors = candidates.vendors || [];
-            const isPicked = Object.values(draft.barcodes || {}).indexOf(c.barcode) !== -1;
             let cheapV = null;
             searchedVendors.forEach(v => {
               const pr = c.prices ? c.prices[v] : null;
@@ -1046,13 +673,13 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
             });
             return (
               <button key={c.barcode} onClick={() => pickCandidate(c)}
-                className={"w-full text-right rounded-xl px-3 py-3 border " + (isPicked ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
+                className="w-full text-right rounded-xl px-3 py-3 bg-white border border-[#E5D8B5] hover:bg-[#FBF4E7]">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
                     <div className="text-[11px] text-[#A79A7C] mt-0.5">ברקוד {c.barcode}</div>
                   </div>
-                  <span className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-[10px] " + (isPicked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
+                  <span className="w-5 h-5 rounded-full border-2 border-[#DECBA1] flex-shrink-0" />
                 </div>
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {searchedVendors.map(v => {
@@ -1073,20 +700,52 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
           })}
         </div>
       )}
+
+      {hasAnyMatch && missingProfiles.length === 0 && !candidates && (
+        <p className="text-xs text-[#A79A7C] text-center py-2">הותאם בכל הרשתות הפעילות ✓</p>
+      )}
     </div>
   );
 }
 
-function AddItemWizard({ categories, activeProfiles, onInsert, onClose, showToast }) {
+function ItemWizard({ mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast }) {
+  const isEdit = mode === "edit";
   const [step, setStep] = useState(1);
   const blankDraft = () => {
     const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
     return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
   };
-  const [draft, setDraft] = useState(blankDraft);
-  const [showNote, setShowNote] = useState(false);
+  const [draft, setDraft] = useState(() => {
+    if (!isEdit || !item) return blankDraft();
+    return Object.assign({}, blankDraft(), item, {
+      barcodes: Object.assign({}, item.barcodes || {}),
+      matchedNames: Object.assign({}, item.matchedNames || {}),
+    });
+  });
+  const [showNote, setShowNote] = useState(isEdit && !!(item && item.note));
   const [saving, setSaving] = useState(false);
+  const [priceMap, setPriceMap] = useState({});
+  const [promoMap, setPromoMap] = useState({});
   const pricingEnabled = (activeProfiles || []).length > 0;
+
+  // Editing an already-matched item: seed real prices once on open so the
+  // step-1 summary and step-2 "manage" view have something to show without
+  // waiting for a search.
+  useEffect(() => {
+    if (!isEdit || !item || !item.barcodes || Object.keys(item.barcodes).length === 0) return;
+    if (!activeProfiles || activeProfiles.length === 0) return;
+    const payload = {};
+    activeProfiles.forEach(p => {
+      const bc = item.barcodes[p.vendor];
+      if (bc) { payload[p.vendor] = payload[p.vendor] || []; if (payload[p.vendor].indexOf(bc) === -1) payload[p.vendor].push(bc); }
+    });
+    if (Object.keys(payload).length === 0) return;
+    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
+      setPriceMap(res.data.prices || {});
+      setPromoMap(res.data.promoPrices || {});
+    }).catch(() => {});
+    // eslint-disable-next-line
+  }, []);
 
   const set = (patch) => setDraft(prev => Object.assign({}, prev, patch));
 
@@ -1099,53 +758,70 @@ function AddItemWizard({ categories, activeProfiles, onInsert, onClose, showToas
   function finish() {
     if (!draft.name.trim() || saving) return;
     setSaving(true);
+    if (isEdit) { onSave(toPayload(draft)); return; }
     onInsert(toPayload(draft), () => { setSaving(false); onClose(); });
   }
 
+  const matchedVendorIds = Object.keys(draft.barcodes || {});
+  let cheapest = null;
+  itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
+    const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
+    if (eff != null && (cheapest === null || eff < cheapest.price)) cheapest = { profile: e.profile, price: eff };
+  });
+
   return (
-    <Modal onClose={onClose} disableClose footer={
+    <Modal onClose={onClose} disableClose={!isEdit} footer={
       step === 1 ? (
-        <div className="space-y-2">
-          {pricingEnabled ? (
-            <button onClick={() => setStep(2)} disabled={!draft.name.trim()}
-              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-              המשך להשוואת מחירים ←
-            </button>
-          ) : (
-            <button onClick={finish} disabled={!draft.name.trim() || saving}
-              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-              {saving ? <Spinner /> : "+ הוספה"}
-            </button>
-          )}
-          {pricingEnabled && (
-            <button onClick={finish} disabled={!draft.name.trim() || saving} className="w-full text-center text-xs text-[#8A7F66] underline">
-              {saving ? "שומר..." : "הוספה בלי השוואת מחירים"}
-            </button>
-          )}
-        </div>
+        isEdit ? (
+          <button onClick={finish} disabled={!draft.name.trim() || saving}
+            className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+            {saving ? <Spinner /> : "שמירת שינויים"}
+          </button>
+        ) : (
+          <div className="space-y-2">
+            {pricingEnabled ? (
+              <button onClick={() => setStep(2)} disabled={!draft.name.trim()}
+                className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+                המשך להשוואת מחירים ←
+              </button>
+            ) : (
+              <button onClick={finish} disabled={!draft.name.trim() || saving}
+                className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+                {saving ? <Spinner /> : "+ הוספה"}
+              </button>
+            )}
+            {pricingEnabled && (
+              <button onClick={finish} disabled={!draft.name.trim() || saving} className="w-full text-center text-xs text-[#8A7F66] underline">
+                {saving ? "שומר..." : "הוספה בלי השוואת מחירים"}
+              </button>
+            )}
+          </div>
+        )
       ) : (
         <button onClick={finish} disabled={!draft.name.trim() || saving}
           className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-          {saving ? <Spinner /> : "סיום והוספה לרשימה"}
+          {saving ? <Spinner /> : (isEdit ? "שמירת שינויים" : "סיום והוספה לרשימה")}
         </button>
       )
     }>
       <div className="flex items-center gap-2 mb-4">
         {step === 2 && <button onClick={() => setStep(1)} className="text-[#2E4A3B] text-lg px-1">›</button>}
         <h3 className="flex-1 text-lg text-center" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>
-          {step === 1 ? "הוספת פריט" : "השוואת מחירים"}
+          {step === 1 ? (isEdit ? "עריכת פריט" : "הוספת פריט") : "השוואת מחירים"}
         </h3>
-        <div className="flex gap-1 flex-shrink-0">
-          <span className={"h-1.5 rounded-full transition-all " + (step === 1 ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
-          <span className={"h-1.5 rounded-full transition-all " + (step === 2 ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
-        </div>
+        {!isEdit ? (
+          <div className="flex gap-1 flex-shrink-0">
+            <span className={"h-1.5 rounded-full transition-all " + (step === 1 ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
+            <span className={"h-1.5 rounded-full transition-all " + (step === 2 ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
+          </div>
+        ) : (step === 2 && <span style={{ width: 20 }} />)}
       </div>
 
       {step === 1 ? (
         <div className="space-y-3">
           <div>
             <label className="text-xs text-[#8A7F66] block mb-1">שם</label>
-            <input autoFocus value={draft.name} onChange={e => set({ name: e.target.value })}
+            <input autoFocus={!isEdit} value={draft.name} onChange={e => set({ name: e.target.value })}
               className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -1192,9 +868,24 @@ function AddItemWizard({ categories, activeProfiles, onInsert, onClose, showToas
           ) : (
             <button onClick={() => setShowNote(true)} className="text-xs text-[#C7B78E]">+ הוספת הערה</button>
           )}
+
+          {isEdit && pricingEnabled && (
+            <div className="pt-2">
+              {matchedVendorIds.length > 0 ? (
+                <div className="bg-[#26361F] rounded-xl px-3 py-2.5 mb-2 text-[#F3ECD9] text-sm">
+                  ✓ הותאם ב-{matchedVendorIds.length} מתוך {(activeProfiles || []).length} רשתות
+                  {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
+                </div>
+              ) : (
+                <p className="text-xs text-[#8A7F66] mb-2">לא הותאם מחיר עדיין</p>
+              )}
+              <button onClick={() => setStep(2)} className="text-xs font-bold text-[#2E4A3B]">→ ניהול השוואת מחירים</button>
+            </div>
+          )}
         </div>
       ) : (
-        <PriceMatchStep draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast} />
+        <PriceMatchStep draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
+          priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
       )}
     </Modal>
   );
@@ -1840,7 +1531,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
-  const [showWizard, setShowWizard] = useState(false); // experimental 2-step add flow — see proposal
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -1997,13 +1687,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
         )}
       </div>
 
-      <button
-        onClick={() => setShowWizard(true)}
-        className="fixed bottom-[136px] left-1/2 -translate-x-1/2 bg-white border border-[#DECBA1] text-[#8A5A15] px-3 py-1.5 rounded-full shadow-sm font-medium text-xs"
-      >
-        ✨ נסה זרימה חדשה להוספת פריט
-      </button>
-
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2">
         {hasAi && (
           <button onClick={() => setShowBulkAdd(true)}
@@ -2020,16 +1703,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
       </div>
 
       {showAdd && (
-        <ItemDialog mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
+        <ItemWizard mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
       {editItem && (
-        <ItemDialog mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
+        <ItemWizard mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
       )}
       {showBulkAdd && (
         <BulkAddModal categories={categories} hasAi={hasAi} onInsertMany={insertMany} onClose={() => setShowBulkAdd(false)} />
-      )}
-      {showWizard && (
-        <AddItemWizard categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowWizard(false)} showToast={setToast} />
       )}
 
       {showMenu && (
