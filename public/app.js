@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.17";
+const VERSION = "v1.18";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1417,7 +1417,6 @@ function BranchPicker({ branches, branchId, onPick }) {
 // page's own referrer, which is what its usage policy asks for.
 function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUpdated }) {
   const [origin, setOrigin] = useState(null); // { lat, lng } | null
-  const [locating, setLocating] = useState(false);
   const [addressQuery, setAddressQuery] = useState("");
   const [geocoding, setGeocoding] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -1454,16 +1453,6 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
       keepGoing = remaining > 0 && processed > 0;
     }
     if (mountedRef.current) setWarmingUp(false);
-  }
-
-  function useMyLocation() {
-    if (!navigator.geolocation) { setErrorMsg("המכשיר לא תומך באיתור מיקום"); return; }
-    setLocating(true);
-    setErrorMsg("");
-    navigator.geolocation.getCurrentPosition(pos => {
-      setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-      setLocating(false);
-    }, () => { setLocating(false); setErrorMsg("לא הצלחנו לאתר את המיקום שלך"); }, { timeout: 10000 });
   }
 
   function searchAddress() {
@@ -1505,14 +1494,10 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
           </button>
         </div>
       )}
-      <button type="button" onClick={useMyLocation} disabled={loading || locating}
-        className="w-full border border-[#C7B78E] bg-white rounded-lg px-3 py-2.5 text-sm text-[#2E4A3B] font-medium disabled:opacity-50">
-        {locating ? <Spinner2 /> : "📍 המיקום שלי"}
-      </button>
       <div className="flex gap-2">
         <input value={addressQuery} onChange={e => setAddressQuery(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") searchAddress(); }}
-          placeholder="או הקלידו כתובת..."
+          placeholder="הקלידו כתובת..." autoFocus
           className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
         <button type="button" onClick={searchAddress} disabled={!addressQuery.trim() || geocoding}
           className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
