@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.20";
+const VERSION = "v1.21";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -28,8 +28,8 @@ function signOut() {
 function formatPrice(n) {
   return "₪" + n.toFixed(2);
 }
-function formatRelativeUpdatedAt(ms) {
-  if (!ms) return "מעולם לא רוענן";
+function formatRelativeUpdatedAt(ms, neverText) {
+  if (!ms) return neverText || "מעולם לא רוענן";
   const diffDays = Math.floor((Date.now() - ms) / 86400000);
   if (diffDays <= 0) return "היום";
   if (diffDays === 1) return "אתמול";
@@ -1583,10 +1583,59 @@ function SettingsScreen({ uid, onBack }) {
   const [confirmRefresh, setConfirmRefresh] = useState(null); // profile or null
   const [refreshingId, setRefreshingId] = useState(null);
   const isEditorOrAdmin = role === "editor" || role === "admin";
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
+  const [canInstall, setCanInstall] = useState(!isInstalled);
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const [allUsers, setAllUsers] = useState(null);
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
   }, [toast]);
+
+  useEffect(() => {
+    function onReady() { setCanInstall(true); }
+    function onDone() { setCanInstall(false); }
+    window.addEventListener("pwa_install_ready", onReady);
+    window.addEventListener("pwa_installed", onDone);
+    return () => {
+      window.removeEventListener("pwa_install_ready", onReady);
+      window.removeEventListener("pwa_installed", onDone);
+    };
+  }, []);
+
+  function installApp() {
+    if (window.__installPrompt) {
+      window.__installPrompt.prompt();
+      window.__installPrompt.userChoice.then(r => {
+        if (r.outcome === "accepted") { setCanInstall(false); window.__installPrompt = null; }
+      });
+    } else {
+      setShowInstallGuide(true);
+    }
+  }
+
+  function shareApp() {
+    const url = "https://superzola.web.app";
+    if (navigator.share) {
+      navigator.share({ title: "SuperZola", text: "נסו את SuperZola — השוואת מחירים חכמה לרשימות קניות 🛒", url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).then(() => setToast("הקישור הועתק! 🔗"), () => setToast(url));
+    }
+  }
+
+  useEffect(() => {
+    if (role !== "admin") return;
+    return db.collection("users").onSnapshot(snap => {
+      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => (b.lastLoginAt?.toMillis?.() || 0) - (a.lastLoginAt?.toMillis?.() || 0));
+      setAllUsers(rows);
+    });
+  }, [role]);
+
+  function changeUserRole(userId, newRole) {
+    db.collection("users").doc(userId).update({ role: newRole }).then(() => setToast("התפקיד עודכן"), () => setToast("שגיאה בעדכון תפקיד"));
+  }
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
@@ -1828,6 +1877,20 @@ function SettingsScreen({ uid, onBack }) {
           </div>
         </div>
 
+        <div>
+          <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>האפליקציה</h2>
+          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+            {canInstall && (
+              <button onClick={installApp} className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
+                <span className="text-lg w-6 text-center">📲</span><span>התקנת אפליקציה</span>
+              </button>
+            )}
+            <button onClick={shareApp} className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
+              <span className="text-lg w-6 text-center">🔗</span><span>שיתוף אפליקציה</span>
+            </button>
+          </div>
+        </div>
+
         {role === "admin" && (
         <div>
           <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הגדרות AI</h2>
@@ -1947,6 +2010,36 @@ function SettingsScreen({ uid, onBack }) {
         </div>
         </React.Fragment>
         )}
+
+        {role === "admin" && (
+          <div>
+            <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול משתמשים</h2>
+            <p className="text-xs text-[#8A7F66] mb-3">כל המשתמשים הרשומים, התפקיד שלהם וזמן ההתחברות האחרון</p>
+            <div className="flex flex-col gap-2">
+              {allUsers === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
+              {allUsers && allUsers.map(u => (
+                <div key={u.id} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-[#2B2418] truncate">{u.displayName || u.email || u.id}</div>
+                      {u.displayName && u.email && <div className="text-[11px] text-[#A79A7C] truncate">{u.email}</div>}
+                    </div>
+                    <select value={u.role || "user"} disabled={u.id === uid}
+                      onChange={e => changeUserRole(u.id, e.target.value)}
+                      className="text-xs border border-[#C7B78E] rounded-lg px-2 py-1.5 bg-white outline-none disabled:opacity-50 flex-shrink-0">
+                      <option value="user">משתמש</option>
+                      <option value="editor">עורך</option>
+                      <option value="admin">מנהל</option>
+                    </select>
+                  </div>
+                  <div className="text-[11px] text-[#A79A7C] mt-1">
+                    התחברות אחרונה: {formatRelativeUpdatedAt(u.lastLoginAt?.toMillis?.(), "מעולם לא התחבר")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {editStoreOrder && (
@@ -1982,6 +2075,31 @@ function SettingsScreen({ uid, onBack }) {
         <ConfirmDialog
           message={`לרענן את קטלוג ${vendorLabel(confirmRefresh.vendor)} — ${branchLabel(confirmRefresh.vendor, confirmRefresh.branchId)}? זו פנייה חיה לרשת ועשויה לקחת עד דקה.`}
           confirmLabel="רענון" onConfirm={() => refreshCatalog(confirmRefresh)} onClose={() => setConfirmRefresh(null)} />
+      )}
+      {/* Fallback for browsers that never fired (or don't support) the
+          native install prompt — iOS Safari gets exact steps since it has
+          no install prompt at all, every other browser gets a generic
+          pointer so the option isn't a dead end. */}
+      {showInstallGuide && (
+        <Modal onClose={() => setShowInstallGuide(false)}>
+          <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוסיפו למסך הבית 📲</h3>
+          <p className="text-xs text-[#8A7F66] text-center mb-4">{isIOS ? "בצעו את הצעדים הבאים בספארי" : "בצעו את הצעדים הבאים בדפדפן"}</p>
+          <div className="space-y-2 mb-5">
+            {(isIOS
+              ? [["לחצו על כפתור השיתוף", "הסמל ↑ בתחתית המסך"], ["גללו ובחרו", '"הוסף למסך הבית"'], ["לחצו \"הוסף\"", "האפליקציה תופיע במסך הבית"]]
+              : [["פתחו את תפריט הדפדפן", "שלוש הנקודות ⋮ למעלה, או תפריט ההגדרות"], ["חפשו", '"התקן אפליקציה" או "הוסף למסך הבית"'], ["אשרו את ההתקנה", "האפליקציה תופיע במסך הבית"]]
+            ).map((step, i) => (
+              <div key={i} className="flex items-center gap-3 bg-[#F7F2E4] rounded-xl px-3 py-2.5">
+                <span className="text-lg w-6 text-center flex-shrink-0 font-bold text-[#2E4A3B]">{i + 1}</span>
+                <div>
+                  <p className="text-sm font-medium text-[#2B2418]">{step[0]}</p>
+                  <p className="text-[11px] text-[#A79A7C]">{step[1]}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => setShowInstallGuide(false)} className="w-full bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm">הבנתי</button>
+        </Modal>
       )}
 
       {toast && <Toast msg={toast} />}
