@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.22";
+const VERSION = "v1.23";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2577,11 +2577,18 @@ function ListScreen({ uid, listId, listName, onBack }) {
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
         <span className="text-[12px] text-[#C9BE9E] flex-shrink-0">{items ? `${items.length} פריטים` : ""}</span>
         {visibleProfiles.length > 0 && (
-          <button onClick={() => setViewMode(viewMode === "list" ? "table" : "list")}
-            className="text-[#F3ECD9] text-base w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0"
-            title={viewMode === "list" ? "תצוגת טבלה" : "תצוגת רשימה"}>
-            {viewMode === "list" ? "📊" : "📋"}
-          </button>
+          <div className="flex bg-white/10 rounded-full p-0.5 flex-shrink-0">
+            <button onClick={() => setViewMode("list")}
+              className={"text-xs px-3 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+                (viewMode !== "table" ? "bg-[#F3ECD9] text-[#26361F]" : "text-[#C9BE9E]")}>
+              רשימה
+            </button>
+            <button onClick={() => setViewMode("table")}
+              className={"text-xs px-3 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+                (viewMode === "table" ? "bg-[#F3ECD9] text-[#26361F]" : "text-[#C9BE9E]")}>
+              טבלה
+            </button>
+          </div>
         )}
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
