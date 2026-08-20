@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.18";
+const VERSION = "v1.19";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1174,7 +1174,7 @@ function ListCard({ list, onOpen, menuOpen, onMenuToggle, onRename, onDuplicate,
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
+function Home({ uid, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [renaming, setRenaming] = useState(null); // list or null
@@ -1286,6 +1286,7 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
         <AppIcon size={30} />
         <div className="text-[17px]" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>SuperZola</div>
         <div className="flex-1" />
+        <button onClick={onOpenHelp} className="text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">ⓘ</button>
         <button onClick={onOpenSettings} className="text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">⚙️</button>
         <button onClick={onSignOut} className="text-[13px] text-[#8A7F66] underline">התנתקות</button>
       </div>
@@ -2664,6 +2665,85 @@ function ListScreen({ uid, listId, listName, onBack }) {
   );
 }
 
+// ── HELP ──────────────────────────────────────────────────────────────────────
+function HelpCard({ icon, title, children }) {
+  return (
+    <div className="bg-white border border-[#E0D4B4] rounded-2xl p-4 flex gap-3">
+      <div className="w-10 h-10 rounded-full bg-[#F3ECD9] flex items-center justify-center text-lg flex-shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <div className="font-semibold text-[#2B2418] text-sm mb-0.5">{title}</div>
+        <div className="text-[13px] text-[#5B5749] leading-snug">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function HelpScreen({ onBack }) {
+  const [tab, setTab] = useState("setup"); // "setup" | "extra"
+
+  return (
+    <div className="min-h-dvh bg-[#FBF4E7]">
+      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
+        <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
+        <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>עזרה ומדריך</h1>
+      </div>
+
+      <div className="px-4 pt-4 flex justify-center">
+        <div className="flex bg-white border border-[#E0D4B4] rounded-full p-1">
+          <button onClick={() => setTab("setup")}
+            className={"text-sm px-4 py-2 rounded-full font-medium transition " + (tab === "setup" ? "bg-[#2E4A3B] text-white" : "text-[#8A7F66]")}>
+            התחלת עבודה
+          </button>
+          <button onClick={() => setTab("extra")}
+            className={"text-sm px-4 py-2 rounded-full font-medium transition " + (tab === "extra" ? "bg-[#2E4A3B] text-white" : "text-[#8A7F66]")}>
+            יכולות נוספות
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-3">
+        {tab === "setup" ? (
+          <React.Fragment>
+            <HelpCard icon="🏪" title="1. הוספת רשתות וסניפים">
+              בהגדרות (⚙️ במסך הבית) הוסיפו את הסניפים שבהם אתם קונים — חיפוש לפי שם, או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
+            </HelpCard>
+            <HelpCard icon="📝" title="2. יצירת רשימה">
+              במסך הבית לחצו על "+ רשימה חדשה" — הרשימה נפתחת מיד, בלי שם מוקדם. אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
+            </HelpCard>
+            <HelpCard icon="➕" title="3. הוספת פריט">
+              בתוך רשימה, לחצו "+ הוספת פריט" ותנו לו שם, כמות וקטגוריה.
+            </HelpCard>
+            <HelpCard icon="🔍" title="4. התאמת מחיר לפריט">
+              בשלב הבא האפליקציה מחפשת את הפריט בכל רשת פעילה. לפעמים לרשתות שונות יש ברקוד שונה לאותו מוצר — אפשר לחפש ולתקן התאמה לרשת בודדת, בלי לפגוע בהתאמות של הרשתות האחרות.
+            </HelpCard>
+            <HelpCard icon="📊" title="5. תצוגת רשימה מול טבלה">
+              בכל רשימה יש שני מצבי תצוגה, מתחלפים מכפתור בראש המסך: 📋 רשימה — פריט אחר פריט עם המחירים לצדו. 📊 טבלה — כל הפריטים והרשתות יחד כמו גיליון, כולל שורת סיכום.
+            </HelpCard>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            <HelpCard icon="🧮" title="אופטימיזציית קניות">
+              בתפריט הרשימה (☰) — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר.
+            </HelpCard>
+            <HelpCard icon="🏪" title="רשתות מוצגות">
+              מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם.
+            </HelpCard>
+            <HelpCard icon="📤" title="העתק פריטים לרשימה אחרת">
+              בתפריט הרשימה (☰) — בוחרים פריטים מהרשימה הנוכחית ומעתיקים אותם לרשימה קיימת או חדשה.
+            </HelpCard>
+            <HelpCard icon="🔍" title="בדיקת מחיר">
+              במסך הבית — בודקים מחיר של מוצר מול כל הרשתות, בלי להוסיף אותו לאף רשימה.
+            </HelpCard>
+            <HelpCard icon="🏷️" title="מבצעים">
+              תג כתום ליד מחיר מציין מבצע שתלוי בכמות, למשל "2 ב-₪10" — המחיר יתעדכן אוטומטית כשתגיעו לכמות הנדרשת.
+            </HelpCard>
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── APP ───────────────────────────────────────────────────────────────────────
 function App() {
   const [user, setUser] = useState(undefined); // undefined = still resolving
@@ -2698,11 +2778,16 @@ function App() {
     return <SettingsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
   }
 
+  if (screen.view === "help") {
+    return <HelpScreen onBack={() => setScreen({ view: "home" })} />;
+  }
+
   return (
     <Home
       uid={user.uid}
       onOpenList={(id, name) => setScreen({ view: "list", id, name })}
       onOpenSettings={() => setScreen({ view: "settings" })}
+      onOpenHelp={() => setScreen({ view: "help" })}
       onSignOut={signOut}
     />
   );
