@@ -38,6 +38,12 @@ async function requireAdmin(request) {
   const snap = await db.collection('users').doc(request.auth.uid).get();
   if ((snap.data() || {}).role !== 'admin') throw new HttpsError('permission-denied', 'נדרשת הרשאת מנהל.');
 }
+async function requireEditorOrAdmin(request) {
+  requireSignedIn(request);
+  const snap = await db.collection('users').doc(request.auth.uid).get();
+  const role = (snap.data() || {}).role;
+  if (role !== 'admin' && role !== 'editor') throw new HttpsError('permission-denied', 'נדרשת הרשאת עורך.');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI cost tracking — per user, per month, per provider
@@ -842,10 +848,15 @@ exports.prewarmVendorCatalog = onCall(
   { timeoutSeconds: 120, memory: '512MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
-    const { vendor, branchId } = request.data || {};
+    const { vendor, branchId, force } = request.data || {};
     if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
-    await ensureFreshCatalog(vendor, String(branchId), false).catch(() => {});
-    return { ok: true };
+    // A forced refresh is a real, synchronous re-scrape of the vendor's
+    // live feed (not the "warm the cache in the background" default) —
+    // gated to editor/admin so it can't be triggered ad hoc by every user.
+    if (force) await requireEditorOrAdmin(request);
+    await ensureFreshCatalog(vendor, String(branchId), !!force).catch(() => {});
+    const snap = await db.collection('vendorCatalogIndex').doc(docKey(vendor, String(branchId))).get();
+    return { ok: true, updatedAt: (snap.data() || {}).updatedAt || null };
   }
 );
 

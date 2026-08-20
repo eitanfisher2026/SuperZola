@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.13";
+const VERSION = "v1.14";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -27,6 +27,14 @@ function signOut() {
 
 function formatPrice(n) {
   return "₪" + n.toFixed(2);
+}
+function formatRelativeUpdatedAt(ms) {
+  if (!ms) return "מעולם לא רוענן";
+  const diffDays = Math.floor((Date.now() - ms) / 86400000);
+  if (diffDays <= 0) return "היום";
+  if (diffDays === 1) return "אתמול";
+  if (diffDays < 7) return `לפני ${diffDays} ימים`;
+  return new Date(ms).toLocaleDateString("he-IL");
 }
 
 // Seeded into Firestore (categories collection) the first time it's empty —
@@ -545,7 +553,7 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
         {qty ? (
           <span className="text-xs font-medium text-[#8A7F66] bg-[#EFE4C6] px-2 py-0.5 rounded-full flex-shrink-0">{qty}</span>
         ) : null}
-        <button onClick={() => onDelete(item)} className="text-[#C7B78E] text-[13px] px-1 flex-shrink-0">✕</button>
+        <button onClick={() => onDelete(item)} className="text-[#B8462F] text-[13px] px-1 flex-shrink-0">✕</button>
       </div>
 
       {editingNote && (
@@ -1399,6 +1407,11 @@ function SettingsScreen({ uid, onBack }) {
   const [aiDraft, setAiDraft] = useState({ provider: "", geminiApiKey: "", openaiApiKey: "", anthropicApiKey: "" });
   const [savingAi, setSavingAi] = useState(false);
   const [toast, setToast] = useState(null);
+  const [role, setRole] = useState(null);
+  const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
+  const [confirmRefresh, setConfirmRefresh] = useState(null); // profile or null
+  const [refreshingId, setRefreshingId] = useState(null);
+  const isEditorOrAdmin = role === "editor" || role === "admin";
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1411,7 +1424,29 @@ function SettingsScreen({ uid, onBack }) {
     const data = snap.data() || {};
     setAi(data.ai || null);
     if (data.ai) setAiDraft(prev => Object.assign({}, prev, data.ai));
+    setRole(data.role || null);
   }), [uid]);
+
+  function loadCatalogTimestamps() {
+    fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
+      const map = {};
+      (res.data.timestamps || []).forEach(t => { map[t.id] = t.updatedAt; });
+      setCatalogTimestamps(map);
+    }).catch(() => {});
+  }
+  useEffect(() => {
+    if (profiles && profiles.length > 0) loadCatalogTimestamps();
+    // eslint-disable-next-line
+  }, [profiles && profiles.length]);
+
+  function refreshCatalog(p) {
+    setRefreshingId(p.id);
+    fns.httpsCallable("prewarmVendorCatalog", { timeout: 120000 })({ vendor: p.vendor, branchId: p.branchId, force: true }).then(res => {
+      setRefreshingId(null);
+      setCatalogTimestamps(prev => Object.assign({}, prev, { [p.id]: res.data.updatedAt || Date.now() }));
+      setToast("הקטלוג עודכן");
+    }, () => { setRefreshingId(null); setToast("שגיאה ברענון הקטלוג"); });
+  }
 
   function loadBranches(vendorId) {
     setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
@@ -1560,18 +1595,29 @@ function SettingsScreen({ uid, onBack }) {
             {profiles === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
             {profiles && profiles.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו סניפים עדיין</div>}
             {profiles && profiles.map(p => (
-              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 border " +
                 (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0">
-                  <span className="font-semibold">{vendorLabel(p.vendor)}</span>
-                  <span className="text-[#8A7F66]"> — {branchLabel(p.vendor, p.branchId)}</span>
-                </span>
-                <button onClick={() => toggleProfile(p)}
-                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
-                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
-                  {p.active ? "פעיל" : "כבוי"}
-                </button>
-                <button onClick={() => removeProfile(p)} className="text-[#C7B78E] text-sm px-1 flex-shrink-0">✕</button>
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0">
+                    <span className="font-semibold">{vendorLabel(p.vendor)}</span>
+                    <span className="text-[#8A7F66]"> — {branchLabel(p.vendor, p.branchId)}</span>
+                  </span>
+                  <button onClick={() => toggleProfile(p)}
+                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                    {p.active ? "פעיל" : "כבוי"}
+                  </button>
+                  <button onClick={() => removeProfile(p)} className="text-[#B8462F] text-sm px-1 flex-shrink-0">✕</button>
+                </div>
+                <div className="flex items-center justify-between gap-2 mt-1.5">
+                  <span className="text-[11px] text-[#A79A7C]">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</span>
+                  {isEditorOrAdmin && (
+                    <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
+                      className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40 flex-shrink-0">
+                      {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -1626,6 +1672,8 @@ function SettingsScreen({ uid, onBack }) {
           </div>
         </div>
 
+        {isEditorOrAdmin && (
+        <React.Fragment>
         <div>
           <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>קטגוריות</h2>
           <p className="text-xs text-[#8A7F66] mb-3">סדר ברירת המחדל של הקטגוריות ברשימה</p>
@@ -1706,6 +1754,8 @@ function SettingsScreen({ uid, onBack }) {
             </button>
           </div>
         </div>
+        </React.Fragment>
+        )}
       </div>
 
       {editStoreOrder && (
@@ -1736,6 +1786,11 @@ function SettingsScreen({ uid, onBack }) {
       {confirmDeleteCat && (
         <ConfirmDialog message={`למחוק את הקטגוריה "${confirmDeleteCat.label}"?`}
           onConfirm={() => deleteCategory(confirmDeleteCat)} onClose={() => setConfirmDeleteCat(null)} />
+      )}
+      {confirmRefresh && (
+        <ConfirmDialog
+          message={`לרענן את קטלוג ${vendorLabel(confirmRefresh.vendor)} — ${branchLabel(confirmRefresh.vendor, confirmRefresh.branchId)}? זו פנייה חיה לרשת ועשויה לקחת עד דקה.`}
+          confirmLabel="רענון" onConfirm={() => refreshCatalog(confirmRefresh)} onClose={() => setConfirmRefresh(null)} />
       )}
 
       {toast && <Toast msg={toast} />}
@@ -2174,6 +2229,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [confirmDeleteList, setConfirmDeleteList] = useState(false);
+  const [confirmDeleteItem, setConfirmDeleteItem] = useState(null);
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
   const [pricesLoading, setPricesLoading] = useState(false);
@@ -2230,20 +2286,19 @@ function ListScreen({ uid, listId, listName, onBack }) {
     .map(v => v + ":" + Array.from(barcodesByVendor[v]).sort().join(","))
     .join("|");
 
-  function fetchPrices(force) {
+  function fetchPrices() {
     if (!barcodeKey || activeProfiles.length === 0) { setPriceMap({}); setPromoMap({}); return; }
     setPricesLoading(true);
     const payload = {};
     Object.keys(barcodesByVendor).forEach(v => { payload[v] = Array.from(barcodesByVendor[v]); });
-    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload, force: !!force }).then(res => {
+    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
       setPricesLoading(false);
-      if (force) setToast("המחירים עודכנו");
-    }).catch(() => { setPricesLoading(false); if (force) setToast("שגיאה בעדכון מחירים"); });
+    }).catch(() => { setPricesLoading(false); });
   }
 
-  useEffect(() => { fetchPrices(false); }, [barcodeKey, activeProfiles.length]);
+  useEffect(() => { fetchPrices(); }, [barcodeKey, activeProfiles.length]);
 
   function insertItem(payload, done) {
     db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
@@ -2336,7 +2391,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
               <div>
                 {group.items.map(item => (
                   <ItemRow key={item.id} item={item} activeProfiles={visibleProfiles} priceMap={priceMap} promoMap={promoMap}
-                    onDelete={deleteItem} onEdit={setEditItem}
+                    onDelete={setConfirmDeleteItem} onEdit={setEditItem}
                     onUpdateNote={note => updateNote(item, note)} />
                 ))}
               </div>
@@ -2379,12 +2434,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
               <span className="text-lg">✏️</span><span className="text-sm font-medium text-[#2B2418]">שינוי שם</span>
             </button>
             {activeProfiles.length > 0 && (
-              <button onClick={() => { setShowMenu(false); fetchPrices(true); }}
-                className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-                <span className="text-lg">🔄</span><span className="text-sm font-medium text-[#2B2418]">רענון מחירים</span>
-              </button>
-            )}
-            {activeProfiles.length > 0 && (
               <button onClick={() => { setShowMenu(false); setShowVendorVisibility(true); }}
                 className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
                 <span className="text-lg">🏪</span><span className="text-sm font-medium text-[#2B2418]">רשתות מוצגות</span>
@@ -2412,6 +2461,11 @@ function ListScreen({ uid, listId, listName, onBack }) {
       )}
       {confirmDeleteList && (
         <ConfirmDialog message={`למחוק את הרשימה "${list.name}"?`} onConfirm={deleteList} onClose={() => setConfirmDeleteList(false)} />
+      )}
+      {confirmDeleteItem && (
+        <ConfirmDialog message={`למחוק את "${itemDisplayName(confirmDeleteItem)}"?`}
+          onConfirm={() => deleteItem(confirmDeleteItem)}
+          onClose={() => setConfirmDeleteItem(null)} />
       )}
       {showVendorVisibility && (
         <VendorVisibilityModal activeProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
