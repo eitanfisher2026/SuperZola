@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.8";
+const VERSION = "v1.9";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -189,6 +189,11 @@ function AppIcon({ size = 40 }) {
 
 function Spinner() {
   return <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />;
+}
+// Same spirit as Spinner, but for light backgrounds (Spinner's white ring
+// disappears on cream/mustard surfaces).
+function Spinner2() {
+  return <span className="inline-block w-3.5 h-3.5 border-2 border-[#8A7F66]/30 border-t-[#8A7F66] rounded-full animate-spin" />;
 }
 
 function Toast({ msg }) {
@@ -530,12 +535,18 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   const [candidates, setCandidates] = useState(null);
   const [isResolving, setIsResolving] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  // Replacing a wrong match is deliberately non-destructive: opening it
+  // just reveals an editable search box (nothing auto-runs, nothing is
+  // cleared) — the old match only actually gets dropped once a new pick is
+  // confirmed, and cancelling leaves everything exactly as it was.
+  const [replacing, setReplacing] = useState(false);
   const searchTakingLong = useDelayedFlag(isResolving, 4000);
 
   const matchedVendorIds = Object.keys(draft.barcodes || {});
   const hasAnyMatch = matchedVendorIds.length > 0;
-  const missingProfiles = (activeProfiles || []).filter(p => matchedVendorIds.indexOf(p.vendor) === -1);
   const matchedProductName = hasAnyMatch ? draft.matchedNames[matchedVendorIds[0]] : null;
+  const matchedBarcode = hasAnyMatch ? draft.barcodes[matchedVendorIds[0]] : null;
+  const showSearchBox = !hasAnyMatch || replacing;
 
   const runSearch = (vendorId, queryOverride) => {
     const q = (queryOverride || searchQuery || draft.name || "").trim();
@@ -556,17 +567,31 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     // eslint-disable-next-line
   }, []);
 
+  function startReplace() {
+    setReplacing(true);
+    setCandidates(null);
+    setSearchQuery(draft.name || "");
+  }
+  function cancelReplace() {
+    setReplacing(false);
+    setCandidates(null);
+  }
+
   const pickCandidate = (c) => {
     const searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
     const vendorsToConfirm = searchedVendors.filter(v => c.prices && c.prices[v] != null);
     if (vendorsToConfirm.length === 0) return;
+    // Mid-replace, the old match is only actually dropped right here, at
+    // the moment a new one is confirmed — never when "🔄 החלפה" was tapped.
     setDraft(prev => {
-      const nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
+      const baseBarcodes = replacing ? {} : (prev.barcodes || {});
+      const baseNames = replacing ? {} : (prev.matchedNames || {});
+      const nb = Object.assign({}, baseBarcodes), nn = Object.assign({}, baseNames);
       vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
       return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
     });
     setPriceMap(prev => {
-      const next = Object.assign({}, prev);
+      const next = Object.assign({}, replacing ? {} : prev);
       (activeProfiles || []).forEach(p => {
         if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
         next[p.id] = Object.assign({}, next[p.id]);
@@ -575,7 +600,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       return next;
     });
     setPromoMap(prev => {
-      const next = Object.assign({}, prev);
+      const next = Object.assign({}, replacing ? {} : prev);
       (activeProfiles || []).forEach(p => {
         if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
         const promoInfo = c.promoPrices && c.promoPrices[p.vendor];
@@ -586,18 +611,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       return next;
     });
     setCandidates(null);
+    setReplacing(false);
     fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
   };
-
-  function replaceMatch() {
-    if (!window.confirm("להסיר את ההתאמה הקיימת בכל הרשתות ולחפש מוצר אחר?")) return;
-    setDraft(prev => Object.assign({}, prev, { barcodes: {}, matchedNames: {} }));
-    setPriceMap({});
-    setPromoMap({});
-    setCandidates(null);
-    setSearchQuery(draft.name || "");
-    runSearch(null, draft.name);
-  }
 
   let cheapest = null;
   itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
@@ -607,46 +623,35 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
 
   return (
     <div>
-      {hasAnyMatch && (
-        <React.Fragment>
-          <div className="bg-[#26361F] rounded-xl px-3 py-2.5 mb-2 text-[#F3ECD9] text-sm">
-            ✓ הותאם ב-{matchedVendorIds.length} מתוך {(activeProfiles || []).length} רשתות
-            {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
+      {hasAnyMatch && matchedProductName && (
+        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 mb-3 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-[#2B2418] truncate">{matchedProductName}</div>
+            <div className="text-[11px] text-[#A79A7C] mt-0.5" dir="ltr">{matchedBarcode}</div>
           </div>
-          {matchedProductName && (
-            <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 mb-3 flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-[#2B2418] truncate">{matchedProductName}</div>
-                <div className="text-[11px] text-[#5B7A63] mt-0.5">המוצר שהותאם</div>
-              </div>
-              <button onClick={replaceMatch} className="text-xs text-[#B8462F] font-bold flex-shrink-0">🔄 החלפה</button>
-            </div>
+          {!replacing && (
+            <button onClick={startReplace} className="text-xs text-[#B8462F] font-bold flex-shrink-0">🔄 החלפה</button>
           )}
-          {missingProfiles.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {missingProfiles.map(p => (
-                <button key={p.id} onClick={() => runSearch(p.vendor)} disabled={isResolving}
-                  className="text-xs bg-[#FBEAE5] text-[#B8462F] rounded-full px-2.5 py-1 flex items-center gap-1 disabled:opacity-50">
-                  {profileLabel(p, activeProfiles)} <span className="underline font-bold">חפש שוב</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </React.Fragment>
-      )}
-
-      {!hasAnyMatch && (
-        <div className="flex gap-2 mb-2">
-          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") runSearch(null); }}
-            className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
-          <button onClick={() => runSearch(null)} disabled={!searchQuery.trim() || isResolving}
-            className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-            {isResolving ? <Spinner /> : "חיפוש"}
-          </button>
         </div>
       )}
-      {!hasAnyMatch && hasSearched && !isResolving && candidates && (
+
+      {showSearchBox && (
+        <div className="mb-2">
+          <div className="flex gap-2">
+            <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") runSearch(null); }} autoFocus={replacing}
+              className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
+            <button onClick={() => runSearch(null)} disabled={!searchQuery.trim() || isResolving}
+              className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+              {isResolving ? <Spinner /> : "חיפוש"}
+            </button>
+          </div>
+          {replacing && (
+            <button onClick={cancelReplace} className="text-xs text-[#8A7F66] underline mt-1.5">ביטול</button>
+          )}
+        </div>
+      )}
+      {showSearchBox && hasSearched && !isResolving && candidates && (
         <p className="text-xs text-[#A79A7C] mb-2">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
       )}
 
@@ -657,10 +662,10 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       )}
 
       {candidates && !isResolving && (
-        <div className="space-y-2">
+        <div className="space-y-2 mb-3">
           {candidates.list.length === 0 ? (
             <p className="text-center text-[#A79A7C] text-sm py-6">
-              {hasAnyMatch ? "לא נמצאה התאמה לרשת החסרה" : `לא נמצאו התאמות ל"${draft.name}"`}
+              {hasAnyMatch && !replacing ? "לא נמצאה התאמה לרשת החסרה" : `לא נמצאו התאמות ל"${searchQuery || draft.name}"`}
             </p>
           ) : candidates.list.map(c => {
             const searchedVendors = candidates.vendors || [];
@@ -701,8 +706,39 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
         </div>
       )}
 
-      {hasAnyMatch && missingProfiles.length === 0 && !candidates && (
-        <p className="text-xs text-[#A79A7C] text-center py-2">הותאם בכל הרשתות הפעילות ✓</p>
+      {/* One row per active vendor, always up to date — matched vendors show
+          their real price (cheapest highlighted), unmatched ones are the
+          only place a gap-fill search starts from. Hidden while search
+          results are open so the two lists don't compete for attention. */}
+      {hasAnyMatch && !candidates && (
+        <div className="space-y-1.5">
+          {(activeProfiles || []).map(p => {
+            const bc = draft.barcodes[p.vendor];
+            const vendorPrices = priceMap[p.id];
+            const fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+            const price = fetched ? vendorPrices[bc] : null;
+            const promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+            const promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
+            const isCheapest = !!(cheapest && cheapest.profile.id === p.id);
+            if (!bc) {
+              return (
+                <button key={p.id} onClick={() => runSearch(p.vendor)} disabled={isResolving}
+                  className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 bg-[#FBEAE5] disabled:opacity-50">
+                  <span className="text-sm text-[#B8462F]">{profileLabel(p, activeProfiles)}</span>
+                  <span className="text-xs font-bold text-[#B8462F] underline">חפש שוב</span>
+                </button>
+              );
+            }
+            return (
+              <div key={p.id} className={"flex items-center justify-between rounded-xl px-3 py-2.5 " + (isCheapest ? "bg-[#DDEEDA] border border-[#B9D9B0]" : "bg-[#F3ECD9]/60")}>
+                <span className="text-sm text-[#5B5749]">{profileLabel(p, activeProfiles)}</span>
+                <span className={"text-sm font-bold " + (isCheapest ? "text-[#256A3F]" : "text-[#2E4A3B]")}>
+                  {!fetched ? "בודק..." : price == null ? "לא נמכר כאן" : (promoActive ? "₪" + promo.price.toFixed(2) + "*" : "₪" + price.toFixed(2))}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -1537,6 +1573,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [confirmDeleteList, setConfirmDeleteList] = useState(false);
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
+  const [pricesLoading, setPricesLoading] = useState(false);
   const [hasAi, setHasAi] = useState(false);
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
@@ -1575,13 +1612,15 @@ function ListScreen({ uid, listId, listName, onBack }) {
 
   function fetchPrices(force) {
     if (!barcodeKey || activeProfiles.length === 0) { setPriceMap({}); setPromoMap({}); return; }
+    setPricesLoading(true);
     const payload = {};
     Object.keys(barcodesByVendor).forEach(v => { payload[v] = Array.from(barcodesByVendor[v]); });
     fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload, force: !!force }).then(res => {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
+      setPricesLoading(false);
       if (force) setToast("המחירים עודכנו");
-    }).catch(() => { if (force) setToast("שגיאה בעדכון מחירים"); });
+    }).catch(() => { setPricesLoading(false); if (force) setToast("שגיאה בעדכון מחירים"); });
   }
 
   useEffect(() => { fetchPrices(false); }, [barcodeKey, activeProfiles.length]);
@@ -1661,6 +1700,12 @@ function ListScreen({ uid, listId, listName, onBack }) {
         )}
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
+
+      {pricesLoading && activeProfiles.length > 0 && (
+        <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2">
+          <Spinner2 /> טוען מחירים...
+        </div>
+      )}
 
       <div className="flex-1 px-3 pt-3 pb-28">
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
