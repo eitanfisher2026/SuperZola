@@ -329,13 +329,24 @@ async function readAllCatalogItems(key) {
   snap.forEach(d => { items[d.id] = d.data(); });
   return items;
 }
-async function readCatalogItemPrice(key, barcode) {
-  const snap = await db.collection('vendorCatalogs').doc(key).collection('items').doc(barcode).get();
-  return snap.exists ? (snap.data().price ?? null) : null;
-}
-async function readCatalogItemName(key, barcode) {
-  const snap = await db.collection('vendorCatalogs').doc(key).collection('items').doc(barcode).get();
-  return snap.exists ? (snap.data().name || '') : '';
+// One document per item is what keeps a single catalog under Firestore's
+// 1MB doc cap (see writeCatalogItems), but that means looking up N barcodes
+// one-by-one costs N separate round-trips — the more items a list has, the
+// slower opening it gets. getAll() fetches many docs in a single RPC, so
+// this scales with round-trips instead of with barcode count. Chunked well
+// under any practical getAll limit so one huge list can't misbehave.
+async function readCatalogItemsBatch(key, barcodes) {
+  const out = {};
+  if (!barcodes || barcodes.length === 0) return out;
+  const CHUNK = 300;
+  const chunks = [];
+  for (let i = 0; i < barcodes.length; i += CHUNK) chunks.push(barcodes.slice(i, i + CHUNK));
+  await Promise.all(chunks.map(async (chunk) => {
+    const refs = chunk.map(bc => db.collection('vendorCatalogs').doc(key).collection('items').doc(bc));
+    const snaps = await db.getAll(...refs);
+    snaps.forEach((snap, i) => { out[chunk[i]] = snap.exists ? snap.data() : null; });
+  }));
+  return out;
 }
 
 function decodeXmlBuffer(buf) {
@@ -1066,14 +1077,17 @@ exports.getBasketPrices = onCall(
 
     await Promise.all(relevantProfiles.map(async (p) => {
       const dKey = docKey(p.vendor, p.branchId);
-      const promoSnap = await db.collection('vendorPromoPrices').doc(dKey).get();
+      const [promoSnap, itemsByBarcode] = await Promise.all([
+        db.collection('vendorPromoPrices').doc(dKey).get(),
+        readCatalogItemsBatch(dKey, barcodesByVendor[p.vendor]),
+      ]);
       const promoMap = promoSnap.data() || {};
       prices[p.id] = {}; promoPrices[p.id] = {};
-      await Promise.all(barcodesByVendor[p.vendor].map(async (barcode) => {
-        const price = await readCatalogItemPrice(dKey, barcode);
+      barcodesByVendor[p.vendor].forEach((barcode) => {
+        const price = itemsByBarcode[barcode]?.price ?? null;
         prices[p.id][barcode] = price;
         promoPrices[p.id][barcode] = effectivePromoInfo(promoMap[barcode], price);
-      }));
+      });
     }));
     return { prices, promoPrices, profiles: activeProfiles };
   }
@@ -1100,11 +1114,10 @@ exports.getVendorPromotions = onCall(
       const promotions = await promosByBranch[key];
       const barcodes = [...new Set(promotions.flatMap(promo => promo.items.map(i => i.barcode)))];
       const dKey = docKey(p.vendor, p.branchId);
-      const names = {};
-      await Promise.all(barcodes.map(async (bc) => { names[bc] = await readCatalogItemName(dKey, bc); }));
+      const itemsByBarcode = await readCatalogItemsBatch(dKey, barcodes);
       promotionsByProfile[p.id] = promotions.map(promo => ({
         ...promo,
-        items: promo.items.map(item => ({ ...item, name: names[item.barcode] || '' })),
+        items: promo.items.map(item => ({ ...item, name: itemsByBarcode[item.barcode]?.name || '' })),
       }));
     }));
     return { promotionsByProfile, profiles: activeProfiles };
