@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.19";
+const VERSION = "v1.20";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1174,13 +1174,14 @@ function ListCard({ list, onOpen, menuOpen, onMenuToggle, onRename, onDuplicate,
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
+function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [menuOpenId, setMenuOpenId] = useState(null);
   const [renaming, setRenaming] = useState(null); // list or null
   const [confirmDelete, setConfirmDelete] = useState(null); // list or null
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const [toast, setToast] = useState(null);
   const categories = useCategories();
   const activeProfiles = useActiveVendorProfiles(uid);
@@ -1202,6 +1203,11 @@ function Home({ uid, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
     const close = () => setMenuOpenId(null);
     if (menuOpenId) { window.addEventListener("click", close); return () => window.removeEventListener("click", close); }
   }, [menuOpenId]);
+
+  useEffect(() => {
+    const close = () => setShowUserMenu(false);
+    if (showUserMenu) { window.addEventListener("click", close); return () => window.removeEventListener("click", close); }
+  }, [showUserMenu]);
 
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
@@ -1287,8 +1293,25 @@ function Home({ uid, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
         <div className="text-[17px]" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>SuperZola</div>
         <div className="flex-1" />
         <button onClick={onOpenHelp} className="text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">ⓘ</button>
-        <button onClick={onOpenSettings} className="text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">⚙️</button>
-        <button onClick={onSignOut} className="text-[13px] text-[#8A7F66] underline">התנתקות</button>
+        <div className="relative">
+          <button onClick={e => { e.stopPropagation(); setShowUserMenu(v => !v); }}
+            className="w-8 h-8 rounded-full overflow-hidden border border-[#DECBA1] bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0">
+            {photoURL ? <img src={photoURL} alt="" className="w-full h-full object-cover" /> : (displayName ? displayName[0] : "👤")}
+          </button>
+          {showUserMenu && (
+            <div onClick={e => e.stopPropagation()}
+              className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-40 overflow-hidden">
+              <button onClick={() => { setShowUserMenu(false); onOpenSettings(); }}
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
+                <span>⚙️</span><span>הגדרות</span>
+              </button>
+              <button onClick={() => { setShowUserMenu(false); onSignOut(); }}
+                className="w-full text-right px-4 py-3 text-sm text-[#B8462F] hover:bg-[#FBEAE5] flex items-center gap-2 border-t border-[#E5D8B5]">
+                <span>🚪</span><span>התנתקות</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="px-4 pb-4">
@@ -2705,7 +2728,7 @@ function HelpScreen({ onBack }) {
         {tab === "setup" ? (
           <React.Fragment>
             <HelpCard icon="🏪" title="1. הוספת רשתות וסניפים">
-              בהגדרות (⚙️ במסך הבית) הוסיפו את הסניפים שבהם אתם קונים — חיפוש לפי שם, או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
+              לחצו על תמונת המשתמש בפינת מסך הבית ← הגדרות. הוסיפו שם את הסניפים שבהם אתם קונים — חיפוש לפי שם, או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
             </HelpCard>
             <HelpCard icon="📝" title="2. יצירת רשימה">
               במסך הבית לחצו על "+ רשימה חדשה" — הרשימה נפתחת מיד, בלי שם מוקדם. אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
@@ -2785,6 +2808,8 @@ function App() {
   return (
     <Home
       uid={user.uid}
+      photoURL={user.photoURL}
+      displayName={user.displayName}
       onOpenList={(id, name) => setScreen({ view: "list", id, name })}
       onOpenSettings={() => setScreen({ view: "settings" })}
       onOpenHelp={() => setScreen({ view: "help" })}
