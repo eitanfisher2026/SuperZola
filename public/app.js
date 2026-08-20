@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.21";
+const VERSION = "v1.22";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1109,66 +1109,18 @@ function ItemWizard({ mode, item, categories, activeProfiles, onInsert, onSave, 
 }
 
 // ── LIST CARD (home row) ─────────────────────────────────────────────────────
-function ListCard({ list, onOpen, menuOpen, onMenuToggle, onRename, onDuplicate, onMarkDone, onRestore, onDelete }) {
-  const menuBtnRef = useRef(null);
-  const [menuLayout, setMenuLayout] = useState(null);
-
-  const handleMenuToggle = (e) => {
-    if (!menuOpen && menuBtnRef.current) {
-      const rect = menuBtnRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const spaceAbove = rect.top;
-      const upward = spaceBelow < 260 && spaceAbove > spaceBelow;
-      setMenuLayout({
-        openUpward: upward,
-        left: Math.max(8, rect.right - 190),
-        top: upward ? null : rect.bottom + 4,
-        bottom: upward ? window.innerHeight - rect.top + 4 : null,
-      });
-    }
-    onMenuToggle(e);
-  };
-
+// List actions (rename, duplicate, delete) live inside the list itself now
+// (its own ☰ menu) — this is just a tappable row, no per-card menu.
+function ListCard({ list, onOpen }) {
   return (
-    <div className="relative">
-      <div
-        onClick={onOpen}
-        className={"bg-white border rounded-2xl px-4 py-4 flex items-center gap-2 shadow-sm cursor-pointer " +
-          (list.done ? "border-[#E0D4B4]" : "border-[#E0D4B4]")}
-      >
-        <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate " style={{ color: list.done ? "#A79A7C" : "#2B2418", textDecoration: list.done ? "line-through" : "none" }}>
-          {list.name}
-        </span>
-        <button ref={menuBtnRef} onClick={e => { e.stopPropagation(); handleMenuToggle(e); }}
-          className="text-[#C7B78E] text-xl px-1 flex-shrink-0">⋮</button>
-      </div>
-
-      {menuOpen && menuLayout && (
-        <div
-          className="fixed bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-44 overflow-hidden"
-          style={{ left: menuLayout.left, top: menuLayout.top ?? undefined, bottom: menuLayout.bottom ?? undefined }}
-          onClick={e => e.stopPropagation()}
-        >
-          <button onClick={onRename} className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
-            <span>✏️</span><span>שינוי שם</span>
-          </button>
-          <button onClick={onDuplicate} className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
-            <span>📋</span><span>שכפול רשימה</span>
-          </button>
-          {!list.done ? (
-            <button onClick={onMarkDone} className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
-              <span>✅</span><span>סימון כהושלם</span>
-            </button>
-          ) : (
-            <button onClick={onRestore} className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
-              <span>↩️</span><span>החזרה לפעיל</span>
-            </button>
-          )}
-          <button onClick={onDelete} className="w-full text-right px-4 py-3 text-sm text-[#B8462F] hover:bg-[#FBEAE5] flex items-center gap-2 border-t border-[#E5D8B5]">
-            <span>🗑️</span><span>מחיקה</span>
-          </button>
-        </div>
-      )}
+    <div
+      onClick={onOpen}
+      className="bg-white border border-[#E0D4B4] rounded-2xl px-4 py-4 flex items-center gap-2 shadow-sm cursor-pointer"
+    >
+      <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate text-[#2B2418]">
+        {list.name}
+      </span>
+      <span className="text-[#DECBA1] text-lg flex-shrink-0">‹</span>
     </div>
   );
 }
@@ -1176,9 +1128,6 @@ function ListCard({ list, onOpen, menuOpen, onMenuToggle, onRename, onDuplicate,
 // ── HOME ──────────────────────────────────────────────────────────────────────
 function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
   const [lists, setLists] = useState(null);
-  const [menuOpenId, setMenuOpenId] = useState(null);
-  const [renaming, setRenaming] = useState(null); // list or null
-  const [confirmDelete, setConfirmDelete] = useState(null); // list or null
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -1198,11 +1147,6 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
         setLists(rows);
       });
   }, [uid]);
-
-  useEffect(() => {
-    const close = () => setMenuOpenId(null);
-    if (menuOpenId) { window.addEventListener("click", close); return () => window.removeEventListener("click", close); }
-  }, [menuOpenId]);
 
   useEffect(() => {
     const close = () => setShowUserMenu(false);
@@ -1227,63 +1171,10 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
     const ref = await db.collection("lists").add({
       name,
       ownerId: uid,
-      done: false,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     setCreating(false);
     onOpenList(ref.id, name);
-  }
-
-  function renameList(list, name) {
-    db.collection("lists").doc(list.id).update({ name });
-  }
-
-  async function duplicateList(list) {
-    const itemsSnap = await db.collection("lists").doc(list.id).collection("items").get();
-    const newRef = await db.collection("lists").add({
-      name: list.name + " (עותק)",
-      ownerId: uid,
-      done: false,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-    const batch = db.batch();
-    itemsSnap.docs.forEach(d => {
-      const data = d.data();
-      const itemRef = newRef.collection("items").doc();
-      batch.set(itemRef, Object.assign({}, data, { addedAt: firebase.firestore.FieldValue.serverTimestamp() }));
-    });
-    await batch.commit();
-  }
-
-  function markDone(list) { db.collection("lists").doc(list.id).update({ done: true }); }
-  function restoreList(list) { db.collection("lists").doc(list.id).update({ done: false }); }
-
-  async function deleteList(list) {
-    const itemsSnap = await db.collection("lists").doc(list.id).collection("items").get();
-    const batch = db.batch();
-    itemsSnap.docs.forEach(d => batch.delete(d.ref));
-    batch.delete(db.collection("lists").doc(list.id));
-    await batch.commit();
-  }
-
-  const active = (lists || []).filter(l => !l.done);
-  const done = (lists || []).filter(l => l.done);
-
-  function renderCard(list) {
-    return (
-      <ListCard
-        key={list.id}
-        list={list}
-        onOpen={() => onOpenList(list.id, list.name)}
-        menuOpen={menuOpenId === list.id}
-        onMenuToggle={() => setMenuOpenId(menuOpenId === list.id ? null : list.id)}
-        onRename={() => { setMenuOpenId(null); setRenaming(list); }}
-        onDuplicate={() => { setMenuOpenId(null); duplicateList(list); }}
-        onMarkDone={() => { setMenuOpenId(null); markDone(list); }}
-        onRestore={() => { setMenuOpenId(null); restoreList(list); }}
-        onDelete={() => { setMenuOpenId(null); setConfirmDelete(list); }}
-      />
-    );
   }
 
   return (
@@ -1323,7 +1214,9 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
         {lists !== null && lists.length === 0 && (
           <div className="text-[#8A7F66] text-sm py-6 text-center">אין עדיין רשימות. צרו את הראשונה!</div>
         )}
-        {active.map(renderCard)}
+        {(lists || []).map(list => (
+          <ListCard key={list.id} list={list} onOpen={() => onOpenList(list.id, list.name)} />
+        ))}
       </div>
 
       <div className="px-4 mt-4 flex gap-2">
@@ -1344,25 +1237,10 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
         )}
       </div>
 
-      {done.length > 0 && (
-        <div className="px-4 mt-8">
-          <div className="text-xs font-semibold text-[#A79A7C] mb-2 uppercase tracking-wide">הושלמו</div>
-          <div className="flex flex-col gap-2">{done.map(renderCard)}</div>
-        </div>
-      )}
-
       <div className="text-center py-8 text-[11px] text-[#C7B78E]">
         SuperZola {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
       </div>
 
-      {renaming && (
-        <RenameDialog title="שינוי שם הרשימה" initialValue={renaming.name}
-          onSave={name => renameList(renaming, name)} onClose={() => setRenaming(null)} />
-      )}
-      {confirmDelete && (
-        <ConfirmDialog message={`למחוק את הרשימה "${confirmDelete.name}"?`}
-          onConfirm={() => deleteList(confirmDelete)} onClose={() => setConfirmDelete(null)} />
-      )}
       {showCheckPrice && (
         <CheckPriceModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} showToast={setToast} />
       )}
@@ -2129,7 +2007,7 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
     setShowListPicker(true);
     if (myLists === null) {
       db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => !l.done);
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
         setMyLists(rows);
       });
@@ -2155,7 +2033,7 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
     const name = newListName.trim();
     if (!name || inserting) return;
     setInserting(true);
-    db.collection("lists").add({ name, ownerId: uid, done: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+    db.collection("lists").add({ name, ownerId: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
       insertIntoList(ref.id, name);
     }, () => { setInserting(false); showToast("שגיאה ביצירת הרשימה"); });
   }
@@ -2280,7 +2158,7 @@ function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToa
     setStep("dest");
     if (myLists === null) {
       db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => l.id !== sourceListId && !l.done);
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => l.id !== sourceListId);
         rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
         setMyLists(rows);
       });
@@ -2312,7 +2190,7 @@ function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToa
     const name = newListName.trim();
     if (!name || busy) return;
     setBusy(true);
-    db.collection("lists").add({ name, ownerId: uid, done: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+    db.collection("lists").add({ name, ownerId: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
       copyToList(ref.id);
     }, () => { setBusy(false); showToast("שגיאה ביצירת הרשימה"); });
   }
@@ -2446,7 +2324,7 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
       const hideIds = activeProfiles.filter(vp => vp.id !== x.profile.id).map(vp => vp.id);
       return db.collection("lists").add({
         name: list.name + " - " + profileLabel(x.profile, plan.vendors),
-        ownerId: uid, done: false, hiddenVendorIds: hideIds,
+        ownerId: uid, hiddenVendorIds: hideIds,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       }).then(ref => ({ ref, vendorItems: x.vendorItems }));
     })).then(created => {
@@ -2543,7 +2421,7 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
 
 // ── LIST SCREEN ───────────────────────────────────────────────────────────────
 function ListScreen({ uid, listId, listName, onBack }) {
-  const [list, setList] = useState({ name: listName, done: false });
+  const [list, setList] = useState({ name: listName });
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
@@ -2664,6 +2542,23 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }
 
   function renameList(name) { db.collection("lists").doc(listId).update({ name }); }
+  async function duplicateList() {
+    const itemsSnap = await db.collection("lists").doc(listId).collection("items").get();
+    const newRef = await db.collection("lists").add({
+      name: list.name + " (עותק)",
+      ownerId: uid,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    const batch = db.batch();
+    itemsSnap.docs.forEach(d => {
+      const data = d.data();
+      const itemRef = newRef.collection("items").doc();
+      batch.set(itemRef, Object.assign({}, data, { addedAt: firebase.firestore.FieldValue.serverTimestamp() }));
+    });
+    await batch.commit();
+    setShowMenu(false);
+    setToast("הרשימה שוכפלה");
+  }
   async function deleteList() {
     const itemsSnap = await db.collection("lists").doc(listId).collection("items").get();
     const batch = db.batch();
@@ -2750,27 +2645,48 @@ function ListScreen({ uid, listId, listName, onBack }) {
       {showMenu && (
         <Modal onClose={() => setShowMenu(false)}>
           <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>פעולות</h3>
-          <div className="space-y-1">
+
+          <div className="text-[10px] font-semibold text-[#A79A7C] uppercase tracking-wide px-2 pb-1">הרשימה</div>
+          <div className="space-y-1 mb-3">
             <button onClick={() => { setShowMenu(false); setRenaming(true); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">✏️</span><span className="text-sm font-medium text-[#2B2418]">שינוי שם</span>
             </button>
-            {activeProfiles.length > 0 && (
-              <button onClick={() => { setShowMenu(false); setShowVendorVisibility(true); }}
-                className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-                <span className="text-lg">🏪</span><span className="text-sm font-medium text-[#2B2418]">רשתות מוצגות</span>
-              </button>
-            )}
-            {visibleProfiles.length > 0 && (
-              <button onClick={() => { setShowMenu(false); setShowOptimizer(true); }}
-                className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-                <span className="text-lg">🧮</span><span className="text-sm font-medium text-[#2B2418]">אופטימיזציית קניות</span>
-              </button>
-            )}
+            <button onClick={duplicateList}
+              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+              <span className="text-lg">📋</span><span className="text-sm font-medium text-[#2B2418]">שכפול רשימה</span>
+            </button>
+          </div>
+
+          {(activeProfiles.length > 0 || visibleProfiles.length > 0) && (
+            <React.Fragment>
+              <div className="text-[10px] font-semibold text-[#A79A7C] uppercase tracking-wide px-2 pb-1">מחירים והשוואה</div>
+              <div className="space-y-1 mb-3">
+                {activeProfiles.length > 0 && (
+                  <button onClick={() => { setShowMenu(false); setShowVendorVisibility(true); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+                    <span className="text-lg">🏪</span><span className="text-sm font-medium text-[#2B2418]">רשתות מוצגות</span>
+                  </button>
+                )}
+                {visibleProfiles.length > 0 && (
+                  <button onClick={() => { setShowMenu(false); setShowOptimizer(true); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+                    <span className="text-lg">🧮</span><span className="text-sm font-medium text-[#2B2418]">אופטימיזציית קניות</span>
+                  </button>
+                )}
+              </div>
+            </React.Fragment>
+          )}
+
+          <div className="text-[10px] font-semibold text-[#A79A7C] uppercase tracking-wide px-2 pb-1">פריטים</div>
+          <div className="space-y-1 mb-3">
             <button onClick={() => { setShowMenu(false); setShowCopyItems(true); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">📤</span><span className="text-sm font-medium text-[#2B2418]">העתק פריטים לרשימה אחרת</span>
             </button>
+          </div>
+
+          <div className="pt-2 border-t border-[#E5D8B5]">
             <button onClick={() => { setShowMenu(false); setConfirmDeleteList(true); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#FBEAE5] text-[#B8462F]">
               <span className="text-lg">🗑️</span><span className="text-sm font-medium">מחיקת רשימה</span>
@@ -2901,11 +2817,13 @@ function App() {
     }).catch(() => {}); // no-op until the profile doc exists
   }, [user]);
 
-  if (user === undefined) return <Loading />;
-  if (!user) return <SignInScreen />;
-
-  if (screen.view === "list") {
-    return (
+  let content;
+  if (user === undefined) {
+    content = <Loading />;
+  } else if (!user) {
+    content = <SignInScreen />;
+  } else if (screen.view === "list") {
+    content = (
       <ListScreen
         uid={user.uid}
         listId={screen.id}
@@ -2913,26 +2831,33 @@ function App() {
         onBack={() => setScreen({ view: "home" })}
       />
     );
+  } else if (screen.view === "settings") {
+    content = <SettingsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
+  } else if (screen.view === "help") {
+    content = <HelpScreen onBack={() => setScreen({ view: "home" })} />;
+  } else {
+    content = (
+      <Home
+        uid={user.uid}
+        photoURL={user.photoURL}
+        displayName={user.displayName}
+        onOpenList={(id, name) => setScreen({ view: "list", id, name })}
+        onOpenSettings={() => setScreen({ view: "settings" })}
+        onOpenHelp={() => setScreen({ view: "help" })}
+        onSignOut={signOut}
+      />
+    );
   }
 
-  if (screen.view === "settings") {
-    return <SettingsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
-  }
-
-  if (screen.view === "help") {
-    return <HelpScreen onBack={() => setScreen({ view: "home" })} />;
-  }
-
+  // Fixed narrow width made sense for phones, but left laptops/tablets with
+  // a stretched or oddly narrow app — this widens progressively with the
+  // viewport instead (ported from Buli), so wider screens actually get to
+  // use the extra space (most visible in the price comparison table, which
+  // otherwise scrolls horizontally sooner than it needs to).
   return (
-    <Home
-      uid={user.uid}
-      photoURL={user.photoURL}
-      displayName={user.displayName}
-      onOpenList={(id, name) => setScreen({ view: "list", id, name })}
-      onOpenSettings={() => setScreen({ view: "settings" })}
-      onOpenHelp={() => setScreen({ view: "help" })}
-      onSignOut={signOut}
-    />
+    <div className="max-w-md sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl mx-auto min-h-dvh relative">
+      {content}
+    </div>
   );
 }
 
