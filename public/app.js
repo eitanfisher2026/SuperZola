@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.10";
+const VERSION = "v1.11";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -176,6 +176,15 @@ function cheapestTextClass(mine, others) {
   const known = others.filter(o => o != null);
   if (known.length === 0 || known.every(o => mine < o)) return "text-[#2E7D4F]";
   return "text-[#5B5749]";
+}
+// Background+text pair for a price chip/badge (as opposed to a table cell,
+// which only needs cheapestTextClass) — strictly cheaper than every other
+// known price wins green, a tie has no winner.
+function cheapestBadgeClass(mine, others) {
+  if (mine == null) return "bg-[#F7F2E4] text-[#C7B78E]";
+  const known = others.filter(o => o != null);
+  if (known.length === 0 || known.every(o => mine < o)) return "bg-[#DDEEDA] text-[#256A3F] font-bold";
+  return "bg-[#EFE4C6] text-[#5B5749]";
 }
 function promoTagPhrase(promo) {
   if (promo.weighted && promo.discountedPrice != null) return "₪" + promo.discountedPrice.toFixed(2) + ' לק"ג';
@@ -400,11 +409,11 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
             const qty = item.quantity || 1;
             return (
               <tr key={item.id} className="cursor-pointer active:bg-[#FBF4E7]" onClick={() => onEditItem(item)}>
-                <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right " + (item.done ? "line-through text-[#A79A7C]" : "text-[#2B2418]")}>
+                <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right " + (item.done ? "line-through text-[#A79A7C]" : "text-[#B8462F] underline decoration-[#E7A796] underline-offset-2")}>
                   {itemHasMixedVendorMatches(item, activeProfiles.map(p => p.vendor)) && (
-                    <span className="text-[#E3A939] font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>
+                    <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
                   )}
-                  {itemDisplayName(item)}{qty !== 1 && <span className="text-[#A79A7C]"> ({qty})</span>}
+                  {itemDisplayName(item)}{qty !== 1 && <span className="text-[#A79A7C] no-underline"> ({qty})</span>}
                 </td>
                 {activeProfiles.map(p => {
                   const bc = itemVendorBarcode(item, p.vendor);
@@ -426,7 +435,10 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                               <div className="text-[10px] text-[#A79A7C]">(₪{(price * qty).toFixed(2)})</div>
                             </div>
                           ) : (
-                            <div>₪{(price * qty).toFixed(2)}</div>
+                            <div>
+                              <div>₪{(price * qty).toFixed(2)}</div>
+                              {promo && <div className="text-[9px] text-[#B8462F]">🏷️ {promoTagPhrase(promo)}</div>}
+                            </div>
                           )}
                         </div>
                       ) : "אין"}
@@ -476,9 +488,9 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete,
         >✓</button>
 
         <div className="flex-1 min-w-0" onClick={() => onEdit(item)}>
-          <span className={"text-[15px] " + (item.done ? "line-through text-[#A79A7C]" : "text-[#2B2418]")}>
+          <span className={"text-[15px] cursor-pointer " + (item.done ? "line-through text-[#A79A7C]" : "text-[#B8462F] underline decoration-[#E7A796] underline-offset-2")}>
             {itemHasMixedVendorMatches(item, (activeProfiles || []).map(p => p.vendor)) && (
-              <span className="text-[#E3A939] font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>
+              <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
             )}
             {itemDisplayName(item)}
           </span>
@@ -494,10 +506,23 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete,
           {pricedEntries.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap mt-1">
               {pricedEntries.map(e => {
-                const effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
+                const promoActive = !!(e.promo && e.promo.active);
+                const effective = promoActive ? e.promo.price : e.price;
+                const others = pricedEntries.filter(o => o.profile.id !== e.profile.id)
+                  .map(o => (o.promo && o.promo.active) ? o.promo.price : o.price);
                 return (
-                  <span key={e.profile.id} className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-[#EFE4C6] text-[#5B5749] leading-tight">
-                    {profileLabel(e.profile, activeProfiles)}: {e.promo && e.promo.active ? "₪" + e.promo.price.toFixed(2) + "*" : (e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן")}
+                  <span key={e.profile.id} className={"text-[11px] font-semibold px-1.5 py-0.5 rounded leading-tight " + cheapestBadgeClass(effective, others)}>
+                    <span className="flex flex-col items-start">
+                      <span>
+                        {profileLabel(e.profile, activeProfiles)}: {promoActive ? "₪" + e.promo.price.toFixed(2) + "*" : (e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן")}
+                      </span>
+                      {/* A promo that exists but isn't active yet (quantity
+                          hasn't reached minQty) still surfaces as a hint —
+                          buying one more may unlock the price shown here. */}
+                      {e.promo && !promoActive && (
+                        <span className="text-[10px] text-[#B8462F] font-normal">🏷️ {promoTagPhrase(e.promo)}</span>
+                      )}
+                    </span>
                   </span>
                 );
               })}
@@ -759,13 +784,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
             <p className="text-center text-[#A79A7C] text-sm py-6">{`לא נמצאו התאמות ל"${searchQuery || draft.name}"`}</p>
           ) : candidates.list.map(c => {
             const searchedVendors = candidates.vendors || [];
-            let cheapV = null;
-            searchedVendors.forEach(v => {
-              const pr = c.prices ? c.prices[v] : null;
-              const promo = c.promoPrices ? c.promoPrices[v] : null;
-              const eff = (promo && pr != null && promo.price < pr) ? promo.price : pr;
-              if (eff != null && (cheapV === null || eff < cheapV)) cheapV = eff;
-            });
+            const qty = parseFloat(draft.quantity) || 1;
             return (
               <button key={c.barcode} onClick={() => pickCandidate(c)}
                 className="w-full text-right rounded-xl px-3 py-3 bg-white border border-[#E5D8B5] hover:bg-[#FBF4E7]">
@@ -779,13 +798,25 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {searchedVendors.map(v => {
                     const price = c.prices ? c.prices[v] : null;
-                    const promo = c.promoPrices ? c.promoPrices[v] : null;
-                    const promoActive = !!(promo && price != null && promo.price < price);
-                    const eff = promoActive ? promo.price : price;
-                    const isCheap = eff != null && eff === cheapV;
+                    let promo = c.promoPrices ? c.promoPrices[v] : null;
+                    if (promo && price != null && promo.price >= price) promo = null;
+                    const promoActive = !!(promo && qty >= (promo.minQty || 1));
+                    const effective = promoActive ? promo.price : price;
+                    const others = searchedVendors.filter(o => o !== v).map(o => {
+                      const op = c.prices ? c.prices[o] : null;
+                      let opromo = c.promoPrices ? c.promoPrices[o] : null;
+                      if (opromo && op != null && opromo.price >= op) opromo = null;
+                      const oActive = !!(opromo && qty >= (opromo.minQty || 1));
+                      return oActive ? opromo.price : op;
+                    }).filter(x => x != null);
                     return (
-                      <span key={v} className={"text-[11px] rounded px-2 py-0.5 " + (price == null ? "bg-[#F7F2E4] text-[#C7B78E]" : isCheap ? "bg-[#DDEEDA] text-[#256A3F] font-bold" : "bg-[#EFE4C6] text-[#5B5749]")}>
-                        {vendorLabel(v)}: {price != null ? (promoActive ? "₪" + promo.price.toFixed(2) + "*" : "₪" + price.toFixed(2)) : "לא נמכר כאן"}
+                      <span key={v} className={"text-[11px] rounded px-2 py-0.5 " + cheapestBadgeClass(effective, others)}>
+                        <span className="flex flex-col items-start">
+                          <span>{vendorLabel(v)}: {promoActive ? "₪" + promo.price.toFixed(2) + "*" : (price != null ? "₪" + price.toFixed(2) : "לא נמכר כאן")}</span>
+                          {promo && !promoActive && (
+                            <span className="text-[10px] text-[#B8462F] font-normal">🏷️ {promoTagPhrase(promo)}</span>
+                          )}
+                        </span>
                       </span>
                     );
                   })}
@@ -810,7 +841,8 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
             const vendorPrices = priceMap[p.id];
             const fetched = !!(bc && vendorPrices && (bc in vendorPrices));
             const price = fetched ? vendorPrices[bc] : null;
-            const promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+            let promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+            if (promo && price != null && promo.price >= price) promo = null;
             const promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
             const isCheapest = !!(cheapest && cheapest.profile.id === p.id);
             const isScoped = searchScope === p.vendor;
@@ -835,8 +867,13 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                     </div>
                   )}
                 </div>
-                <span className={"text-sm font-bold flex-shrink-0 " + (isCheapest ? "text-[#256A3F]" : "text-[#2E4A3B]")}>
-                  {!fetched ? "בודק..." : price == null ? "לא נמכר כאן" : (promoActive ? "₪" + promo.price.toFixed(2) + "*" : "₪" + price.toFixed(2))}
+                <span className="flex-shrink-0 flex flex-col items-end">
+                  <span className={"text-sm font-bold " + (isCheapest ? "text-[#256A3F]" : "text-[#2E4A3B]")}>
+                    {!fetched ? "בודק..." : price == null ? "לא נמכר כאן" : (promoActive ? "₪" + promo.price.toFixed(2) + "*" : "₪" + price.toFixed(2))}
+                  </span>
+                  {promo && !promoActive && (
+                    <span className="text-[10px] text-[#B8462F] font-normal">🏷️ {promoTagPhrase(promo)}</span>
+                  )}
                 </span>
               </button>
             );
