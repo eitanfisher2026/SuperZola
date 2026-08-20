@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.12";
+const VERSION = "v1.13";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -64,6 +64,19 @@ function useCategories() {
   return categories;
 }
 
+function combinations(arr, k) {
+  const results = [];
+  function helper(start, combo) {
+    if (combo.length === k) { results.push(combo.slice()); return; }
+    for (let i = start; i < arr.length; i++) {
+      combo.push(arr[i]);
+      helper(i + 1, combo);
+      combo.pop();
+    }
+  }
+  helper(0, []);
+  return results;
+}
 function categoryOrder(label, categories) {
   const i = categories.findIndex(c => c.label === label);
   return i === -1 ? categories.length : i;
@@ -171,20 +184,28 @@ function itemProfilePrices(item, activeProfiles, priceMap, promoMap) {
   });
   return out;
 }
+// Whether "mine" counts as the cheapest of the row. A shared minimum among
+// SOME vendors still wins (every vendor at that minimum is "the cheapest"),
+// it's only suppressed when literally every vendor in the row — mine
+// included — carries the exact same price, since there's nothing to call
+// out as a deal at that point.
+function isCheapestPrice(mine, others) {
+  if (mine == null) return false;
+  const known = others.filter(o => o != null);
+  if (known.length === 0) return true;
+  const min = Math.min(mine, ...known);
+  const allSame = known.every(o => o === mine);
+  return mine === min && !allSame;
+}
 function cheapestTextClass(mine, others) {
   if (mine == null) return "text-[#A79A7C]";
-  const known = others.filter(o => o != null);
-  if (known.length === 0 || known.every(o => mine < o)) return "text-[#2E7D4F]";
-  return "text-[#5B5749]";
+  return isCheapestPrice(mine, others) ? "text-[#2E7D4F]" : "text-[#5B5749]";
 }
 // Background+text pair for a price chip/badge (as opposed to a table cell,
-// which only needs cheapestTextClass) — strictly cheaper than every other
-// known price wins green, a tie has no winner.
+// which only needs cheapestTextClass).
 function cheapestBadgeClass(mine, others) {
   if (mine == null) return "bg-[#F7F2E4] text-[#C7B78E]";
-  const known = others.filter(o => o != null);
-  if (known.length === 0 || known.every(o => mine < o)) return "bg-[#DDEEDA] text-[#256A3F] font-bold";
-  return "bg-[#EFE4C6] text-[#5B5749]";
+  return isCheapestPrice(mine, others) ? "bg-[#DDEEDA] text-[#256A3F] font-bold" : "bg-[#EFE4C6] text-[#5B5749]";
 }
 function promoTagPhrase(promo) {
   if (promo.weighted && promo.discountedPrice != null) return "₪" + promo.discountedPrice.toFixed(2) + ' לק"ג';
@@ -370,13 +391,9 @@ function SignInScreen() {
 // One row per item, one column per active vendor branch — lets you compare
 // prices at a glance instead of reading them off each item's own chips.
 function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem }) {
-  const notDone = items.filter(i => !i.done);
-  const done = items.filter(i => i.done);
-  const ordered = notDone.concat(done);
-
   const totals = {};
   activeProfiles.forEach(p => { totals[p.id] = { sum: 0, count: 0 }; });
-  notDone.forEach(item => {
+  items.forEach(item => {
     const qty = item.quantity || 1;
     itemProfilePrices(item, activeProfiles, priceMap, promoMap).forEach(e => {
       if (e.price == null) return;
@@ -402,14 +419,14 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
           </tr>
         </thead>
         <tbody>
-          {ordered.map(item => {
+          {items.map(item => {
             const priced = itemProfilePrices(item, activeProfiles, priceMap, promoMap);
             const byId = {};
             priced.forEach(e => { byId[e.profile.id] = e; });
             const qty = item.quantity || 1;
             return (
               <tr key={item.id} className="cursor-pointer active:bg-[#FBF4E7]" onClick={() => onEditItem(item)}>
-                <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right " + (item.done ? "line-through text-[#A79A7C]" : "text-[#B8462F] underline decoration-[#E7A796] underline-offset-2")}>
+                <td className="sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right text-[#B8462F] underline decoration-[#E7A796] underline-offset-2">
                   {itemHasMixedVendorMatches(item, activeProfiles.map(p => p.vendor)) && (
                     <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
                   )}
@@ -424,8 +441,7 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                   const promoActive = !!(promo && promo.active);
                   const effectivePrice = promoActive ? promo.price : price;
                   const others = priced.filter(e => e.profile.id !== p.id).map(e => (e.promo && e.promo.active) ? e.promo.price : e.price);
-                  const known = others.filter(o => o != null);
-                  const isCheapest = fetched && bc && effectivePrice != null && (known.length === 0 || known.every(o => effectivePrice < o));
+                  const isCheapest = fetched && bc && isCheapestPrice(effectivePrice, others);
                   const cellClass = !bc || !fetched ? "text-[#DECBA1]" : isCheapest ? "text-[#2E7D4F] font-bold" : "text-[#5B5749]";
                   return (
                     <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}>
@@ -466,7 +482,7 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
 }
 
 // ── ITEM ROW ──────────────────────────────────────────────────────────────────
-function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete, onEdit, onUpdateNote }) {
+function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote }) {
   const [editingNote, setEditingNote] = useState(false);
   const [noteVal, setNoteVal] = useState(item.note || "");
 
@@ -483,14 +499,8 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete,
   return (
     <div className="py-2.5 border-b-2 border-dotted border-[#E0D4B4]">
       <div className="flex items-center gap-3">
-        <button
-          onClick={() => onToggle(item)}
-          className={"w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] shrink-0 " +
-            (item.done ? "bg-[#B8462F] border-[#B8462F] text-white" : "border-[#B8462F] text-transparent")}
-        >✓</button>
-
         <div className="flex-1 min-w-0" onClick={() => onEdit(item)}>
-          <span className={"text-[15px] cursor-pointer " + (item.done ? "line-through text-[#A79A7C]" : "text-[#B8462F] underline decoration-[#E7A796] underline-offset-2")}>
+          <span className="text-[15px] cursor-pointer text-[#B8462F] underline decoration-[#E7A796] underline-offset-2">
             {itemHasMixedVendorMatches(item, (activeProfiles || []).map(p => p.vendor)) && (
               <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
             )}
@@ -609,7 +619,7 @@ function BulkAddModal({ categories, hasAi, onInsertMany, onClose }) {
 // still-missing vendor only (so a gap-fill can never overwrite a working
 // match), and one explicit "🔄 החלפה" action that clears everything and
 // starts over. See the "Edit Item Flow" proposal for the reasoning.
-function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, setPriceMap, promoMap, setPromoMap }) {
+function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, setPriceMap, promoMap, setPromoMap, onQueryChange }) {
   const [searchQuery, setSearchQuery] = useState(draft.name || "");
   const [candidates, setCandidates] = useState(null);
   const [isResolving, setIsResolving] = useState(false);
@@ -728,10 +738,16 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
   };
 
-  let cheapest = null;
-  itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
-    const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
-    if (eff != null && (cheapest === null || eff < cheapest.price)) cheapest = { profile: e.profile, price: eff };
+  const vendorEffectivePrices = {};
+  (activeProfiles || []).forEach(p => {
+    const bc = draft.barcodes[p.vendor];
+    const vendorPrices = priceMap[p.id];
+    const fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+    const price = fetched ? vendorPrices[bc] : null;
+    let promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+    if (promo && price != null && promo.price >= price) promo = null;
+    const promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
+    vendorEffectivePrices[p.id] = promoActive ? promo.price : price;
   });
 
   return (
@@ -755,7 +771,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
 
       <div className="mb-1.5">
         <div className="flex gap-2">
-          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+          <input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); if (onQueryChange) onQueryChange(e.target.value); }}
             onKeyDown={e => { if (e.key === "Enter") runSearch(searchScope); }} autoFocus={replacing || !!searchScope}
             className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
           <button onClick={() => runSearch(searchScope)} disabled={!searchQuery.trim() || isResolving}
@@ -849,7 +865,8 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
             let promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
             if (promo && price != null && promo.price >= price) promo = null;
             const promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
-            const isCheapest = !!(cheapest && cheapest.profile.id === p.id);
+            const otherEffective = (activeProfiles || []).filter(o => o.id !== p.id).map(o => vendorEffectivePrices[o.id]);
+            const isCheapest = isCheapestPrice(vendorEffectivePrices[p.id], otherEffective);
             const isScoped = searchScope === p.vendor;
             if (!bc) {
               return (
@@ -1144,6 +1161,14 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
   const [renaming, setRenaming] = useState(null); // list or null
   const [confirmDelete, setConfirmDelete] = useState(null); // list or null
   const [creating, setCreating] = useState(false);
+  const [showCheckPrice, setShowCheckPrice] = useState(false);
+  const [toast, setToast] = useState(null);
+  const categories = useCategories();
+  const activeProfiles = useActiveVendorProfiles(uid);
+
+  useEffect(() => {
+    if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
+  }, [toast]);
 
   useEffect(() => {
     return db.collection("lists").where("ownerId", "==", uid)
@@ -1200,7 +1225,7 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
     itemsSnap.docs.forEach(d => {
       const data = d.data();
       const itemRef = newRef.collection("items").doc();
-      batch.set(itemRef, Object.assign({}, data, { done: false, addedAt: firebase.firestore.FieldValue.serverTimestamp() }));
+      batch.set(itemRef, Object.assign({}, data, { addedAt: firebase.firestore.FieldValue.serverTimestamp() }));
     });
     await batch.commit();
   }
@@ -1258,14 +1283,22 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
         {active.map(renderCard)}
       </div>
 
-      <div className="px-4 mt-4">
+      <div className="px-4 mt-4 flex gap-2">
         <button
           onClick={quickCreate}
           disabled={creating}
-          className="w-full border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
+          className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
         >
           {creating ? "יוצר..." : "+ רשימה חדשה"}
         </button>
+        {activeProfiles.length > 0 && (
+          <button
+            onClick={() => setShowCheckPrice(true)}
+            className="flex-shrink-0 border border-[#DECBA1] bg-white rounded-2xl px-4 py-3 text-[#5B5749] text-[15px] font-medium flex items-center gap-1.5"
+          >
+            🔍 בדיקת מחיר
+          </button>
+        )}
       </div>
 
       {done.length > 0 && (
@@ -1287,6 +1320,10 @@ function Home({ uid, onOpenList, onOpenSettings, onSignOut }) {
         <ConfirmDialog message={`למחוק את הרשימה "${confirmDelete.name}"?`}
           onConfirm={() => deleteList(confirmDelete)} onClose={() => setConfirmDelete(null)} />
       )}
+      {showCheckPrice && (
+        <CheckPriceModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} showToast={setToast} />
+      )}
+      {toast && <Toast msg={toast} />}
     </div>
   );
 }
@@ -1706,6 +1743,427 @@ function SettingsScreen({ uid, onBack }) {
   );
 }
 
+// ── CHECK PRICE (standalone — no list yet) ────────────────────────────────────
+// For "saw something in the store, want to know its price before deciding
+// whether it's worth buying" — reuses the same search/match core as the
+// add-item wizard, against no particular list; only writes anything if the
+// user explicitly picks a list to add it to at the end.
+function CheckPriceModal({ uid, categories, onClose, showToast }) {
+  const activeProfiles = useActiveVendorProfiles(uid);
+  const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
+  const [draft, setDraft] = useState({ name: "", category: other.label, categoryEmoji: other.emoji, barcodes: {}, matchedNames: {} });
+  const [priceMap, setPriceMap] = useState({});
+  const [promoMap, setPromoMap] = useState({});
+  const [showListPicker, setShowListPicker] = useState(false);
+  const [myLists, setMyLists] = useState(null);
+  const [newListMode, setNewListMode] = useState(false);
+  const [newListName, setNewListName] = useState("");
+  const [inserting, setInserting] = useState(false);
+
+  function openListPicker() {
+    if (!draft.name.trim()) return;
+    setShowListPicker(true);
+    if (myLists === null) {
+      db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => !l.done);
+        rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+        setMyLists(rows);
+      });
+    }
+  }
+
+  function insertIntoList(destId, destName) {
+    if (inserting) return;
+    setInserting(true);
+    db.collection("lists").doc(destId).collection("items").add({
+      name: draft.name.trim(), category: draft.category, categoryEmoji: draft.categoryEmoji,
+      quantity: 1, unit: "יחידות", note: "",
+      barcodes: draft.barcodes, matchedNames: draft.matchedNames,
+      addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }).then(() => {
+      setInserting(false);
+      showToast(`נוסף ל"${destName}"`);
+      onClose();
+    }, () => { setInserting(false); showToast("שגיאה בהוספה"); });
+  }
+
+  function createListAndInsert() {
+    const name = newListName.trim();
+    if (!name || inserting) return;
+    setInserting(true);
+    db.collection("lists").add({ name, ownerId: uid, done: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+      insertIntoList(ref.id, name);
+    }, () => { setInserting(false); showToast("שגיאה ביצירת הרשימה"); });
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>בדיקת מחיר</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">בודקים מחיר לפני שמחליטים אם להוסיף לרשימה</p>
+      {activeProfiles.length === 0 ? (
+        <p className="text-xs text-[#A79A7C] text-center py-4">אין רשתות פעילות</p>
+      ) : (
+        <PriceMatchStep draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
+          priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap}
+          onQueryChange={name => setDraft(prev => Object.assign({}, prev, { name }))} />
+      )}
+      <div className="flex gap-2 mt-5">
+        <button onClick={onClose} className="flex-1 py-3 rounded-2xl border border-[#DECBA1] text-[#5B5749] font-medium text-sm">סגירה</button>
+        <button onClick={openListPicker} disabled={!draft.name.trim()}
+          className="flex-1 bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+          הוסף לרשימה
+        </button>
+      </div>
+      {showListPicker && (
+        <Modal onClose={() => setShowListPicker(false)}>
+          <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוסף ל...</h3>
+          {newListMode ? (
+            <div className="space-y-3">
+              <input autoFocus value={newListName} onChange={e => setNewListName(e.target.value)} placeholder="שם הרשימה החדשה"
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
+              <button onClick={createListAndInsert} disabled={!newListName.trim() || inserting}
+                className="w-full py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm disabled:opacity-40">
+                {inserting ? <Spinner /> : "צור והוסף"}
+              </button>
+              <button onClick={() => setNewListMode(false)} className="w-full text-xs text-[#8A7F66] underline">ביטול</button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <button onClick={() => setNewListMode(true)}
+                className="w-full text-right rounded-xl px-3 py-2.5 bg-[#EEF5EC] border border-[#B9D9B0] text-sm font-medium text-[#2E4A3B]">
+                + רשימה חדשה
+              </button>
+              {myLists === null ? (
+                <div className="flex justify-center py-6"><Spinner2 /></div>
+              ) : myLists.length === 0 ? (
+                <p className="text-center text-[#A79A7C] text-sm py-4">אין לך רשימות</p>
+              ) : myLists.map(l => (
+                <button key={l.id} onClick={() => insertIntoList(l.id, l.name)} disabled={inserting}
+                  className="w-full text-right rounded-xl px-3 py-2.5 bg-[#F7F2E4] text-sm disabled:opacity-40">
+                  {l.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
+    </Modal>
+  );
+}
+
+// ── VENDOR VISIBILITY ─────────────────────────────────────────────────────────
+// Per-list display filter: hiding a vendor here only affects what THIS list
+// shows — matching/pricing keeps running for it in the background so
+// un-hiding it later doesn't need a fresh search.
+function VendorVisibilityModal({ activeProfiles, hiddenVendorIds, onToggle, onClose }) {
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות מוצגות</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">בחרו אילו רשתות להציג ברשימה הזו</p>
+      <div className="space-y-1.5">
+        {(activeProfiles || []).length === 0 && (
+          <p className="text-center text-[#A79A7C] text-sm py-4">אין רשתות פעילות</p>
+        )}
+        {(activeProfiles || []).map(p => {
+          const isVisible = hiddenVendorIds.indexOf(p.id) === -1;
+          return (
+            <div key={p.id} className="flex items-center justify-between rounded-xl px-3 py-2.5 bg-[#F7F2E4]">
+              <span className="text-sm text-[#2B2418]">{profileLabel(p, activeProfiles)}</span>
+              <button onClick={() => onToggle(p.id)}
+                className={"text-xs font-bold rounded-full px-3 py-1 " + (isVisible ? "text-[#256A3F] bg-[#DDEEDA]" : "text-[#8A7F66] bg-[#EFE4C6]")}>
+                {isVisible ? "מוצג" : "מוסתר"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
+    </Modal>
+  );
+}
+
+// ── COPY ITEMS TO ANOTHER LIST ────────────────────────────────────────────────
+function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToast }) {
+  const [step, setStep] = useState("pick");
+  const [selectedIds, setSelectedIds] = useState({});
+  const [myLists, setMyLists] = useState(null);
+  const [newListMode, setNewListMode] = useState(false);
+  const [newListName, setNewListName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const groups = groupByCategory(items, categories);
+  const selectedCount = Object.keys(selectedIds).filter(id => selectedIds[id]).length;
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => Object.assign({}, prev, { [id]: !prev[id] }));
+  }
+
+  function goToDest() {
+    if (selectedCount === 0) return;
+    setStep("dest");
+    if (myLists === null) {
+      db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => l.id !== sourceListId && !l.done);
+        rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+        setMyLists(rows);
+      });
+    }
+  }
+
+  function copyToList(destId) {
+    if (busy) return;
+    setBusy(true);
+    const batch = db.batch();
+    const now = Date.now();
+    let i = 0;
+    items.filter(it => selectedIds[it.id]).forEach(it => {
+      const copy = Object.assign({}, it);
+      delete copy.id;
+      copy.addedBy = uid;
+      copy.addedAt = firebase.firestore.Timestamp.fromMillis(now + (i++));
+      const ref = db.collection("lists").doc(destId).collection("items").doc();
+      batch.set(ref, copy);
+    });
+    batch.commit().then(() => {
+      setBusy(false);
+      showToast(selectedCount + " פריטים הועתקו");
+      onClose();
+    }, () => { setBusy(false); showToast("שגיאה בהעתקה"); });
+  }
+
+  function createListAndCopy() {
+    const name = newListName.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    db.collection("lists").add({ name, ownerId: uid, done: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+      copyToList(ref.id);
+    }, () => { setBusy(false); showToast("שגיאה ביצירת הרשימה"); });
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      {step === "pick" ? (
+        <React.Fragment>
+          <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>בחר פריטים להעתקה</h3>
+          <div className="space-y-4 max-h-[50vh] overflow-y-auto">
+            {groups.map(group => (
+              <div key={group.label}>
+                <div className="text-xs font-semibold text-[#8A9A72] mb-1 flex items-center gap-1.5">
+                  <span>{group.emoji}</span><span>{group.label}</span>
+                </div>
+                <div className="space-y-1">
+                  {group.items.map(item => {
+                    const checked = !!selectedIds[item.id];
+                    return (
+                      <button key={item.id} onClick={() => toggleSelect(item.id)}
+                        className={"w-full text-right flex items-center justify-between gap-2 rounded-xl px-3 py-2 border " + (checked ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-[#F7F2E4] border-transparent")}>
+                        <span className="text-sm text-[#2B2418] truncate">{itemDisplayName(item)}</span>
+                        <span className={"w-5 h-5 rounded-full border flex-shrink-0 flex items-center justify-center text-xs " + (checked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            {items.length === 0 && <p className="text-center text-[#A79A7C] text-sm py-6">הרשימה ריקה</p>}
+          </div>
+          <button onClick={goToDest} disabled={selectedCount === 0}
+            className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm disabled:opacity-40">
+            המשך ({selectedCount})
+          </button>
+        </React.Fragment>
+      ) : (
+        <React.Fragment>
+          <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>העתק {selectedCount} פריטים אל</h3>
+          {newListMode ? (
+            <div className="space-y-3">
+              <input autoFocus value={newListName} onChange={e => setNewListName(e.target.value)} placeholder="שם הרשימה החדשה"
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
+              <button onClick={createListAndCopy} disabled={!newListName.trim() || busy}
+                className="w-full py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm disabled:opacity-40">
+                {busy ? <Spinner /> : "צור והעתק"}
+              </button>
+              <button onClick={() => setNewListMode(false)} className="w-full text-xs text-[#8A7F66] underline">ביטול</button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <button onClick={() => setNewListMode(true)}
+                className="w-full text-right rounded-xl px-3 py-2.5 bg-[#EEF5EC] border border-[#B9D9B0] text-sm font-medium text-[#2E4A3B]">
+                + רשימה חדשה
+              </button>
+              {myLists === null ? (
+                <div className="flex justify-center py-6"><Spinner2 /></div>
+              ) : myLists.length === 0 ? (
+                <p className="text-center text-[#A79A7C] text-sm py-4">אין רשימות נוספות</p>
+              ) : myLists.map(l => (
+                <button key={l.id} onClick={() => copyToList(l.id)} disabled={busy}
+                  className="w-full text-right rounded-xl px-3 py-2.5 bg-[#F7F2E4] text-sm disabled:opacity-40">
+                  {l.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </React.Fragment>
+      )}
+    </Modal>
+  );
+}
+
+// ── SHOPPING OPTIMIZER ────────────────────────────────────────────────────────
+// Best split of the list's items across 1..3 of the currently displayed
+// vendors. Small numbers only (capped at 3 of however many vendors are
+// displayed), so plain enumeration of every combo is exact and fast — no
+// real optimizer needed. Never touches the original list; only writes
+// anything if the user picks a plan and asks to create lists from it.
+function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, priceMap, promoMap, onClose, onHome, showToast }) {
+  const [plans, setPlans] = useState(null);
+  const [selectedK, setSelectedK] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [createdCount, setCreatedCount] = useState(null);
+
+  useEffect(() => {
+    const pool = visibleProfiles;
+    const maxK = Math.min(3, pool.length);
+    const computed = [];
+    for (let k = 1; k <= maxK; k++) {
+      const combos = combinations(pool, k);
+      let best = null;
+      combos.forEach(combo => {
+        let totalCost = 0;
+        const missingItems = [];
+        const byVendor = {};
+        combo.forEach(p => { byVendor[p.id] = []; });
+        items.forEach(item => {
+          const priced = itemProfilePrices(item, combo, priceMap, promoMap);
+          if (priced.length === 0) { missingItems.push(item.name); return; }
+          const bestEntry = priced.reduce((acc, e) => {
+            const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
+            const accEff = (acc.promo && acc.promo.active) ? acc.promo.price : acc.price;
+            return eff < accEff ? e : acc;
+          });
+          const effPrice = (bestEntry.promo && bestEntry.promo.active) ? bestEntry.promo.price : bestEntry.price;
+          totalCost += effPrice * (item.quantity || 1);
+          byVendor[bestEntry.profile.id].push({ item, price: effPrice });
+        });
+        if (!best || missingItems.length < best.missingItems.length ||
+            (missingItems.length === best.missingItems.length && totalCost < best.totalCost)) {
+          best = { k, vendors: combo, totalCost, missingItems, byVendor };
+        }
+      });
+      if (best) computed.push(best);
+    }
+    setPlans(computed);
+    // eslint-disable-next-line
+  }, []);
+
+  function createListsFromPlan(plan) {
+    setCreating(true);
+    const now = Date.now();
+    // Each new list's items reference it via a security rule get() on the
+    // parent doc, so the parent must actually be committed first — a single
+    // batch with both isn't guaranteed to see its own sibling write.
+    const toCreate = plan.vendors
+      .map(p => ({ profile: p, vendorItems: plan.byVendor[p.id] || [] }))
+      .filter(x => x.vendorItems.length > 0);
+    Promise.all(toCreate.map(x => {
+      const hideIds = activeProfiles.filter(vp => vp.id !== x.profile.id).map(vp => vp.id);
+      return db.collection("lists").add({
+        name: list.name + " - " + profileLabel(x.profile, plan.vendors),
+        ownerId: uid, done: false, hiddenVendorIds: hideIds,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }).then(ref => ({ ref, vendorItems: x.vendorItems }));
+    })).then(created => {
+      const batch = db.batch();
+      created.forEach(({ ref, vendorItems }) => {
+        vendorItems.forEach((entry, idx) => {
+          const itemRef = ref.collection("items").doc();
+          const copy = Object.assign({}, entry.item);
+          delete copy.id;
+          copy.addedBy = uid;
+          copy.addedAt = firebase.firestore.Timestamp.fromMillis(now + idx);
+          batch.set(itemRef, copy);
+        });
+      });
+      return batch.commit().then(() => created.length);
+    }).then(createdN => {
+      setCreating(false);
+      setCreatedCount(createdN);
+    }, () => { setCreating(false); showToast("שגיאה ביצירת הרשימות"); });
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>אופטימיזציית קניות</h3>
+      {createdCount != null ? (
+        <div className="text-center py-4">
+          <div className="text-4xl mb-3">✅</div>
+          <p className="text-[#2B2418] font-medium mb-5">{createdCount} רשימות נוצרו!</p>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="flex-1 py-3 rounded-2xl border border-[#DECBA1] text-[#5B5749] font-medium text-sm">סגירה</button>
+            <button onClick={() => { onClose(); onHome(); }} className="flex-1 bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm">🏠 לדף הבית</button>
+          </div>
+        </div>
+      ) : (
+        <React.Fragment>
+          <p className="text-xs text-[#8A7F66] text-center mb-4">השוואת עלות קנייה במספר חנויות שונה — הרשימה המקורית לא משתנה</p>
+          {plans === null ? (
+            <div className="flex justify-center py-10"><Spinner2 /></div>
+          ) : plans.length === 0 ? (
+            <p className="text-center text-[#A79A7C] text-sm py-6">אין מספיק נתוני מחיר להשוואה</p>
+          ) : (
+            <div className="space-y-2">
+              {plans.map(plan => {
+                const isSelected = selectedK === plan.k;
+                const vendorNames = plan.vendors.map(p => profileLabel(p, plan.vendors)).join(" + ");
+                return (
+                  <div key={plan.k}>
+                    <button onClick={() => setSelectedK(isSelected ? null : plan.k)}
+                      className={"w-full text-right rounded-xl px-4 py-3 border transition " + (isSelected ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E5D8B5]")}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-[#2B2418] text-sm">{plan.k === 1 ? "חנות אחת" : plan.k + " חנויות"}</span>
+                        <span className="font-bold text-[#2E4A3B] text-sm">₪{plan.totalCost.toFixed(2)}</span>
+                      </div>
+                      <div className="text-xs text-[#8A7F66] mt-1">{vendorNames}</div>
+                      {plan.missingItems.length > 0 && (
+                        <div className="text-[11px] text-[#B8462F] mt-1">חסר: {plan.missingItems.join(", ")}</div>
+                      )}
+                    </button>
+                    {isSelected && (
+                      <div className="mt-2 mb-1 space-y-2 px-1">
+                        {plan.vendors.map(p => {
+                          const vendorItems = plan.byVendor[p.id] || [];
+                          if (vendorItems.length === 0) return null;
+                          return (
+                            <div key={p.id} className="bg-[#F7F2E4] rounded-xl p-2.5">
+                              <div className="text-xs font-semibold text-[#5B5749] mb-1">{profileLabel(p, plan.vendors)} ({vendorItems.length})</div>
+                              <div className="space-y-0.5">
+                                {vendorItems.map(entry => (
+                                  <div key={entry.item.id} className="flex items-center justify-between text-xs text-[#5B5749]">
+                                    <span>{entry.item.name}</span>
+                                    <span>₪{entry.price.toFixed(2)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <button onClick={() => createListsFromPlan(plan)} disabled={creating}
+                          className="w-full bg-[#2E4A3B] text-white py-2.5 rounded-xl font-medium text-sm disabled:opacity-40">
+                          {creating ? <Spinner /> : "+ צור רשימות לפי התכנית"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </React.Fragment>
+      )}
+    </Modal>
+  );
+}
+
 // ── LIST SCREEN ───────────────────────────────────────────────────────────────
 function ListScreen({ uid, listId, listName, onBack }) {
   const [list, setList] = useState({ name: listName, done: false });
@@ -1722,9 +2180,26 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [hasAi, setHasAi] = useState(false);
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
+  const [showVendorVisibility, setShowVendorVisibility] = useState(false);
+  const [showCopyItems, setShowCopyItems] = useState(false);
+  const [showOptimizer, setShowOptimizer] = useState(false);
 
   const activeProfiles = useActiveVendorProfiles(uid);
   const categories = useCategories();
+  // Which of the user's active vendors THIS list currently shows — a
+  // per-list display filter, distinct from "active" (a vendor stays
+  // active/matched in the background even while hidden here, so unhiding
+  // it later doesn't need a fresh search).
+  const hiddenVendorIds = list.hiddenVendorIds || [];
+  const visibleProfiles = activeProfiles.filter(p => hiddenVendorIds.indexOf(p.id) === -1);
+  function toggleVendorVisibility(profileId) {
+    const nowHidden = hiddenVendorIds.indexOf(profileId) === -1;
+    db.collection("lists").doc(listId).update({
+      hiddenVendorIds: nowHidden
+        ? firebase.firestore.FieldValue.arrayUnion(profileId)
+        : firebase.firestore.FieldValue.arrayRemove(profileId),
+    });
+  }
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1772,7 +2247,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
 
   function insertItem(payload, done) {
     db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
-      done: false,
       addedBy: uid,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     })).then(() => done());
@@ -1794,7 +2268,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
         quantity: parseFloat(raw.quantity) || 1,
         unit: raw.unit || "יחידות",
         note: raw.note || "",
-        done: false,
         addedBy: uid,
         addedAt: firebase.firestore.Timestamp.fromMillis(now + i),
       });
@@ -1806,9 +2279,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
     db.collection("lists").doc(listId).collection("items").doc(editItem.id).update(payload).then(() => setEditItem(null));
   }
 
-  function toggleItem(item) {
-    db.collection("lists").doc(listId).collection("items").doc(item.id).update({ done: !item.done });
-  }
   function deleteItem(item) {
     db.collection("lists").doc(listId).collection("items").doc(item.id).delete();
   }
@@ -1817,7 +2287,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }
 
   function renameList(name) { db.collection("lists").doc(listId).update({ name }); }
-  function toggleListDone() { db.collection("lists").doc(listId).update({ done: !list.done }); }
   async function deleteList() {
     const itemsSnap = await db.collection("lists").doc(listId).collection("items").get();
     const batch = db.batch();
@@ -1827,7 +2296,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
     onBack();
   }
 
-  const doneCount = (items || []).filter(it => it.done).length;
   const groups = groupByCategory(items || [], categories);
 
   return (
@@ -1835,8 +2303,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
         <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
-        <span className="text-[12px] text-[#C9BE9E] flex-shrink-0">{items ? `${doneCount} מתוך ${items.length}` : ""}</span>
-        {activeProfiles.length > 0 && (
+        <span className="text-[12px] text-[#C9BE9E] flex-shrink-0">{items ? `${items.length} פריטים` : ""}</span>
+        {visibleProfiles.length > 0 && (
           <button onClick={() => setViewMode(viewMode === "list" ? "table" : "list")}
             className="text-[#F3ECD9] text-base w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0"
             title={viewMode === "list" ? "תצוגת טבלה" : "תצוגת רשימה"}>
@@ -1846,7 +2314,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
 
-      {pricesLoading && activeProfiles.length > 0 && (
+      {pricesLoading && visibleProfiles.length > 0 && (
         <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2">
           <Spinner2 /> טוען מחירים...
         </div>
@@ -1858,7 +2326,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
           <div className="text-[#8A7F66] text-sm py-6 text-center">הרשימה ריקה</div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
-          <PriceComparisonTable items={items} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onEditItem={setEditItem} />
+          <PriceComparisonTable items={items} activeProfiles={visibleProfiles} priceMap={priceMap} promoMap={promoMap} onEditItem={setEditItem} />
         ) : (
           groups.map(group => (
             <div key={group.label} className="mb-5">
@@ -1867,8 +2335,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
               </div>
               <div>
                 {group.items.map(item => (
-                  <ItemRow key={item.id} item={item} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap}
-                    onToggle={toggleItem} onDelete={deleteItem} onEdit={setEditItem}
+                  <ItemRow key={item.id} item={item} activeProfiles={visibleProfiles} priceMap={priceMap} promoMap={promoMap}
+                    onDelete={deleteItem} onEdit={setEditItem}
                     onUpdateNote={note => updateNote(item, note)} />
                 ))}
               </div>
@@ -1916,10 +2384,21 @@ function ListScreen({ uid, listId, listName, onBack }) {
                 <span className="text-lg">🔄</span><span className="text-sm font-medium text-[#2B2418]">רענון מחירים</span>
               </button>
             )}
-            <button onClick={() => { setShowMenu(false); toggleListDone(); }}
+            {activeProfiles.length > 0 && (
+              <button onClick={() => { setShowMenu(false); setShowVendorVisibility(true); }}
+                className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+                <span className="text-lg">🏪</span><span className="text-sm font-medium text-[#2B2418]">רשתות מוצגות</span>
+              </button>
+            )}
+            {visibleProfiles.length > 0 && (
+              <button onClick={() => { setShowMenu(false); setShowOptimizer(true); }}
+                className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+                <span className="text-lg">🧮</span><span className="text-sm font-medium text-[#2B2418]">אופטימיזציית קניות</span>
+              </button>
+            )}
+            <button onClick={() => { setShowMenu(false); setShowCopyItems(true); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-              <span className="text-lg">{list.done ? "↩️" : "✅"}</span>
-              <span className="text-sm font-medium text-[#2B2418]">{list.done ? "החזרה לפעיל" : "סימון כהושלם"}</span>
+              <span className="text-lg">📤</span><span className="text-sm font-medium text-[#2B2418]">העתק פריטים לרשימה אחרת</span>
             </button>
             <button onClick={() => { setShowMenu(false); setConfirmDeleteList(true); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#FBEAE5] text-[#B8462F]">
@@ -1933,6 +2412,18 @@ function ListScreen({ uid, listId, listName, onBack }) {
       )}
       {confirmDeleteList && (
         <ConfirmDialog message={`למחוק את הרשימה "${list.name}"?`} onConfirm={deleteList} onClose={() => setConfirmDeleteList(false)} />
+      )}
+      {showVendorVisibility && (
+        <VendorVisibilityModal activeProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
+          onToggle={toggleVendorVisibility} onClose={() => setShowVendorVisibility(false)} />
+      )}
+      {showCopyItems && (
+        <CopyItemsModal uid={uid} sourceListId={listId} items={items || []} categories={categories}
+          onClose={() => setShowCopyItems(false)} showToast={setToast} />
+      )}
+      {showOptimizer && (
+        <OptimizerModal uid={uid} list={list} items={items || []} visibleProfiles={visibleProfiles} activeProfiles={activeProfiles}
+          priceMap={priceMap} promoMap={promoMap} onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
       )}
       {toast && <Toast msg={toast} />}
     </div>
