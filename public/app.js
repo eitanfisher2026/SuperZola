@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.4";
+const VERSION = "v1.5";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -897,6 +897,268 @@ function BulkAddModal({ categories, hasAi, onInsertMany, onClose }) {
   );
 }
 
+// ── ADD ITEM WIZARD (experimental alternative to ItemDialog's "add" mode) ────
+// Item details, then price matching as its own explicit step instead of a
+// tab — see the "Add Item Flow" proposal. Lives alongside the existing add
+// flow, not in place of it; ItemDialog is untouched.
+function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
+  const [candidates, setCandidates] = useState(null);
+  const [isResolving, setIsResolving] = useState(false);
+  const [priceMap, setPriceMap] = useState({});
+  const [promoMap, setPromoMap] = useState({});
+
+  const runSearch = (vendorId) => {
+    const q = (draft.name || "").trim();
+    if (!q) return;
+    setIsResolving(true);
+    const payload = { items: [q], force: true };
+    if (vendorId) payload.vendors = [vendorId];
+    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
+      setIsResolving(false);
+      const r = (res.data.results || {})[q];
+      setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
+    }, () => { setIsResolving(false); showToast("שגיאה בחיפוש"); });
+  };
+
+  useEffect(() => {
+    runSearch(null);
+    // eslint-disable-next-line
+  }, []);
+
+  const pickCandidate = (c) => {
+    const searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
+    const vendorsToConfirm = searchedVendors.filter(v => c.prices && c.prices[v] != null);
+    if (vendorsToConfirm.length === 0) return;
+    setDraft(prev => {
+      const nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
+      vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+    });
+    setPriceMap(prev => {
+      const next = Object.assign({}, prev);
+      (activeProfiles || []).forEach(p => {
+        if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+        next[p.id] = Object.assign({}, next[p.id]);
+        next[p.id][c.barcode] = c.prices[p.vendor];
+      });
+      return next;
+    });
+    setPromoMap(prev => {
+      const next = Object.assign({}, prev);
+      (activeProfiles || []).forEach(p => {
+        if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+        const promoInfo = c.promoPrices && c.promoPrices[p.vendor];
+        if (!promoInfo) return;
+        next[p.id] = Object.assign({}, next[p.id]);
+        next[p.id][c.barcode] = promoInfo;
+      });
+      return next;
+    });
+    setCandidates(null);
+    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
+  };
+
+  const matchedVendorIds = Object.keys(draft.barcodes || {});
+  const missingProfiles = (activeProfiles || []).filter(p => matchedVendorIds.indexOf(p.vendor) === -1);
+  let cheapest = null;
+  itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
+    const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
+    if (eff != null && (cheapest === null || eff < cheapest.price)) cheapest = { profile: e.profile, price: eff };
+  });
+
+  return (
+    <div>
+      {matchedVendorIds.length > 0 && (
+        <div className="bg-[#26361F] rounded-xl px-3 py-2.5 mb-3 text-[#F3ECD9] text-sm">
+          ✓ הותאם ב-{matchedVendorIds.length} מתוך {(activeProfiles || []).length} רשתות
+          {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
+        </div>
+      )}
+      {missingProfiles.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {missingProfiles.map(p => (
+            <button key={p.id} onClick={() => runSearch(p.vendor)}
+              className="text-xs bg-[#FBEAE5] text-[#B8462F] rounded-full px-3 py-1.5 flex items-center gap-1.5">
+              {profileLabel(p, activeProfiles)} — לא נמצא <span className="font-bold underline">חפש שוב</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isResolving && (
+        <p className="text-xs text-[#A79A7C] text-center py-2">מחפש... בדיקה ראשונה אצל רשת עשויה לקחת עד כ-2 דקות.</p>
+      )}
+
+      {candidates && !isResolving && (
+        <div className="space-y-2">
+          {candidates.list.length === 0 ? (
+            <p className="text-center text-[#A79A7C] text-sm py-6">לא נמצאו התאמות ל"{draft.name}"</p>
+          ) : candidates.list.map(c => {
+            const searchedVendors = candidates.vendors || [];
+            const isPicked = Object.values(draft.barcodes || {}).indexOf(c.barcode) !== -1;
+            let cheapV = null;
+            searchedVendors.forEach(v => {
+              const pr = c.prices ? c.prices[v] : null;
+              const promo = c.promoPrices ? c.promoPrices[v] : null;
+              const eff = (promo && pr != null && promo.price < pr) ? promo.price : pr;
+              if (eff != null && (cheapV === null || eff < cheapV)) cheapV = eff;
+            });
+            return (
+              <button key={c.barcode} onClick={() => pickCandidate(c)}
+                className={"w-full text-right rounded-xl px-3 py-3 border " + (isPicked ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
+                    <div className="text-[11px] text-[#A79A7C] mt-0.5">ברקוד {c.barcode}</div>
+                  </div>
+                  <span className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-[10px] " + (isPicked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {searchedVendors.map(v => {
+                    const price = c.prices ? c.prices[v] : null;
+                    const promo = c.promoPrices ? c.promoPrices[v] : null;
+                    const promoActive = !!(promo && price != null && promo.price < price);
+                    const eff = promoActive ? promo.price : price;
+                    const isCheap = eff != null && eff === cheapV;
+                    return (
+                      <span key={v} className={"text-[11px] rounded px-2 py-0.5 " + (price == null ? "bg-[#F7F2E4] text-[#C7B78E]" : isCheap ? "bg-[#DDEEDA] text-[#256A3F] font-bold" : "bg-[#EFE4C6] text-[#5B5749]")}>
+                        {vendorLabel(v)}: {price != null ? (promoActive ? "₪" + promo.price.toFixed(2) + "*" : "₪" + price.toFixed(2)) : "לא נמכר כאן"}
+                      </span>
+                    );
+                  })}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddItemWizard({ categories, activeProfiles, onInsert, onClose, showToast }) {
+  const [step, setStep] = useState(1);
+  const blankDraft = () => {
+    const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
+    return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
+  };
+  const [draft, setDraft] = useState(blankDraft);
+  const [showNote, setShowNote] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const pricingEnabled = (activeProfiles || []).length > 0;
+
+  const set = (patch) => setDraft(prev => Object.assign({}, prev, patch));
+
+  const toPayload = (d) => ({
+    name: d.name.trim(), category: d.category, categoryEmoji: d.categoryEmoji,
+    quantity: parseFloat(d.quantity) || 1, unit: d.unit, note: d.note.trim(),
+    barcodes: d.barcodes || {}, matchedNames: d.matchedNames || {},
+  });
+
+  function finish() {
+    if (!draft.name.trim() || saving) return;
+    setSaving(true);
+    onInsert(toPayload(draft), () => { setSaving(false); onClose(); });
+  }
+
+  return (
+    <Modal onClose={onClose} disableClose footer={
+      step === 1 ? (
+        <div className="space-y-2">
+          {pricingEnabled ? (
+            <button onClick={() => setStep(2)} disabled={!draft.name.trim()}
+              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+              המשך להשוואת מחירים ←
+            </button>
+          ) : (
+            <button onClick={finish} disabled={!draft.name.trim() || saving}
+              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+              {saving ? <Spinner /> : "+ הוספה"}
+            </button>
+          )}
+          {pricingEnabled && (
+            <button onClick={finish} disabled={!draft.name.trim() || saving} className="w-full text-center text-xs text-[#8A7F66] underline">
+              {saving ? "שומר..." : "הוספה בלי השוואת מחירים"}
+            </button>
+          )}
+        </div>
+      ) : (
+        <button onClick={finish} disabled={!draft.name.trim() || saving}
+          className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+          {saving ? <Spinner /> : "סיום והוספה לרשימה"}
+        </button>
+      )
+    }>
+      <div className="flex items-center gap-2 mb-4">
+        {step === 2 && <button onClick={() => setStep(1)} className="text-[#2E4A3B] text-lg px-1">›</button>}
+        <h3 className="flex-1 text-lg text-center" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>
+          {step === 1 ? "הוספת פריט" : "השוואת מחירים"}
+        </h3>
+        <div className="flex gap-1 flex-shrink-0">
+          <span className={"h-1.5 rounded-full transition-all " + (step === 1 ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
+          <span className={"h-1.5 rounded-full transition-all " + (step === 2 ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
+        </div>
+      </div>
+
+      {step === 1 ? (
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-[#8A7F66] block mb-1">שם</label>
+            <input autoFocus value={draft.name} onChange={e => set({ name: e.target.value })}
+              className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-[#8A7F66] block mb-1">כמות</label>
+              <div className="flex items-center gap-1">
+                <button type="button"
+                  onClick={() => set({ quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })}
+                  className="w-10 h-11 rounded-xl bg-[#EFE4C6] text-[#8A7F66] text-xl font-bold flex items-center justify-center flex-shrink-0">−</button>
+                <input type="number" min="0.1" step="0.1" value={draft.quantity}
+                  onChange={e => set({ quantity: e.target.value })}
+                  className="w-full min-w-0 border border-[#C7B78E] bg-white rounded-xl px-1 py-3 text-center outline-none" />
+                <button type="button"
+                  onClick={() => set({ quantity: Math.round(((parseFloat(draft.quantity) || 0) + 1) * 10) / 10 })}
+                  className="w-10 h-11 rounded-xl bg-[#E3A939]/25 text-[#8A5A15] text-xl font-bold flex items-center justify-center flex-shrink-0">+</button>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-[#8A7F66] block mb-1">יחידה</label>
+              <select value={draft.unit} onChange={e => set({ unit: e.target.value })}
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none">
+                {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-[#8A7F66] block mb-1">קטגוריה</label>
+            <select
+              value={draft.category}
+              onChange={e => { const cat = categories.find(c => c.label === e.target.value); if (cat) set({ category: cat.label, categoryEmoji: cat.emoji }); }}
+              className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none"
+            >
+              {categories.slice().sort((a, b) => a.label.localeCompare(b.label, "he")).map(cat => (
+                <option key={cat.id} value={cat.label}>{cat.emoji} {cat.label}</option>
+              ))}
+            </select>
+          </div>
+          {showNote ? (
+            <div>
+              <label className="text-xs text-[#8A7F66] block mb-1">הערה</label>
+              <input value={draft.note} onChange={e => set({ note: e.target.value })} placeholder="אופציונלי"
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
+            </div>
+          ) : (
+            <button onClick={() => setShowNote(true)} className="text-xs text-[#C7B78E]">+ הוספת הערה</button>
+          )}
+        </div>
+      ) : (
+        <PriceMatchStep draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast} />
+      )}
+    </Modal>
+  );
+}
+
 // ── LIST CARD (home row) ─────────────────────────────────────────────────────
 function ListCard({ list, onOpen, menuOpen, onMenuToggle, onRename, onDuplicate, onMarkDone, onRestore, onDelete }) {
   const menuBtnRef = useRef(null);
@@ -1537,6 +1799,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [showWizard, setShowWizard] = useState(false); // experimental 2-step add flow — see proposal
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -1693,6 +1956,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
         )}
       </div>
 
+      <button
+        onClick={() => setShowWizard(true)}
+        className="fixed bottom-[136px] left-1/2 -translate-x-1/2 bg-white border border-[#DECBA1] text-[#8A5A15] px-3 py-1.5 rounded-full shadow-sm font-medium text-xs"
+      >
+        ✨ נסה זרימה חדשה להוספת פריט
+      </button>
+
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2">
         {hasAi && (
           <button onClick={() => setShowBulkAdd(true)}
@@ -1716,6 +1986,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
       )}
       {showBulkAdd && (
         <BulkAddModal categories={categories} hasAi={hasAi} onInsertMany={insertMany} onClose={() => setShowBulkAdd(false)} />
+      )}
+      {showWizard && (
+        <AddItemWizard categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowWizard(false)} showToast={setToast} />
       )}
 
       {showMenu && (
