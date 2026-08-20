@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.5";
+const VERSION = "v1.6";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -902,26 +902,29 @@ function BulkAddModal({ categories, hasAi, onInsertMany, onClose }) {
 // tab — see the "Add Item Flow" proposal. Lives alongside the existing add
 // flow, not in place of it; ItemDialog is untouched.
 function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
+  const [searchQuery, setSearchQuery] = useState(draft.name || "");
   const [candidates, setCandidates] = useState(null);
   const [isResolving, setIsResolving] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
 
-  const runSearch = (vendorId) => {
-    const q = (draft.name || "").trim();
+  const runSearch = (vendorId, queryOverride) => {
+    const q = (queryOverride || searchQuery || draft.name || "").trim();
     if (!q) return;
     setIsResolving(true);
     const payload = { items: [q], force: true };
     if (vendorId) payload.vendors = [vendorId];
     fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
       setIsResolving(false);
+      setHasSearched(true);
       const r = (res.data.results || {})[q];
       setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
     }, () => { setIsResolving(false); showToast("שגיאה בחיפוש"); });
   };
 
   useEffect(() => {
-    runSearch(null);
+    runSearch(null, draft.name);
     // eslint-disable-next-line
   }, []);
 
@@ -968,21 +971,40 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast }) {
 
   return (
     <div>
+      {/* Matched/still-missing status is only meaningful — and only shown —
+          once at least one vendor has actually been matched. Showing "לא
+          נמצא" for every vendor before any search even ran read as an
+          instant wall of failures sitting on top of results that worked. */}
       {matchedVendorIds.length > 0 && (
-        <div className="bg-[#26361F] rounded-xl px-3 py-2.5 mb-3 text-[#F3ECD9] text-sm">
-          ✓ הותאם ב-{matchedVendorIds.length} מתוך {(activeProfiles || []).length} רשתות
-          {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
-        </div>
+        <React.Fragment>
+          <div className="bg-[#26361F] rounded-xl px-3 py-2.5 mb-2 text-[#F3ECD9] text-sm">
+            ✓ הותאם ב-{matchedVendorIds.length} מתוך {(activeProfiles || []).length} רשתות
+            {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
+          </div>
+          {missingProfiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {missingProfiles.map(p => (
+                <button key={p.id} onClick={() => runSearch(p.vendor)}
+                  className="text-xs bg-[#F0E9D4] text-[#8A7F66] rounded-full px-2.5 py-1 flex items-center gap-1">
+                  {profileLabel(p, activeProfiles)} <span className="underline text-[#5B5749]">חפש שוב</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </React.Fragment>
       )}
-      {missingProfiles.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-3">
-          {missingProfiles.map(p => (
-            <button key={p.id} onClick={() => runSearch(p.vendor)}
-              className="text-xs bg-[#FBEAE5] text-[#B8462F] rounded-full px-3 py-1.5 flex items-center gap-1.5">
-              {profileLabel(p, activeProfiles)} — לא נמצא <span className="font-bold underline">חפש שוב</span>
-            </button>
-          ))}
-        </div>
+
+      <div className="flex gap-2 mb-2">
+        <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") runSearch(null); }}
+          className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
+        <button onClick={() => runSearch(null)} disabled={!searchQuery.trim() || isResolving}
+          className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+          {isResolving ? <Spinner /> : "חיפוש"}
+        </button>
+      </div>
+      {hasSearched && !isResolving && candidates && (
+        <p className="text-xs text-[#A79A7C] mb-2">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
       )}
 
       {isResolving && (
