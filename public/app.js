@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.9";
+const VERSION = "v1.10";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -102,6 +102,47 @@ function vendorLabel(id) {
 }
 function itemVendorBarcode(item, vendorId) {
   return (item.barcodes && item.barcodes[vendorId]) || null;
+}
+function itemVendorMatchedName(item, vendorId) {
+  return (item.matchedNames && item.matchedNames[vendorId]) || null;
+}
+// True when two currently-relevant vendors are matched to genuinely
+// different barcodes — i.e. the price comparison is silently comparing two
+// different physical products (different pack size, brand, etc.) under one
+// shared name, not the same product at different vendors. Only counts
+// vendors in relevantVendorIds so a stale barcode from a vendor no longer
+// active can't trigger a false warning.
+function itemHasMixedVendorMatches(item, relevantVendorIds) {
+  const barcodes = item.barcodes || {};
+  const vendorIds = relevantVendorIds || Object.keys(barcodes);
+  const uniq = {};
+  let count = 0;
+  vendorIds.forEach(v => {
+    const raw = barcodes[v];
+    if (!raw) return;
+    const bc = String(raw).trim();
+    if (!bc || uniq[bc]) return;
+    uniq[bc] = true;
+    count++;
+  });
+  return count > 1;
+}
+// The name to show for an item: if every vendor that's been matched agrees
+// on the product name, show that (more specific than whatever was typed).
+// The moment they disagree, showing any one vendor's name would misrepresent
+// the others, so fall back to the originally typed name instead.
+function itemDisplayName(item) {
+  const names = item.matchedNames || {};
+  const uniq = {};
+  const list = [];
+  Object.keys(names).forEach(v => {
+    const n = names[v];
+    if (!n || uniq[n]) return;
+    uniq[n] = true;
+    list.push(n);
+  });
+  if (list.length === 1) return list[0];
+  return item.name;
 }
 function profileLabel(profile, allProfiles) {
   let label = vendorLabel(profile.vendor);
@@ -234,7 +275,7 @@ function Modal({ onClose, children, disableClose, footer }) {
         style={{ transform: `translateY(${dragY}px)`, transition: dragY === 0 ? "transform 0.2s ease" : "none", maxHeight: "88dvh" }}
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex-shrink-0 px-6 pt-4">
+        <div className="relative flex-shrink-0 px-6 pt-4">
           <div
             ref={handleRef}
             onPointerDown={onPointerDown}
@@ -242,6 +283,11 @@ function Modal({ onClose, children, disableClose, footer }) {
             onPointerUp={onPointerUp}
             className={"w-10 h-1.5 bg-[#DECBA1] rounded-full mx-auto mb-3 " + (disableClose ? "" : "cursor-grab active:cursor-grabbing touch-none")}
           />
+          {/* Shown even when disableClose suppresses swipe/backdrop-dismiss
+              (the add-item wizard) — those are only disabled to prevent
+              *accidental* loss while filling a form, not to remove the
+              ability to close it at all. */}
+          <button onClick={onClose} className="absolute top-3 left-4 text-[#8A7F66] hover:text-[#2B2418] text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
         </div>
         <div className={"overflow-y-auto px-6 min-h-0 flex-1 " + (footer ? "pb-4" : "pb-8")}>
           {children}
@@ -355,7 +401,10 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
             return (
               <tr key={item.id} className="cursor-pointer active:bg-[#FBF4E7]" onClick={() => onEditItem(item)}>
                 <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right " + (item.done ? "line-through text-[#A79A7C]" : "text-[#2B2418]")}>
-                  {item.name}{qty !== 1 && <span className="text-[#A79A7C]"> ({qty})</span>}
+                  {itemHasMixedVendorMatches(item, activeProfiles.map(p => p.vendor)) && (
+                    <span className="text-[#E3A939] font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>
+                  )}
+                  {itemDisplayName(item)}{qty !== 1 && <span className="text-[#A79A7C]"> ({qty})</span>}
                 </td>
                 {activeProfiles.map(p => {
                   const bc = itemVendorBarcode(item, p.vendor);
@@ -428,7 +477,10 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onToggle, onDelete,
 
         <div className="flex-1 min-w-0" onClick={() => onEdit(item)}>
           <span className={"text-[15px] " + (item.done ? "line-through text-[#A79A7C]" : "text-[#2B2418]")}>
-            {item.name}
+            {itemHasMixedVendorMatches(item, (activeProfiles || []).map(p => p.vendor)) && (
+              <span className="text-[#E3A939] font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>
+            )}
+            {itemDisplayName(item)}
           </span>
           {!editingNote && item.note ? (
             <div onClick={openNote} className="text-xs text-[#A79A7C] mt-0.5 flex items-start gap-1">
@@ -535,6 +587,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   const [candidates, setCandidates] = useState(null);
   const [isResolving, setIsResolving] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  // null = search targets every active vendor (gap-fill / initial search).
+  // A vendor id = the search box is scoped to just that one vendor, so its
+  // word can be edited and re-searched without touching anyone else's
+  // match — different chains don't always share a barcode for "the same"
+  // product, so one search word doesn't always fit all of them.
+  const [searchScope, setSearchScope] = useState(null);
   // Replacing a wrong match is deliberately non-destructive: opening it
   // just reveals an editable search box (nothing auto-runs, nothing is
   // cleared) — the old match only actually gets dropped once a new pick is
@@ -544,12 +602,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
 
   const matchedVendorIds = Object.keys(draft.barcodes || {});
   const hasAnyMatch = matchedVendorIds.length > 0;
-  const matchedProductName = hasAnyMatch ? draft.matchedNames[matchedVendorIds[0]] : null;
-  const matchedBarcode = hasAnyMatch ? draft.barcodes[matchedVendorIds[0]] : null;
-  const showSearchBox = !hasAnyMatch || replacing;
+  const activeVendorIds = (activeProfiles || []).map(p => p.vendor);
+  const mixedMatches = itemHasMixedVendorMatches(draft, activeVendorIds);
+  const scopeLabel = searchScope ? vendorLabel(searchScope) : null;
 
   const runSearch = (vendorId, queryOverride) => {
-    const q = (queryOverride || searchQuery || draft.name || "").trim();
+    const q = (queryOverride != null ? queryOverride : searchQuery || draft.name || "").trim();
     if (!q) return;
     setIsResolving(true);
     const payload = { items: [q], force: true };
@@ -569,6 +627,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
 
   function startReplace() {
     setReplacing(true);
+    setSearchScope(null);
     setCandidates(null);
     setSearchQuery(draft.name || "");
   }
@@ -577,12 +636,38 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     setCandidates(null);
   }
 
+  // Tapping a vendor row: an unmatched one searches right away (one tap,
+  // using the item's name as a best guess); an already-matched one just
+  // narrows the search box to that vendor so its word can be edited before
+  // searching — tapping the same vendor again clears the scope back to
+  // "all vendors". Either way this cancels any pending whole-item replace,
+  // since scoping to one vendor is a narrower, distinct action.
+  function selectVendor(vendorId, alreadyMatched) {
+    setReplacing(false);
+    setCandidates(null);
+    if (!alreadyMatched) {
+      const q = draft.name || "";
+      setSearchScope(vendorId);
+      setSearchQuery(q);
+      runSearch(vendorId, q);
+      return;
+    }
+    const nextScope = searchScope === vendorId ? null : vendorId;
+    setSearchScope(nextScope);
+    if (!searchQuery.trim()) {
+      setSearchQuery((nextScope && itemVendorMatchedName(draft, nextScope)) || draft.name || "");
+    }
+  }
+
   const pickCandidate = (c) => {
     const searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
     const vendorsToConfirm = searchedVendors.filter(v => c.prices && c.prices[v] != null);
     if (vendorsToConfirm.length === 0) return;
     // Mid-replace, the old match is only actually dropped right here, at
     // the moment a new one is confirmed — never when "🔄 החלפה" was tapped.
+    // A scoped single-vendor search never needs this: vendorsToConfirm is
+    // already just that one vendor, so merging naturally leaves every
+    // other vendor's match untouched.
     setDraft(prev => {
       const baseBarcodes = replacing ? {} : (prev.barcodes || {});
       const baseNames = replacing ? {} : (prev.matchedNames || {});
@@ -612,6 +697,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     });
     setCandidates(null);
     setReplacing(false);
+    setSearchScope(null);
     fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
   };
 
@@ -623,35 +709,41 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
 
   return (
     <div>
-      {hasAnyMatch && matchedProductName && (
-        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 mb-3 flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-[#2B2418] truncate">{matchedProductName}</div>
-            <div className="text-[11px] text-[#A79A7C] mt-0.5" dir="ltr">{matchedBarcode}</div>
-          </div>
+      {hasAnyMatch && (
+        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 mb-2 flex items-start justify-between gap-2">
+          <div className="text-sm font-medium text-[#2B2418] truncate min-w-0">{itemDisplayName(draft)}</div>
           {!replacing && (
             <button onClick={startReplace} className="text-xs text-[#B8462F] font-bold flex-shrink-0">🔄 החלפה</button>
           )}
         </div>
       )}
-
-      {showSearchBox && (
-        <div className="mb-2">
-          <div className="flex gap-2">
-            <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") runSearch(null); }} autoFocus={replacing}
-              className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
-            <button onClick={() => runSearch(null)} disabled={!searchQuery.trim() || isResolving}
-              className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-              {isResolving ? <Spinner /> : "חיפוש"}
-            </button>
-          </div>
-          {replacing && (
-            <button onClick={cancelReplace} className="text-xs text-[#8A7F66] underline mt-1.5">ביטול</button>
-          )}
+      {mixedMatches && (
+        <div className="text-[11px] text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2 mb-3">
+          ⚠️ הרשתות מותאמות לברקודים שונים — ייתכן שאלו מוצרים שונים (למשל גודל אריזה שונה), לא בהכרח אותו פריט
         </div>
       )}
-      {showSearchBox && hasSearched && !isResolving && candidates && (
+
+      <div className="mb-1.5">
+        <div className="flex gap-2">
+          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") runSearch(searchScope); }} autoFocus={replacing || !!searchScope}
+            className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
+          <button onClick={() => runSearch(searchScope)} disabled={!searchQuery.trim() || isResolving}
+            className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+            {isResolving ? <Spinner /> : "חיפוש"}
+          </button>
+        </div>
+        {(replacing || searchScope) && (
+          <div className="flex items-center gap-2 mt-1.5">
+            <span className="text-xs text-[#8A7F66]">
+              {replacing ? "מחפש בכל הרשתות" : `מחפש עבור ${scopeLabel} בלבד`}
+            </span>
+            <button onClick={replacing ? cancelReplace : () => { setSearchScope(null); setCandidates(null); }}
+              className="text-xs text-[#8A7F66] underline">ביטול</button>
+          </div>
+        )}
+      </div>
+      {hasSearched && !isResolving && candidates && (
         <p className="text-xs text-[#A79A7C] mb-2">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
       )}
 
@@ -664,9 +756,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       {candidates && !isResolving && (
         <div className="space-y-2 mb-3">
           {candidates.list.length === 0 ? (
-            <p className="text-center text-[#A79A7C] text-sm py-6">
-              {hasAnyMatch && !replacing ? "לא נמצאה התאמה לרשת החסרה" : `לא נמצאו התאמות ל"${searchQuery || draft.name}"`}
-            </p>
+            <p className="text-center text-[#A79A7C] text-sm py-6">{`לא נמצאו התאמות ל"${searchQuery || draft.name}"`}</p>
           ) : candidates.list.map(c => {
             const searchedVendors = candidates.vendors || [];
             let cheapV = null;
@@ -707,35 +797,48 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       )}
 
       {/* One row per active vendor, always up to date — matched vendors show
-          their real price (cheapest highlighted), unmatched ones are the
-          only place a gap-fill search starts from. Hidden while search
-          results are open so the two lists don't compete for attention. */}
+          their own matched product name/barcode plus real price (cheapest
+          highlighted); unmatched ones are a one-tap gap-fill search.
+          Tapping any row scopes the search box above to that vendor.
+          Hidden while search results are open so the two lists don't
+          compete for attention. */}
       {hasAnyMatch && !candidates && (
         <div className="space-y-1.5">
           {(activeProfiles || []).map(p => {
             const bc = draft.barcodes[p.vendor];
+            const matchedName = itemVendorMatchedName(draft, p.vendor);
             const vendorPrices = priceMap[p.id];
             const fetched = !!(bc && vendorPrices && (bc in vendorPrices));
             const price = fetched ? vendorPrices[bc] : null;
             const promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
             const promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
             const isCheapest = !!(cheapest && cheapest.profile.id === p.id);
+            const isScoped = searchScope === p.vendor;
             if (!bc) {
               return (
-                <button key={p.id} onClick={() => runSearch(p.vendor)} disabled={isResolving}
-                  className="w-full flex items-center justify-between rounded-xl px-3 py-2.5 bg-[#FBEAE5] disabled:opacity-50">
+                <button key={p.id} onClick={() => selectVendor(p.vendor, false)} disabled={isResolving}
+                  className={"w-full flex items-center justify-between rounded-xl px-3 py-2.5 disabled:opacity-50 " + (isScoped ? "bg-[#FBEAE5] ring-1 ring-[#E7A796]" : "bg-[#FBEAE5]")}>
                   <span className="text-sm text-[#B8462F]">{profileLabel(p, activeProfiles)}</span>
                   <span className="text-xs font-bold text-[#B8462F] underline">חפש שוב</span>
                 </button>
               );
             }
             return (
-              <div key={p.id} className={"flex items-center justify-between rounded-xl px-3 py-2.5 " + (isCheapest ? "bg-[#DDEEDA] border border-[#B9D9B0]" : "bg-[#F3ECD9]/60")}>
-                <span className="text-sm text-[#5B5749]">{profileLabel(p, activeProfiles)}</span>
-                <span className={"text-sm font-bold " + (isCheapest ? "text-[#256A3F]" : "text-[#2E4A3B]")}>
+              <button key={p.id} onClick={() => selectVendor(p.vendor, true)}
+                className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-right " + (isScoped ? "bg-[#F3ECD9] ring-1 ring-[#C7B78E]" : isCheapest ? "bg-[#DDEEDA] border border-[#B9D9B0]" : "bg-[#F3ECD9]/60")}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-[#5B5749]">{profileLabel(p, activeProfiles)}</div>
+                  {(matchedName || bc) && (
+                    <div className="text-[10px] text-[#A79A7C] truncate flex items-center gap-1">
+                      {matchedName && <span className="text-[#8A7F66]">{matchedName}</span>}
+                      <span dir="ltr">{bc}</span>
+                    </div>
+                  )}
+                </div>
+                <span className={"text-sm font-bold flex-shrink-0 " + (isCheapest ? "text-[#256A3F]" : "text-[#2E4A3B]")}>
                   {!fetched ? "בודק..." : price == null ? "לא נמכר כאן" : (promoActive ? "₪" + promo.price.toFixed(2) + "*" : "₪" + price.toFixed(2))}
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>
