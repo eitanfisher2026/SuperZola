@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.26";
+const VERSION = "v1.27";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1205,11 +1205,12 @@ function ListCard({ list, onOpen }) {
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHelp, onOpenProfile, onSignOut }) {
+function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, onOpenHelp, onOpenProfile, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [toast, setToast] = useState(null);
   const categories = useCategories();
   const activeProfiles = useActiveVendorProfiles(uid);
@@ -1280,6 +1281,10 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>⚙️</span><span>הגדרות</span>
               </button>
+              <button onClick={() => { setShowUserMenu(false); setShowFeedback(true); }}
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                <span>💬</span><span>שליחת משוב</span>
+              </button>
               <button onClick={() => { setShowUserMenu(false); onSignOut(); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#B8462F] hover:bg-[#FBEAE5] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>🚪</span><span>התנתקות</span>
@@ -1336,6 +1341,9 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
 
       {showCheckPrice && (
         <CheckPriceModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} showToast={setToast} />
+      )}
+      {showFeedback && (
+        <FeedbackDialog uid={uid} displayName={displayName} email={email} onClose={() => setShowFeedback(false)} />
       )}
       {toast && <Toast msg={toast} />}
     </div>
@@ -3014,6 +3022,196 @@ function ListScreen({ uid, listId, listName, onBack }) {
   );
 }
 
+// ── FEEDBACK ──────────────────────────────────────────────────────────────────
+// Ported from FouFou-Pets' feedback module: a two-way conversation thread
+// between a user and admin, not a one-shot form. Everyone signed in can
+// start a thread and reply to it; an admin sees every user's threads
+// instead of just their own, and replies as "admin". Real Google sign-in
+// is already required app-wide, so there's no separate "sign in to send
+// feedback" gate needed.
+const FEEDBACK_CATEGORIES = [
+  { value: "bug", label: "🐛 באג" },
+  { value: "idea", label: "💡 רעיון" },
+  { value: "general", label: "💭 כללי" },
+];
+function feedbackCategoryLabel(value) {
+  const c = FEEDBACK_CATEGORIES.find(x => x.value === value);
+  return c ? c.label : value;
+}
+function messageTime(ms) {
+  return new Date(ms).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+}
+function isThreadUnread(thread, isAdmin) {
+  return isAdmin ? thread.unreadByAdmin : thread.unreadByUser;
+}
+
+function FeedbackDialog({ uid, displayName, email, onClose }) {
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [view, setView] = useState("list"); // "list" | "new" | "thread"
+  const [threads, setThreads] = useState(null);
+  const [activeThread, setActiveThread] = useState(null);
+
+  const [category, setCategory] = useState("general");
+  const [subject, setSubject] = useState("");
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
+    setIsAdmin((snap.data() || {}).role === "admin");
+  }), [uid]);
+
+  function loadThreads(admin) {
+    setThreads(null);
+    const col = db.collection("feedbackThreads");
+    const q = admin ? col.orderBy("lastActivityAt", "desc") : col.where("userId", "==", uid);
+    q.get().then(snap => {
+      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // No orderBy combined with the userId filter (would need a composite
+      // index) — sort the small per-user result client-side instead.
+      if (!admin) rows.sort((a, b) => (b.lastActivityAt?.toMillis?.() || 0) - (a.lastActivityAt?.toMillis?.() || 0));
+      setThreads(rows);
+    });
+  }
+  useEffect(() => { loadThreads(isAdmin); }, [isAdmin]);
+
+  function openThread(thread) {
+    setActiveThread(thread);
+    setView("thread");
+    if (isThreadUnread(thread, isAdmin)) {
+      db.collection("feedbackThreads").doc(thread.id).update(isAdmin ? { unreadByAdmin: false } : { unreadByUser: false });
+      setThreads(prev => prev.map(t => t.id === thread.id ? Object.assign({}, t, { [isAdmin ? "unreadByAdmin" : "unreadByUser"]: false }) : t));
+    }
+  }
+
+  function handleCreate() {
+    if (!text.trim()) return;
+    setSubmitting(true);
+    db.collection("feedbackThreads").add({
+      userId: uid, senderName: displayName || "", senderEmail: email || "",
+      category, subject: subject.trim(), currentView: "home",
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastFrom: "user", unreadByUser: false, unreadByAdmin: true,
+      messages: [{ from: "user", text: text.trim(), timestamp: Date.now() }],
+    }).then(() => {
+      setSubject(""); setText(""); setCategory("general"); setView("list");
+      loadThreads(isAdmin);
+    }).finally(() => setSubmitting(false));
+  }
+
+  function handleReply() {
+    if (!replyText.trim() || !activeThread) return;
+    setSending(true);
+    const from = isAdmin ? "admin" : "user";
+    const message = { from, text: replyText.trim(), timestamp: Date.now() };
+    db.collection("feedbackThreads").doc(activeThread.id).update({
+      messages: firebase.firestore.FieldValue.arrayUnion(message),
+      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastFrom: from, unreadByUser: from === "admin", unreadByAdmin: from === "user",
+    }).then(() => {
+      setActiveThread(prev => Object.assign({}, prev, { messages: prev.messages.concat([message]) }));
+      setReplyText("");
+    }).finally(() => setSending(false));
+  }
+
+  return (
+    <Modal onClose={onClose} footer={
+      view === "list" && !isAdmin ? (
+        <button onClick={() => setView("new")} className="w-full bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm">
+          + שיחה חדשה
+        </button>
+      ) : view === "new" ? (
+        <div className="flex gap-2">
+          <button onClick={handleCreate} disabled={submitting || !text.trim()}
+            className="flex-1 bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+            {submitting ? <Spinner /> : "שליחה"}
+          </button>
+          <button onClick={() => setView("list")} disabled={submitting}
+            className="flex-1 border border-[#DECBA1] text-[#8A7F66] py-3 rounded-2xl font-medium text-sm disabled:opacity-40">
+            ביטול
+          </button>
+        </div>
+      ) : view === "thread" ? (
+        <div className="flex gap-2">
+          <input value={replyText} onChange={e => setReplyText(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleReply(); }}
+            placeholder="הקלידו תגובה..."
+            className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-right outline-none text-sm" />
+          <button onClick={handleReply} disabled={sending || !replyText.trim()}
+            className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+            {sending ? <Spinner /> : "שליחה"}
+          </button>
+        </div>
+      ) : null
+    }>
+      <div className="flex items-center gap-2 mb-4">
+        {view === "thread" && (
+          <button onClick={() => setView("list")} className="text-[#2E4A3B] text-lg px-1">›</button>
+        )}
+        <h3 className="flex-1 text-lg text-center" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>
+          {view === "thread" ? (activeThread?.subject || feedbackCategoryLabel(activeThread?.category)) : "💬 משוב"}
+        </h3>
+        {view === "thread" && <span style={{ width: 20 }} />}
+      </div>
+
+      {view === "list" && (
+        <div className="space-y-2">
+          {threads === null && <p className="text-sm text-[#8A7F66] text-center py-6">טוען...</p>}
+          {threads && threads.length === 0 && <p className="text-sm text-[#A79A7C] text-center py-6">אין שיחות עדיין</p>}
+          {threads && threads.map(t => (
+            <button key={t.id} onClick={() => openThread(t)}
+              className="w-full text-right flex items-start gap-2 rounded-xl border border-[#E5D8B5] bg-white px-3 py-2.5 hover:bg-[#FBF4E7]">
+              <span className="flex-shrink-0">{feedbackCategoryLabel(t.category).split(" ")[0]}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-[#2B2418]">
+                  {t.subject || t.messages?.[0]?.text || "(ללא נושא)"}
+                </span>
+                {isAdmin && <span className="block truncate text-xs text-[#A79A7C]">{t.senderName || t.senderEmail}</span>}
+                <span className="block text-xs text-[#A79A7C]">{t.messages?.length || 0} הודעות</span>
+              </span>
+              {isThreadUnread(t, isAdmin) && <span className="mt-1 w-2 h-2 rounded-full bg-[#B8462F] flex-shrink-0" />}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {view === "new" && (
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            {FEEDBACK_CATEGORIES.map(c => (
+              <button key={c.value} onClick={() => setCategory(c.value)}
+                className={"flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium " +
+                  (category === c.value ? "border-[#2E4A3B] bg-[#2E4A3B] text-white" : "border-[#C7B78E] text-[#5B5749]")}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <input value={subject} onChange={e => setSubject(e.target.value)} maxLength={100} placeholder="נושא"
+            className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none text-sm" />
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={6} maxLength={3000} placeholder="ספרו לנו מה חשבתם..."
+            className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none text-sm resize-none" />
+        </div>
+      )}
+
+      {view === "thread" && activeThread && (
+        <div className="space-y-2">
+          {activeThread.messages.map((m, i) => (
+            <div key={i} className={"flex " + (m.from === (isAdmin ? "admin" : "user") ? "justify-start" : "justify-end")}>
+              <div className={"max-w-[80%] rounded-2xl px-3 py-2 text-sm " + (m.from === "admin" ? "bg-[#EEF5EC] text-[#2B2418]" : "bg-[#F3ECD9] text-[#2B2418]")}>
+                <p className="text-[10px] text-[#A79A7C] mb-0.5">{m.from === "admin" ? "👑" : "👤"} {messageTime(m.timestamp)}</p>
+                <p className="whitespace-pre-wrap">{m.text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // ── PROFILE ───────────────────────────────────────────────────────────────────
 // Where the user's own info lives — starts with delivery address (used to
 // decide which online vendors make sense to show, once that's built out
@@ -3297,6 +3495,7 @@ function App() {
         uid={user.uid}
         photoURL={user.photoURL}
         displayName={user.displayName}
+        email={user.email}
         onOpenList={(id, name) => setScreen({ view: "list", id, name })}
         onOpenSettings={() => setScreen({ view: "settings" })}
         onOpenHelp={() => setScreen({ view: "help" })}
