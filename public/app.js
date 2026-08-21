@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.37";
+const VERSION = "v1.38";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -177,6 +177,14 @@ function categoryOrder(label, categories) {
   const i = categories.findIndex(c => c.label === label);
   return i === -1 ? categories.length : i;
 }
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function groupByCategory(items, categories) {
   const map = {};
   items.forEach(item => {
@@ -2824,6 +2832,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
   const [showCopyItems, setShowCopyItems] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
+  const [showExportChoice, setShowExportChoice] = useState(false);
   const [profiles, setProfiles] = useState(null); // every vendorProfiles doc, active or not — needed to avoid re-provisioning a vendor the user turned off
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
@@ -2981,11 +2990,51 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
     onBack();
   }
 
+  // "Excel" here is an HTML table saved with an .xls extension, not a real
+  // binary xlsx — Excel opens that natively, it renders Hebrew and column
+  // alignment correctly (unlike a raw CSV, which needs a BOM and still
+  // mangles anything with a comma), and it needs no new library.
+  function exportList(format) {
+    setShowExportChoice(false);
+    const sorted = groupByCategory(items || [], categories).flatMap(g => g.items);
+    const vendorCols = visibleProfiles;
+    const headers = ["שם", "קטגוריה", "כמות", "יחידה", "הערה"].concat(vendorCols.map(p => profileLabel(p, vendorCols)));
+    const rows = sorted.map(item => {
+      const priced = vendorCols.length > 0 ? itemProfilePrices(item, vendorCols, priceMap, promoMap) : [];
+      const byProfile = {};
+      priced.forEach(e => { byProfile[e.profile.id] = e; });
+      const base = [itemDisplayName(item), item.category || "", item.quantity != null ? item.quantity : "", item.unit || "", item.note || ""];
+      const vendorVals = vendorCols.map(p => {
+        const e = byProfile[p.id];
+        if (!e || e.price == null) return "";
+        const effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
+        return effective.toFixed(2);
+      });
+      return base.concat(vendorVals);
+    });
+    const safeName = (list.name || "רשימה").replace(/[\\/:*?"<>|]/g, "_");
+    if (format === "csv") {
+      const csvLines = [headers].concat(rows).map(r => r.map(v => {
+        const s = String(v == null ? "" : v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      }).join(","));
+      downloadBlob(new Blob(["﻿" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" }), safeName + ".csv");
+    } else {
+      const esc = v => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const html = '<html><head><meta charset="UTF-8"></head><body dir="rtl">' +
+        '<table border="1" style="border-collapse:collapse;font-family:Arial;direction:rtl;">' +
+        '<tr>' + headers.map(h => '<th style="background:#eee;padding:4px 8px;">' + esc(h) + '</th>').join("") + '</tr>' +
+        rows.map(r => '<tr>' + r.map(v => '<td style="padding:4px 8px;">' + esc(v) + '</td>').join("") + '</tr>').join("") +
+        '</table></body></html>';
+      downloadBlob(new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" }), safeName + ".xls");
+    }
+  }
+
   const groups = groupByCategory(items || [], categories);
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7] flex flex-col">
-      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
+      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2 no-print">
         <BackButton onClick={onBack} />
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
         {visibleProfiles.length > 0 && (
@@ -3006,12 +3055,17 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       </div>
 
       {pricesLoading && visibleProfiles.length > 0 && (
-        <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2">
+        <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2 no-print">
           <Spinner2 /> טוען מחירים...
         </div>
       )}
 
-      <div className="flex-1 px-3 pt-3 pb-28">
+      <div className="hidden print-only px-4 pt-4 pb-2">
+        <h1 className="text-xl font-bold text-right" style={{ fontFamily: "'Suez One', serif" }}>{list.name}</h1>
+        <p className="text-xs text-[#8A7F66] text-right mt-1">{new Date().toLocaleDateString("he-IL")}</p>
+      </div>
+
+      <div className="flex-1 px-3 pt-3 pb-28 print-items-area">
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
         {items !== null && items.length === 0 && (
           <div className="text-[#8A7F66] text-sm py-6 text-center">הרשימה ריקה</div>
@@ -3041,7 +3095,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
         )}
       </div>
 
-      <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2">
+      <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
         {hasAi && (
           <button onClick={() => setShowBulkAdd(true)}
             className="bg-white border border-[#DECBA1] text-[#5B5749] px-4 py-3 rounded-2xl shadow-md font-medium text-sm">
@@ -3079,6 +3133,14 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
             <button onClick={duplicateList}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">📋</span><span className="text-sm font-medium text-[#2B2418]">שכפול רשימה</span>
+            </button>
+            <button onClick={() => { setShowMenu(false); window.print(); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+              <span className="text-lg">🖨️</span><span className="text-sm font-medium text-[#2B2418]">הדפס / ייצוא ל-PDF</span>
+            </button>
+            <button onClick={() => { setShowMenu(false); setShowExportChoice(true); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+              <span className="text-lg">📤</span><span className="text-sm font-medium text-[#2B2418]">ייצוא רשימה</span>
             </button>
           </div>
 
@@ -3140,6 +3202,23 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       {showOptimizer && (
         <OptimizerModal uid={uid} list={list} items={items || []} visibleProfiles={visibleProfiles} activeProfiles={activeProfiles}
           onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
+      )}
+      {showExportChoice && (
+        <Modal onClose={() => setShowExportChoice(false)}>
+          <h3 className="text-lg text-center mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ייצוא רשימה</h3>
+          <p className="text-center text-[#8A7F66] text-sm mb-5">באיזה פורמט?</p>
+          <div className="space-y-2">
+            <button onClick={() => exportList("csv")}
+              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-[#F7F2E4] hover:bg-[#F0E9D4]">
+              <span className="text-lg">📄</span><span className="text-sm font-medium text-[#2B2418]">CSV</span>
+            </button>
+            <button onClick={() => exportList("excel")}
+              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-[#F7F2E4] hover:bg-[#F0E9D4]">
+              <span className="text-lg">📊</span><span className="text-sm font-medium text-[#2B2418]">Excel</span>
+            </button>
+          </div>
+          <button onClick={() => setShowExportChoice(false)} className="w-full mt-3 py-2.5 text-[#8A7F66] text-sm">ביטול</button>
+        </Modal>
       )}
       {toast && <Toast msg={toast} />}
     </div>

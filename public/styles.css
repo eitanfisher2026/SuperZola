@@ -5,3 +5,9 @@ html, body {
   background: #FBF4E7;
   color: #2B2418;
 }
+
+@media print {
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  .print-items-area { overflow: visible !important; height: auto !important; padding-bottom: 1rem !important; }
+}
