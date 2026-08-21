@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.28";
+const VERSION = "v1.29";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -366,7 +366,7 @@ function Spinner2() {
 
 function Toast({ msg }) {
   return (
-    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-[#2B2418] text-[#FBF4E7] text-sm px-5 py-2.5 rounded-full shadow-lg z-50 whitespace-nowrap">
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-[#2B2418] text-[#FBF4E7] text-sm px-5 py-2.5 rounded-2xl shadow-lg z-50 max-w-[85vw] text-center">
       {msg}
     </div>
   );
@@ -1266,7 +1266,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     setCreating(false);
-    onOpenList(ref.id, name);
+    onOpenList(ref.id, name, mode === "online");
   }
 
   return (
@@ -2695,7 +2695,7 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
 }
 
 // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-function ListScreen({ uid, listId, listName, onBack }) {
+function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [list, setList] = useState({ name: listName });
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -2745,8 +2745,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }
 
   useEffect(() => {
-    if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
+    if (toast) { const t = setTimeout(() => setToast(null), 3400); return () => clearTimeout(t); }
   }, [toast]);
+
+  useEffect(() => {
+    if (justCreatedOnline) setToast("⚠️ הזמינות תלויה בעיר המשלוח — מומלץ לבדוק באתר הרשת");
+    // eslint-disable-next-line
+  }, []);
 
   useEffect(() => db.collection("lists").doc(listId).onSnapshot(snap => {
     if (snap.exists) setList({ id: snap.id, ...snap.data() });
@@ -2873,7 +2878,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
         <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
-        <span className="text-[12px] text-[#C9BE9E] flex-shrink-0">{items ? `${items.length} פריטים` : ""}</span>
         {visibleProfiles.length > 0 && (
           <div className="flex bg-white/10 rounded-full p-0.5 flex-shrink-0">
             <button onClick={() => setViewMode("list")}
@@ -2888,14 +2892,15 @@ function ListScreen({ uid, listId, listName, onBack }) {
             </button>
           </div>
         )}
-        <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
+        <button onClick={() => setShowMenu(true)} className="relative text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">
+          ☰
+          {items && items.length > 0 && (
+            <span className="absolute -top-1 -left-1 min-w-[16px] h-4 px-1 rounded-full bg-[#E3A939] text-[#26361F] text-[9px] font-bold flex items-center justify-center leading-none">
+              {items.length}
+            </span>
+          )}
+        </button>
       </div>
-
-      {listMode === "online" && (
-        <div className="bg-[#FBF0D9] border-b border-[#E9D8A6] px-4 py-2">
-          <p className="text-[11px] text-[#8A5A15] text-center">הזמינות בפועל תלויה בעיר המשלוח שלכם — מומלץ לוודא באתר הרשת לפני ההזמנה</p>
-        </div>
-      )}
 
       {pricesLoading && visibleProfiles.length > 0 && (
         <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2">
@@ -3491,6 +3496,7 @@ function App() {
         uid={user.uid}
         listId={screen.id}
         listName={screen.name}
+        justCreatedOnline={screen.justCreatedOnline}
         onBack={() => setScreen({ view: "home" })}
       />
     );
@@ -3507,7 +3513,7 @@ function App() {
         photoURL={user.photoURL}
         displayName={user.displayName}
         email={user.email}
-        onOpenList={(id, name) => setScreen({ view: "list", id, name })}
+        onOpenList={(id, name, justCreatedOnline) => setScreen({ view: "list", id, name, justCreatedOnline })}
         onOpenSettings={() => setScreen({ view: "settings" })}
         onOpenHelp={() => setScreen({ view: "help" })}
         onOpenProfile={() => setScreen({ view: "profile" })}

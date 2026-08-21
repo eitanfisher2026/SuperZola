@@ -1014,7 +1014,14 @@ exports.resolveItemBarcodes = onCall(
       if (cached) vendorIds.forEach(v => { if (cached[v]) barcodes[v] = cached[v]; });
       const missingVendors = vendorIds.filter(v => !barcodes[v]);
       if (missingVendors.length === 0) { results[name] = { barcodes, missingVendors: [] }; continue; }
-      const candidates = fuzzyMatchCatalogs(name, searchCatalogsByVendor, promoPricesByVendor);
+      // extraCatalogsByVendor widens the pool fuzzyMatchCatalogs scores
+      // against (helps it find the right barcode even when the caller's own
+      // vendor's naming is a weak match), but a result only the caller can
+      // actually act on if it's priced at one of the vendors they searched
+      // for — otherwise it's just an unpickable "not sold here" row from an
+      // unrelated vendor's catalog.
+      const candidates = fuzzyMatchCatalogs(name, searchCatalogsByVendor, promoPricesByVendor)
+        .filter(c => vendorIds.some(v => c.prices[v] != null));
       console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length);
       results[name] = { barcodes, missingVendors, searchedVendors, candidates };
     }
