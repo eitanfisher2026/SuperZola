@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.36";
+const VERSION = "v1.37";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -255,7 +255,13 @@ function itemDisplayName(item) {
 }
 function profileLabel(profile, allProfiles) {
   let label = vendorLabel(profile.vendor);
-  if (profile.mode === "online") return label + " (אונליין)";
+  // A list's own profiles are always one mode or the other, never mixed —
+  // so tagging "(אונליין)" on every vendor in an all-online list is just
+  // noise repeated on every row. Only worth the tag when the profiles
+  // passed in actually mix both modes (kept correct rather than just
+  // dropped, in case that ever happens).
+  const mixedModes = (allProfiles || []).some(p => (p.mode === "online") !== (profile.mode === "online"));
+  if (profile.mode === "online") return mixedModes ? label + " (אונליין)" : label;
   const sameChainCount = allProfiles.filter(p => p.vendor === profile.vendor && p.mode !== "online").length;
   if (sameChainCount > 1) label += ` (סניף ${parseInt(profile.branchId, 10)})`;
   return label;
