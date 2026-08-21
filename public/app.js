@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.29";
+const VERSION = "v1.30";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2892,14 +2892,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
             </button>
           </div>
         )}
-        <button onClick={() => setShowMenu(true)} className="relative text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">
-          ☰
-          {items && items.length > 0 && (
-            <span className="absolute -top-1 -left-1 min-w-[16px] h-4 px-1 rounded-full bg-[#E3A939] text-[#26361F] text-[9px] font-bold flex items-center justify-center leading-none">
-              {items.length}
-            </span>
-          )}
-        </button>
+        <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
 
       {pricesLoading && visibleProfiles.length > 0 && (
@@ -2918,8 +2911,13 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
         ) : (
           groups.map(group => (
             <div key={group.label} className="mb-5">
-              <div className="text-xs font-semibold text-[#8A9A72] mb-1.5 flex items-center gap-1.5 uppercase tracking-wide px-1">
-                <span>{group.emoji}</span><span>{group.label}</span>
+              <div className="text-xs font-semibold text-[#8A9A72] mb-1.5 flex items-center justify-between gap-1.5 uppercase tracking-wide px-1">
+                <span className="flex items-center gap-1.5">
+                  <span>{group.emoji}</span><span>{group.label}</span>
+                </span>
+                <span className="text-[#A79A7C] normal-case tracking-normal font-normal" style={{ fontVariantNumeric: "tabular-nums" }}>
+                  {group.items.length}/{(items || []).length}
+                </span>
               </div>
               <div>
                 {group.items.map(item => (
