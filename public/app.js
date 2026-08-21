@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.31";
+const VERSION = "v1.32";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -488,7 +488,7 @@ function SignInScreen() {
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center gap-8 bg-[#FBF4E7] px-6">
       <AppIcon size={72} />
-      <h1 className="text-3xl" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>SuperZola</h1>
+      <h1 className="text-3xl" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>סופר זולה</h1>
       <button
         className="bg-[#2E4A3B] text-[#FBF4E7] px-7 py-3.5 rounded-2xl font-bold text-[15px] shadow-sm"
         onClick={signIn}
@@ -1288,7 +1288,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="flex items-center gap-2 px-4 pt-4 pb-3">
         <AppIcon size={30} />
-        <div className="text-[17px]" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>SuperZola</div>
+        <div className="text-[17px]" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>סופר זולה</div>
         <div className="flex-1" />
         <button onClick={onOpenHelp} className="text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">ⓘ</button>
         <div className="relative">
@@ -1362,7 +1362,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
       )}
 
       <div className="text-center py-8 text-[11px] text-[#C7B78E]">
-        SuperZola {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
+        סופר זולה {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
       </div>
 
       {showCheckPrice && (
@@ -1625,7 +1625,7 @@ function SettingsScreen({ uid, onBack }) {
   function shareApp() {
     const url = "https://superzola.web.app";
     if (navigator.share) {
-      navigator.share({ title: "SuperZola", text: "נסו את SuperZola — השוואת מחירים חכמה לרשימות קניות 🛒", url }).catch(() => {});
+      navigator.share({ title: "סופר זולה", text: "נסו את סופר זולה — השוואת מחירים חכמה לרשימות קניות 🛒", url }).catch(() => {});
     } else {
       navigator.clipboard.writeText(url).then(() => setToast("הקישור הועתק! 🔗"), () => setToast(url));
     }
