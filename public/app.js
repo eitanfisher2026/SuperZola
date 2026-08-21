@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.24";
+const VERSION = "v1.25";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -95,7 +95,7 @@ function useCategories() {
 }
 
 // Vendors with a known online-delivery branch, admin-managed (Settings).
-// { [vendorId]: { branchId, label, depotLat, depotLng, radiusKm, deliveryFee, minimumOrder, active } }
+// { [vendorId]: { branchId, label, deliveryFee, minimumOrder, active } }
 function useOnlineVendors() {
   const [onlineVendors, setOnlineVendors] = useState({});
   useEffect(() => {
@@ -115,12 +115,17 @@ function useOnlineVendors() {
 // adds a missing profile, never removes one, so a vendor the user turned
 // off stays off. Also warms each new branch's catalog, same as adding a
 // physical branch by hand.
-function provisionOnlineVendorProfiles(uid, homeAddress, onlineVendors, existingProfiles) {
-  if (!homeAddress || existingProfiles === null) return;
+// There's no reliable per-vendor coverage-area data to filter on (no real
+// depot coordinates, and asking an admin to hand-maintain a covered-cities
+// list per vendor isn't realistic to keep accurate) — so every active
+// onlineVendors entry gets provisioned for every user, and the actual
+// "does this vendor deliver to me" question is left to the user, with a
+// disclaimer shown alongside the list (Settings) pointing at that.
+function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles) {
+  if (existingProfiles === null) return;
   const existingVendors = new Set(existingProfiles.filter(p => p.mode === "online").map(p => p.vendor));
   Object.entries(onlineVendors).forEach(([vendor, cfg]) => {
-    if (existingVendors.has(vendor) || cfg.active === false || cfg.depotLat == null) return;
-    if (haversineMeters(homeAddress.lat, homeAddress.lng, cfg.depotLat, cfg.depotLng) > (cfg.radiusKm || 0) * 1000) return;
+    if (existingVendors.has(vendor) || cfg.active === false) return;
     db.collection("users").doc(uid).collection("vendorProfiles").add({
       vendor, branchId: cfg.branchId, active: true, mode: "online",
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -1174,7 +1179,7 @@ function ListCard({ list, onOpen }) {
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHelp, onSignOut }) {
+function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHelp, onOpenProfile, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
@@ -1241,8 +1246,12 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
           {showUserMenu && (
             <div onClick={e => e.stopPropagation()}
               className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-40 overflow-hidden">
-              <button onClick={() => { setShowUserMenu(false); onOpenSettings(); }}
+              <button onClick={() => { setShowUserMenu(false); onOpenProfile(); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
+                <span>👤</span><span>פרופיל</span>
+              </button>
+              <button onClick={() => { setShowUserMenu(false); onOpenSettings(); }}
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>⚙️</span><span>הגדרות</span>
               </button>
               <button onClick={() => { setShowUserMenu(false); onSignOut(); }}
@@ -1522,11 +1531,7 @@ function SettingsScreen({ uid, onBack }) {
   const [canInstall, setCanInstall] = useState(!isInstalled);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const [allUsers, setAllUsers] = useState(null);
-  const [homeAddress, setHomeAddress] = useState(null); // { address, lat, lng } | null
-  const [addressDraft, setAddressDraft] = useState("");
-  const [savingAddress, setSavingAddress] = useState(false);
-  const [addressError, setAddressError] = useState("");
-  const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", depotAddress: "", radiusKm: 20, deliveryFee: "", minimumOrder: "" });
+  const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
   const onlineVendors = useOnlineVendors();
@@ -1581,32 +1586,20 @@ function SettingsScreen({ uid, onBack }) {
 
   function startEditOnlineVendor(vendor, cfg) {
     setNewOnlineVendorDraft({
-      vendor, branchId: cfg.branchId || "", depotAddress: cfg.depotAddress || "",
-      depotLat: cfg.depotLat, depotLng: cfg.depotLng,
-      radiusKm: cfg.radiusKm || 20, deliveryFee: cfg.deliveryFee ?? "", minimumOrder: cfg.minimumOrder ?? "",
+      vendor, branchId: cfg.branchId || "",
+      deliveryFee: cfg.deliveryFee ?? "", minimumOrder: cfg.minimumOrder ?? "",
       active: cfg.active !== false,
     });
   }
   function resetOnlineVendorDraft() {
-    setNewOnlineVendorDraft({ vendor: "", branchId: "", depotAddress: "", radiusKm: 20, deliveryFee: "", minimumOrder: "" });
-  }
-  function geocodeOnlineVendorDepot() {
-    const q = (newOnlineVendorDraft.depotAddress || "").trim();
-    if (!q) return;
-    setSavingOnlineVendor(true);
-    geocodeAddress(q).then(coords => {
-      setSavingOnlineVendor(false);
-      if (!coords) { setToast("הכתובת לא נמצאה"); return; }
-      setNewOnlineVendorDraft(prev => Object.assign({}, prev, { depotLat: coords.lat, depotLng: coords.lng }));
-    });
+    setNewOnlineVendorDraft({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
   }
   function saveOnlineVendor() {
     const d = newOnlineVendorDraft;
-    if (!d.vendor || !d.branchId || d.depotLat == null) { setToast("נדרשים רשת, מספר סניף וכתובת מאותרת"); return; }
+    if (!d.vendor || !d.branchId) { setToast("נדרשים רשת ומספר סניף"); return; }
     setSavingOnlineVendor(true);
     db.collection("onlineVendors").doc(d.vendor).set({
-      branchId: d.branchId, label: vendorLabel(d.vendor), depotAddress: d.depotAddress,
-      depotLat: d.depotLat, depotLng: d.depotLng, radiusKm: parseFloat(d.radiusKm) || 20,
+      branchId: d.branchId, label: vendorLabel(d.vendor),
       deliveryFee: parseFloat(d.deliveryFee) || 0, minimumOrder: parseFloat(d.minimumOrder) || 0,
       active: d.active !== false,
     }).then(() => {
@@ -1627,30 +1620,12 @@ function SettingsScreen({ uid, onBack }) {
     setAi(data.ai || null);
     if (data.ai) setAiDraft(prev => Object.assign({}, prev, data.ai));
     setRole(data.role || null);
-    if (data.homeLat != null && data.homeLng != null) {
-      setHomeAddress({ address: data.homeAddress || "", lat: data.homeLat, lng: data.homeLng });
-    } else {
-      setHomeAddress(null);
-    }
   }), [uid]);
 
-  function saveHomeAddress() {
-    const q = addressDraft.trim();
-    if (!q) return;
-    setSavingAddress(true);
-    setAddressError("");
-    geocodeAddress(q).then(coords => {
-      setSavingAddress(false);
-      if (!coords) { setAddressError("הכתובת לא נמצאה"); return; }
-      db.collection("users").doc(uid).update({ homeAddress: q, homeLat: coords.lat, homeLng: coords.lng });
-      setAddressDraft("");
-    });
-  }
-
   useEffect(() => {
-    provisionOnlineVendorProfiles(uid, homeAddress, onlineVendors, profiles);
+    provisionOnlineVendorProfiles(uid, onlineVendors, profiles);
     // eslint-disable-next-line
-  }, [homeAddress, profiles, JSON.stringify(onlineVendors)]);
+  }, [profiles, JSON.stringify(onlineVendors)]);
 
   function loadCatalogTimestamps() {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -1886,46 +1861,28 @@ function SettingsScreen({ uid, onBack }) {
 
         <div>
           <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות לקנייה אונליין</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">
-            {homeAddress
-              ? "רשימת הרשתות שמגיעות לכתובת שלכם נוצרת אוטומטית — אפשר לכבות כל רשת שלא רוצים."
-              : "הזינו את כתובת המשלוח שלכם כדי לראות אילו רשתות אונליין מגיעות אליכם."}
-          </p>
-          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2 mb-3">
-            <div className="text-xs font-semibold text-[#8A7F66]">כתובת משלוח</div>
-            {homeAddress && (
-              <div className="text-sm text-[#2B2418] bg-[#F7F2E4] rounded-lg px-3 py-2">{homeAddress.address}</div>
-            )}
-            <div className="flex gap-2">
-              <input value={addressDraft} onChange={e => setAddressDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") saveHomeAddress(); }}
-                placeholder={homeAddress ? "עדכון כתובת..." : "הקלידו כתובת..."}
-                className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-              <button onClick={saveHomeAddress} disabled={!addressDraft.trim() || savingAddress}
-                className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-                {savingAddress ? <Spinner /> : "שמירה"}
-              </button>
-            </div>
-            {addressError && <p className="text-xs text-[#B8462F]">{addressError}</p>}
+          <p className="text-xs text-[#8A7F66] mb-3">רשימת כל הרשתות עם אפשרות קנייה אונליין — אפשר לכבות כל רשת שלא רוצים.</p>
+          <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2.5 mb-3">
+            <p className="text-xs text-[#8A5A15]">
+              הזמינות בפועל תלויה בעיר המשלוח שלכם — הרשימה כאן לא בודקת את זה. מומלץ לוודא באתר הרשת לפני ההזמנה.
+            </p>
           </div>
-          {homeAddress && (
-            <div className="flex flex-col gap-2">
-              {onlineProfiles.length === 0 && (
-                <div className="text-[#8A7F66] text-sm">אין עדיין רשתות אונליין שמגיעות לכתובת שלכם</div>
-              )}
-              {onlineProfiles.map(p => (
-                <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
-                  (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
-                  <button onClick={() => toggleProfile(p)}
-                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
-                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
-                    {p.active ? "פעיל" : "כבוי"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="flex flex-col gap-2">
+            {onlineProfiles.length === 0 && (
+              <div className="text-[#8A7F66] text-sm">אין עדיין רשתות לקנייה אונליין</div>
+            )}
+            {onlineProfiles.map(p => (
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
+                (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
+                <button onClick={() => toggleProfile(p)}
+                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                  {p.active ? "פעיל" : "כבוי"}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div>
@@ -2066,7 +2023,7 @@ function SettingsScreen({ uid, onBack }) {
           <div>
             <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול רשתות אונליין</h2>
             <p className="text-xs text-[#8A7F66] mb-3">
-              רשתות עם סניף אונליין ידוע (נמצא בקובץ המחירים הרגיל שלהן), וכתובת המחסן/מוקד שממנו נקבע רדיוס המשלוח.
+              רשתות עם סניף אונליין ידוע (נמצא בקובץ המחירים הרגיל שלהן), ופרטי המשלוח שלהן.
             </p>
             <div className="flex flex-col gap-2 mb-3">
               {Object.keys(onlineVendors).length === 0 && (
@@ -2080,7 +2037,7 @@ function SettingsScreen({ uid, onBack }) {
                     <button onClick={() => setConfirmDeleteOnlineVendor(vendor)} className="w-7 h-7 flex items-center justify-center text-[#B8462F] text-base flex-shrink-0">🗑️</button>
                   </div>
                   <div className="text-[11px] text-[#A79A7C] mt-1">
-                    סניף {cfg.branchId} · {cfg.depotAddress} · רדיוס {cfg.radiusKm} ק"מ · משלוח ₪{cfg.deliveryFee} · מינימום ₪{cfg.minimumOrder}
+                    סניף {cfg.branchId} · משלוח ₪{cfg.deliveryFee} · מינימום ₪{cfg.minimumOrder}
                   </div>
                 </div>
               ))}
@@ -2096,24 +2053,7 @@ function SettingsScreen({ uid, onBack }) {
               <input value={newOnlineVendorDraft.branchId} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { branchId: e.target.value }))}
                 placeholder="מספר הסניף האונליין (מקובץ המחירים)"
                 className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-              <div className="flex gap-2">
-                <input value={newOnlineVendorDraft.depotAddress} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { depotAddress: e.target.value, depotLat: null, depotLng: null }))}
-                  placeholder="כתובת מחסן/מוקד"
-                  className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-                <button onClick={geocodeOnlineVendorDepot} disabled={!newOnlineVendorDraft.depotAddress || savingOnlineVendor}
-                  className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-                  איתור
-                </button>
-              </div>
-              {newOnlineVendorDraft.depotLat != null && (
-                <p className="text-[11px] text-[#2E7D4F]">✓ הכתובת אותרה</p>
-              )}
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[11px] text-[#8A7F66] block mb-1">רדיוס (ק"מ)</label>
-                  <input type="number" value={newOnlineVendorDraft.radiusKm} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { radiusKm: e.target.value }))}
-                    className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
-                </div>
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[11px] text-[#8A7F66] block mb-1">משלוח (₪)</label>
                   <input type="number" value={newOnlineVendorDraft.deliveryFee} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { deliveryFee: e.target.value }))}
@@ -2729,24 +2669,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
   const [showCopyItems, setShowCopyItems] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
-  const [homeAddress, setHomeAddress] = useState(null);
-  const [addressDraft, setAddressDraft] = useState("");
-  const [savingAddress, setSavingAddress] = useState(false);
-  const [addressError, setAddressError] = useState("");
   const [profiles, setProfiles] = useState(null); // every vendorProfiles doc, active or not — needed to avoid re-provisioning a vendor the user turned off
-
-  function saveHomeAddress() {
-    const q = addressDraft.trim();
-    if (!q) return;
-    setSavingAddress(true);
-    setAddressError("");
-    geocodeAddress(q).then(coords => {
-      setSavingAddress(false);
-      if (!coords) { setAddressError("הכתובת לא נמצאה"); return; }
-      db.collection("users").doc(uid).update({ homeAddress: q, homeLat: coords.lat, homeLng: coords.lng });
-      setAddressDraft("");
-    });
-  }
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
@@ -2792,9 +2715,6 @@ function ListScreen({ uid, listId, listName, onBack }) {
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     const data = snap.data() || {};
     setHasAi(!!(data.ai && data.ai.provider));
-    setHomeAddress(data.homeLat != null && data.homeLng != null
-      ? { address: data.homeAddress || "", lat: data.homeLat, lng: data.homeLng }
-      : null);
   }), [uid]);
 
   // Opening an online list for the first time is what actually creates its
@@ -2803,9 +2723,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
   // without a separate trip to Settings first.
   useEffect(() => {
     if (listMode !== "online") return;
-    provisionOnlineVendorProfiles(uid, homeAddress, onlineVendors, profiles);
+    provisionOnlineVendorProfiles(uid, onlineVendors, profiles);
     // eslint-disable-next-line
-  }, [listMode, homeAddress, profiles, JSON.stringify(onlineVendors)]);
+  }, [listMode, profiles, JSON.stringify(onlineVendors)]);
 
   const barcodesByVendor = {};
   (items || []).forEach(it => {
@@ -2926,20 +2846,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
 
-      {listMode === "online" && !homeAddress && (
-        <div className="bg-[#FBF0D9] border-b border-[#E9D8A6] px-4 py-3">
-          <p className="text-xs text-[#8A5A15] mb-2">הזינו כתובת משלוח כדי לראות אילו רשתות אונליין מגיעות אליכם</p>
-          <div className="flex gap-2">
-            <input value={addressDraft} onChange={e => setAddressDraft(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") saveHomeAddress(); }}
-              placeholder="הקלידו כתובת..."
-              className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2 text-right bg-white outline-none text-sm" />
-            <button onClick={saveHomeAddress} disabled={!addressDraft.trim() || savingAddress}
-              className="px-4 rounded-lg bg-[#8A5A15] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-              {savingAddress ? <Spinner /> : "שמירה"}
-            </button>
-          </div>
-          {addressError && <p className="text-xs text-[#B8462F] mt-1">{addressError}</p>}
+      {listMode === "online" && (
+        <div className="bg-[#FBF0D9] border-b border-[#E9D8A6] px-4 py-2">
+          <p className="text-[11px] text-[#8A5A15] text-center">הזמינות בפועל תלויה בעיר המשלוח שלכם — מומלץ לוודא באתר הרשת לפני ההזמנה</p>
         </div>
       )}
 
@@ -3079,6 +2988,78 @@ function ListScreen({ uid, listId, listName, onBack }) {
   );
 }
 
+// ── PROFILE ───────────────────────────────────────────────────────────────────
+// Where the user's own info lives — starts with delivery address (used to
+// decide which online vendors make sense to show, once that's built out
+// further); phone number is planned for later, alongside a real security
+// review of who can read this data (see memory: project_profile_page_future).
+function ProfileScreen({ uid, onBack }) {
+  const [homeAddress, setHomeAddress] = useState(null); // { address, lat, lng } | null
+  const [addressDraft, setAddressDraft] = useState("");
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [addressError, setAddressError] = useState("");
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
+  }, [toast]);
+
+  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
+    const data = snap.data() || {};
+    setHomeAddress(data.homeLat != null && data.homeLng != null
+      ? { address: data.homeAddress || "", lat: data.homeLat, lng: data.homeLng }
+      : null);
+  }), [uid]);
+
+  function saveHomeAddress() {
+    const q = addressDraft.trim();
+    if (!q) return;
+    setSavingAddress(true);
+    setAddressError("");
+    geocodeAddress(q).then(coords => {
+      setSavingAddress(false);
+      if (!coords) { setAddressError("הכתובת לא נמצאה"); return; }
+      db.collection("users").doc(uid).update({ homeAddress: q, homeLat: coords.lat, homeLng: coords.lng })
+        .then(() => setToast("הכתובת נשמרה"));
+      setAddressDraft("");
+    });
+  }
+
+  return (
+    <div className="min-h-dvh bg-[#FBF4E7]">
+      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
+        <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
+        <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>פרופיל</h1>
+      </div>
+
+      <div className="p-4 space-y-6">
+        <div>
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>כתובת משלוח</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">משמשת לזיהוי עיר המשלוח שלכם עבור קניות אונליין.</p>
+          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+            {homeAddress && (
+              <div className="text-sm text-[#2B2418] bg-[#F7F2E4] rounded-lg px-3 py-2">{homeAddress.address}</div>
+            )}
+            <div className="flex gap-2">
+              <input value={addressDraft} onChange={e => setAddressDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") saveHomeAddress(); }}
+                placeholder={homeAddress ? "עדכון כתובת..." : "הקלידו כתובת..."}
+                className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+              <button onClick={saveHomeAddress} disabled={!addressDraft.trim() || savingAddress}
+                className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+                {savingAddress ? <Spinner /> : "שמירה"}
+              </button>
+            </div>
+            {addressError && <p className="text-xs text-[#B8462F]">{addressError}</p>}
+          </div>
+        </div>
+      </div>
+
+      {toast && <Toast msg={toast} />}
+    </div>
+  );
+}
+
 // ── HELP ──────────────────────────────────────────────────────────────────────
 function HelpCard({ icon, title, children }) {
   return (
@@ -3192,6 +3173,8 @@ function App() {
     content = <SettingsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
   } else if (screen.view === "help") {
     content = <HelpScreen onBack={() => setScreen({ view: "home" })} />;
+  } else if (screen.view === "profile") {
+    content = <ProfileScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
   } else {
     content = (
       <Home
@@ -3201,6 +3184,7 @@ function App() {
         onOpenList={(id, name) => setScreen({ view: "list", id, name })}
         onOpenSettings={() => setScreen({ view: "settings" })}
         onOpenHelp={() => setScreen({ view: "help" })}
+        onOpenProfile={() => setScreen({ view: "profile" })}
         onSignOut={signOut}
       />
     );
