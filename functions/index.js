@@ -994,14 +994,13 @@ exports.resolveItemBarcodes = onCall(
       promoPricesByVendor[vendor] = promoSnap.data() || {};
     }));
 
-    const extraCatalogsByVendor = {};
-    await Promise.all(VENDOR_IDS.filter(v => !catalogsByVendor[v]).map(async (vendor) => {
-      const idxSnap = await db.collection('vendorCatalogIndex').orderBy(admin.firestore.FieldPath.documentId()).startAt(vendor + '__').endAt(vendor + '__' + String.fromCharCode(0xFFFF)).limit(1).get();
-      if (idxSnap.empty) return;
-      const catalogItems = await readAllCatalogItems(idxSnap.docs[0].id);
-      if (Object.keys(catalogItems).length > 0) extraCatalogsByVendor[vendor] = catalogItems;
-    }));
-    const searchCatalogsByVendor = Object.assign({}, catalogsByVendor, extraCatalogsByVendor);
+    // Used to widen fuzzy-match scoring by pulling in every OTHER vendor's
+    // full catalog (thousands of docs each) on every search — but results
+    // are filtered below to only candidates priced at one of the caller's
+    // own vendorIds anyway, so that cost bought almost nothing and was a
+    // major source of search latency. Dropped: search only the vendor(s)
+    // the caller actually asked about.
+    const searchCatalogsByVendor = catalogsByVendor;
     const searchedVendors = Object.keys(searchCatalogsByVendor);
 
     const results = {};
