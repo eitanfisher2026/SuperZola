@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.25";
+const VERSION = "v1.26";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -57,6 +57,32 @@ function geocodeAddress(query) {
     .then(r => r.json())
     .then(results => (results && results.length > 0) ? { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) } : null)
     .catch(() => null);
+}
+// Structured (not free-text) search — city comes from the real government
+// locality list already, so scoping the street lookup to it is a genuine
+// "does this street exist in this city" check, not just "does this text
+// resolve to somewhere in Israel".
+function geocodeStructuredAddress(city, street, houseNumber) {
+  if (!city || !street) return Promise.resolve(null);
+  const params = new URLSearchParams({
+    format: "json", addressdetails: "1", limit: "1", country: "Israel",
+    city, street: (houseNumber ? houseNumber + " " : "") + street,
+  });
+  return fetch("https://nominatim.openstreetmap.org/search?" + params.toString())
+    .then(r => r.json())
+    .then(results => (results && results.length > 0)
+      ? { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) }
+      : null)
+    .catch(() => null);
+}
+// Israel's official government locality list (~1,270 real cities/
+// settlements) — so the city picker only ever offers real places.
+function useIsraeliCities() {
+  const [cities, setCities] = useState([]);
+  useEffect(() => {
+    fns.httpsCallable("getIsraeliCities")({}).then(res => setCities(res.data.cities || [])).catch(() => {});
+  }, []);
+  return cities;
 }
 
 // Seeded into Firestore (categories collection) the first time it's empty —
@@ -2993,37 +3019,84 @@ function ListScreen({ uid, listId, listName, onBack }) {
 // decide which online vendors make sense to show, once that's built out
 // further); phone number is planned for later, alongside a real security
 // review of who can read this data (see memory: project_profile_page_future).
+function blankAddressDraft() {
+  return { city: "", street: "", houseNumber: "", label: "" };
+}
+
 function ProfileScreen({ uid, onBack }) {
-  const [homeAddress, setHomeAddress] = useState(null); // { address, lat, lng } | null
-  const [addressDraft, setAddressDraft] = useState("");
-  const [savingAddress, setSavingAddress] = useState(false);
-  const [addressError, setAddressError] = useState("");
+  const [addresses, setAddresses] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null); // null = adding new
+  const [draft, setDraft] = useState(blankAddressDraft());
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState("");
+  const [confirmDeleteAddress, setConfirmDeleteAddress] = useState(null);
   const [toast, setToast] = useState(null);
+  const cities = useIsraeliCities();
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
   }, [toast]);
 
-  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
-    const data = snap.data() || {};
-    setHomeAddress(data.homeLat != null && data.homeLng != null
-      ? { address: data.homeAddress || "", lat: data.homeLat, lng: data.homeLng }
-      : null);
-  }), [uid]);
+  useEffect(() => db.collection("users").doc(uid).collection("addresses").orderBy("createdAt")
+    .onSnapshot(snap => setAddresses(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
 
-  function saveHomeAddress() {
-    const q = addressDraft.trim();
-    if (!q) return;
-    setSavingAddress(true);
-    setAddressError("");
-    geocodeAddress(q).then(coords => {
-      setSavingAddress(false);
-      if (!coords) { setAddressError("הכתובת לא נמצאה"); return; }
-      db.collection("users").doc(uid).update({ homeAddress: q, homeLat: coords.lat, homeLng: coords.lng })
-        .then(() => setToast("הכתובת נשמרה"));
-      setAddressDraft("");
+  function openAddForm() {
+    setEditingId(null);
+    setDraft(blankAddressDraft());
+    setVerifyError("");
+    setShowForm(true);
+  }
+  function openEditForm(a) {
+    setEditingId(a.id);
+    setDraft({ city: a.city, street: a.street, houseNumber: a.houseNumber || "", label: a.label || "" });
+    setVerifyError("");
+    setShowForm(true);
+  }
+
+  // Verifying against the real street network (scoped to a city that's
+  // itself from the government locality list) is what "known and valid in
+  // Israel" actually means here — not just "some text was typed".
+  function verifyAndSave() {
+    if (!draft.city || !draft.street.trim()) return;
+    setVerifying(true);
+    setVerifyError("");
+    geocodeStructuredAddress(draft.city, draft.street.trim(), draft.houseNumber.trim()).then(coords => {
+      setVerifying(false);
+      if (!coords) { setVerifyError("לא נמצאה כתובת כזו — בדקו את שם הרחוב"); return; }
+      const payload = {
+        city: draft.city, street: draft.street.trim(), houseNumber: draft.houseNumber.trim(),
+        label: draft.label.trim(), lat: coords.lat, lng: coords.lng,
+      };
+      const isFirst = (addresses || []).length === 0;
+      const col = db.collection("users").doc(uid).collection("addresses");
+      const save = editingId
+        ? col.doc(editingId).update(payload)
+        : col.add(Object.assign({}, payload, { isDefault: isFirst, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+      save.then(() => {
+        setToast("הכתובת נשמרה");
+        setShowForm(false);
+      }, () => setVerifyError("שגיאה בשמירה"));
     });
   }
+
+  function makeDefault(addressId) {
+    const batch = db.batch();
+    const col = db.collection("users").doc(uid).collection("addresses");
+    (addresses || []).forEach(a => batch.update(col.doc(a.id), { isDefault: a.id === addressId }));
+    batch.commit();
+  }
+
+  function deleteAddress(a) {
+    const col = db.collection("users").doc(uid).collection("addresses");
+    col.doc(a.id).delete().then(() => {
+      if (!a.isDefault) return;
+      const remaining = (addresses || []).filter(x => x.id !== a.id);
+      if (remaining.length > 0) col.doc(remaining[0].id).update({ isDefault: true });
+    });
+  }
+
+  const addressLine = a => `${a.street}${a.houseNumber ? " " + a.houseNumber : ""}, ${a.city}`;
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
@@ -3034,27 +3107,70 @@ function ProfileScreen({ uid, onBack }) {
 
       <div className="p-4 space-y-6">
         <div>
-          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>כתובת משלוח</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">משמשת לזיהוי עיר המשלוח שלכם עבור קניות אונליין.</p>
-          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-            {homeAddress && (
-              <div className="text-sm text-[#2B2418] bg-[#F7F2E4] rounded-lg px-3 py-2">{homeAddress.address}</div>
-            )}
-            <div className="flex gap-2">
-              <input value={addressDraft} onChange={e => setAddressDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") saveHomeAddress(); }}
-                placeholder={homeAddress ? "עדכון כתובת..." : "הקלידו כתובת..."}
-                className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-              <button onClick={saveHomeAddress} disabled={!addressDraft.trim() || savingAddress}
-                className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-                {savingAddress ? <Spinner /> : "שמירה"}
-              </button>
-            </div>
-            {addressError && <p className="text-xs text-[#B8462F]">{addressError}</p>}
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>כתובות משלוח</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">כל כתובת מאומתת מול רשת הרחובות בפועל. הכתובת המסומנת היא ברירת המחדל.</p>
+
+          <div className="flex flex-col gap-2 mb-3">
+            {addresses === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
+            {addresses && addresses.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו עדיין כתובות</div>}
+            {addresses && addresses.map(a => (
+              <div key={a.id} className={"rounded-xl px-3 py-2.5 border flex items-start gap-2 " +
+                (a.isDefault ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                <button onClick={() => makeDefault(a.id)} title="הפוך לברירת מחדל" className="flex-shrink-0 mt-0.5">
+                  <span className={"w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] " +
+                    (a.isDefault ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
+                </button>
+                <div className="flex-1 min-w-0">
+                  {a.label && <div className="text-xs font-semibold text-[#8A7F66]">{a.label}</div>}
+                  <div className="text-sm text-[#2B2418]">{addressLine(a)}</div>
+                </div>
+                <button onClick={() => openEditForm(a)} className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm flex-shrink-0">✏️</button>
+                <button onClick={() => setConfirmDeleteAddress(a)} className="w-7 h-7 flex items-center justify-center text-[#B8462F] text-base flex-shrink-0">🗑️</button>
+              </div>
+            ))}
           </div>
+
+          {!showForm ? (
+            <button onClick={openAddForm}
+              className="w-full border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px]">
+              + הוספת כתובת
+            </button>
+          ) : (
+            <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+              <div className="text-xs font-semibold text-[#8A7F66]">{editingId ? "עריכת כתובת" : "כתובת חדשה"}</div>
+              <input value={draft.label} onChange={e => setDraft(prev => Object.assign({}, prev, { label: e.target.value }))}
+                placeholder="שם לכתובת (אופציונלי, למשל בית)"
+                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+              <select value={draft.city} onChange={e => setDraft(prev => Object.assign({}, prev, { city: e.target.value }))}
+                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm">
+                <option value="">בחירת עיר...</option>
+                {cities.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <div className="flex gap-2">
+                <input value={draft.street} onChange={e => setDraft(prev => Object.assign({}, prev, { street: e.target.value }))}
+                  placeholder="רחוב"
+                  className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+                <input value={draft.houseNumber} onChange={e => setDraft(prev => Object.assign({}, prev, { houseNumber: e.target.value }))}
+                  placeholder="מספר" type="text" inputMode="numeric"
+                  className="w-20 flex-shrink-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-center bg-white outline-none text-sm" />
+              </div>
+              {verifyError && <p className="text-xs text-[#B8462F]">{verifyError}</p>}
+              <div className="flex gap-2">
+                <button onClick={verifyAndSave} disabled={!draft.city || !draft.street.trim() || verifying}
+                  className="flex-1 bg-[#2E4A3B] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+                  {verifying ? <Spinner /> : "אימות ושמירה"}
+                </button>
+                <button onClick={() => setShowForm(false)} className="px-4 rounded-lg border border-[#DECBA1] text-[#8A7F66] text-sm">ביטול</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
+      {confirmDeleteAddress && (
+        <ConfirmDialog message={`למחוק את הכתובת "${addressLine(confirmDeleteAddress)}"?`}
+          onConfirm={() => deleteAddress(confirmDeleteAddress)} onClose={() => setConfirmDeleteAddress(null)} />
+      )}
       {toast && <Toast msg={toast} />}
     </div>
   );

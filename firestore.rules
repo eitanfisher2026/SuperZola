@@ -34,6 +34,11 @@ service cloud.firestore {
       match /vendorProfiles/{profileId} {
         allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
       }
+      // A user's own saved delivery addresses (city, street, house number,
+      // geocoded lat/lng, which one is default).
+      match /addresses/{addressId} {
+        allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
+      }
     }
 
     // A list and its items belong to exactly one owner. No sharedWith.
