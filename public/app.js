@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.33";
+const VERSION = "v1.34";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2311,7 +2311,7 @@ function SettingsScreen({ uid, onBack }) {
 // add-item wizard, against no particular list; only writes anything if the
 // user explicitly picks a list to add it to at the end.
 function CheckPriceModal({ uid, categories, onClose, showToast }) {
-  const activeProfiles = useActiveVendorProfiles(uid);
+  const allActiveProfiles = useActiveVendorProfiles(uid);
   const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
   const [draft, setDraft] = useState({ name: "", category: other.label, categoryEmoji: other.emoji, barcodes: {}, matchedNames: {} });
   const [priceMap, setPriceMap] = useState({});
@@ -2321,13 +2321,38 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
   const [newListMode, setNewListMode] = useState(false);
   const [newListName, setNewListName] = useState("");
   const [inserting, setInserting] = useState(false);
+  // Which vendors count depends on whether the item is meant for a regular
+  // (in-store) or online buy — remembered per account rather than asked
+  // every time, since most people mostly shop one way and rarely switch.
+  const [mode, setMode] = useState("instore");
+  const [modeLoaded, setModeLoaded] = useState(false);
+
+  useEffect(() => {
+    db.collection("users").doc(uid).get().then(snap => {
+      if ((snap.data() || {}).checkPriceMode === "online") setMode("online");
+      setModeLoaded(true);
+    }, () => setModeLoaded(true));
+    // eslint-disable-next-line
+  }, [uid]);
+
+  function switchMode(next) {
+    if (next === mode) return;
+    setMode(next);
+    setDraft(prev => Object.assign({}, prev, { barcodes: {}, matchedNames: {} }));
+    setPriceMap({});
+    setPromoMap({});
+    setMyLists(null);
+    db.collection("users").doc(uid).update({ checkPriceMode: next }).catch(() => {});
+  }
+
+  const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === mode);
 
   function openListPicker() {
     if (!draft.name.trim()) return;
     setShowListPicker(true);
     if (myLists === null) {
       db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => (l.mode || "instore") === mode);
         rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
         setMyLists(rows);
       });
@@ -2353,7 +2378,7 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
     const name = newListName.trim();
     if (!name || inserting) return;
     setInserting(true);
-    db.collection("lists").add({ name, ownerId: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+    db.collection("lists").add({ name, ownerId: uid, mode, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
       insertIntoList(ref.id, name);
     }, () => { setInserting(false); showToast("שגיאה ביצירת הרשימה"); });
   }
@@ -2362,10 +2387,22 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>בדיקת מחיר</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">בודקים מחיר לפני שמחליטים אם להוסיף לרשימה</p>
-      {activeProfiles.length === 0 ? (
-        <p className="text-xs text-[#A79A7C] text-center py-4">אין רשתות פעילות</p>
+      <div className="flex bg-[#F3ECD9] rounded-full p-0.5 mb-4">
+        <button onClick={() => switchMode("instore")}
+          className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (mode === "instore" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+          רגיל
+        </button>
+        <button onClick={() => switchMode("online")}
+          className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (mode === "online" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+          אונליין
+        </button>
+      </div>
+      {!modeLoaded ? (
+        <div className="flex justify-center py-6"><Spinner2 /></div>
+      ) : activeProfiles.length === 0 ? (
+        <p className="text-xs text-[#A79A7C] text-center py-4">{mode === "online" ? "אין רשתות אונליין פעילות" : "אין רשתות פעילות"}</p>
       ) : (
-        <PriceMatchStep draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
+        <PriceMatchStep key={mode} draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
           priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap}
           onQueryChange={name => setDraft(prev => Object.assign({}, prev, { name }))} />
       )}
