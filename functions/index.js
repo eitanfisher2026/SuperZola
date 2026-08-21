@@ -391,8 +391,30 @@ async function ftpDownloadBuffer(client, fileName) {
   await withTimeout(client.downloadTo(sink, fileName), 90000, 'FTP download');
   return Buffer.concat(chunks);
 }
+// A single-entry ZIP's local file header: magic, compression method,
+// compressed size, and the name/extra field lengths needed to find where
+// the actual entry data starts (fixed 30-byte header, see APPNOTE.TXT).
+function unzipSingleEntry(buf) {
+  if (buf.length < 30 || buf.readUInt32LE(0) !== 0x04034b50) throw new Error('not a valid zip local file header');
+  const method = buf.readUInt16LE(8);
+  const compSize = buf.readUInt32LE(18);
+  const nameLen = buf.readUInt16LE(26);
+  const extraLen = buf.readUInt16LE(28);
+  const dataStart = 30 + nameLen + extraLen;
+  const compData = buf.subarray(dataStart, dataStart + compSize);
+  if (method === 0) return compData;
+  if (method === 8) return require('zlib').inflateRawSync(compData);
+  throw new Error('unsupported zip compression method ' + method);
+}
+// Some chains' feeds name a file "...gz" that's actually a ZIP archive (one
+// XML entry inside) rather than a gzip stream — happened with Rami Levy's
+// online-branch (039) feed specifically, which crashed gunzipSync with
+// "incorrect header check" and, since that failure was swallowed upstream,
+// silently left that branch's catalog permanently un-cached. Detecting by
+// the real magic bytes instead of trusting the extension survives that.
 function parseXmlBuffer(buf, isGz) {
-  if (isGz) buf = require('zlib').gunzipSync(buf);
+  if (buf.length >= 4 && buf.readUInt32LE(0) === 0x04034b50) buf = unzipSingleEntry(buf);
+  else if (isGz || (buf[0] === 0x1f && buf[1] === 0x8b)) buf = require('zlib').gunzipSync(buf);
   const { XMLParser } = require('fast-xml-parser');
   const parser = new XMLParser({ ignoreAttributes: false, processEntities: { maxTotalExpansions: 100000 } });
   return parser.parse(decodeXmlBuffer(buf));
@@ -514,9 +536,12 @@ function itemsFromPriceXml(obj) {
     const barcode = String(item.ItemCode ?? '').trim();
     const price = parseFloat(item.ItemPrice);
     if (!barcode || !Number.isFinite(price)) continue;
-    const manufacturer = String(item.ManufactureName ?? '').trim();
+    // A couple of feeds (seen on Rami Levy's online-branch feed) use ItemNm
+    // / ManufacturerName instead of the usual ItemName / ManufactureName —
+    // without this fallback every item silently came through nameless.
+    const manufacturer = String(item.ManufactureName ?? item.ManufacturerName ?? '').trim();
     items[barcode] = {
-      name: String(item.ItemName ?? '').trim(), price,
+      name: String(item.ItemName ?? item.ItemNm ?? '').trim(), price,
       unit: String(item.UnitOfMeasure ?? item.UnitQty ?? '').trim(),
       manufacturer: manufacturer === 'לא ידוע' ? '' : manufacturer,
     };

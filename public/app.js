@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.34";
+const VERSION = "v1.35";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -747,11 +747,6 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   // cleared) — the old match only actually gets dropped once a new pick is
   // confirmed, and cancelling leaves everything exactly as it was.
   const [replacing, setReplacing] = useState(false);
-  // Barcode -> candidate, for picking more than one search result at once
-  // (e.g. one candidate for Carrefour, a different one for Shufersal) — as
-  // long as they don't both cover the same vendor, since only one barcode
-  // can ever be "the" match for a given vendor on this item.
-  const [selected, setSelected] = useState({});
   const searchTakingLong = useDelayedFlag(isResolving, 4000);
 
   const matchedVendorIds = Object.keys(draft.barcodes || {});
@@ -772,7 +767,6 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     const scopedProfiles = vendorId ? (activeProfiles || []).filter(p => p.vendor === vendorId) : (activeProfiles || []);
     const payload = { items: [q], force: true, profileIds: scopedProfiles.map(p => p.id) };
     if (vendorId) payload.vendors = [vendorId];
-    setSelected({});
     fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
       setIsResolving(false);
       setHasSearched(true);
@@ -790,13 +784,11 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     setReplacing(true);
     setSearchScope(null);
     setCandidates(null);
-    setSelected({});
     setSearchQuery(draft.name || "");
   }
   function cancelReplace() {
     setReplacing(false);
     setCandidates(null);
-    setSelected({});
   }
 
   // Tapping a vendor row: an unmatched one searches right away (one tap,
@@ -808,7 +800,6 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   function selectVendor(vendorId, alreadyMatched) {
     setReplacing(false);
     setCandidates(null);
-    setSelected({});
     if (!alreadyMatched) {
       const q = draft.name || "";
       setSearchScope(vendorId);
@@ -828,62 +819,68 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     return searchedVendors.filter(v => c.prices && c.prices[v] != null);
   }
 
-  function toggleSelectCandidate(c) {
-    setSelected(prev => {
-      const next = Object.assign({}, prev);
-      if (next[c.barcode]) delete next[c.barcode]; else next[c.barcode] = c;
-      return next;
-    });
-  }
-
-  // Handles both a single immediate pick and confirming a multi-select
-  // batch (one candidate per vendor, e.g. Carrefour's match plus a
-  // different Shufersal match, picked together in one action) — the same
-  // merge logic either way, just over a list of one or several candidates.
-  const applyCandidates = (chosen) => {
-    const withVendors = chosen.map(c => ({ c, vendorsToConfirm: vendorsCoveredBy(c) })).filter(e => e.vendorsToConfirm.length > 0);
-    if (withVendors.length === 0) return;
+  // Applies one candidate's match right away — used both for the common
+  // "tap the row, done" single pick (which also closes the results) and
+  // for a checkbox tap in a multi-vendor search (which commits into the
+  // draft immediately but leaves the results open so another vendor's
+  // match can be picked right after). There's no separate "confirm
+  // selection" step: every check is already saved into the item.
+  const applyCandidate = (c, opts) => {
+    const keepOpen = !!(opts && opts.keepOpen);
+    const vendorsToConfirm = vendorsCoveredBy(c);
+    if (vendorsToConfirm.length === 0) return;
     // Mid-replace, the old match is only actually dropped right here, at
     // the moment a new one is confirmed — never when "🔄 החלפה" was tapped.
-    // A scoped single-vendor search never needs this: vendorsToConfirm is
-    // already just that one vendor, so merging naturally leaves every
-    // other vendor's match untouched.
+    // Consumed on this very first commit (not just on close) so a second
+    // checkbox tap right after doesn't wipe the one just picked.
     setDraft(prev => {
       const nb = Object.assign({}, replacing ? {} : (prev.barcodes || {}));
       const nn = Object.assign({}, replacing ? {} : (prev.matchedNames || {}));
-      withVendors.forEach(({ c, vendorsToConfirm }) => vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; }));
+      vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
       return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
     });
     setPriceMap(prev => {
       const next = Object.assign({}, replacing ? {} : prev);
-      withVendors.forEach(({ c, vendorsToConfirm }) => (activeProfiles || []).forEach(p => {
+      (activeProfiles || []).forEach(p => {
         if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
         next[p.id] = Object.assign({}, next[p.id]);
         next[p.id][c.barcode] = c.prices[p.vendor];
-      }));
+      });
       return next;
     });
     setPromoMap(prev => {
       const next = Object.assign({}, replacing ? {} : prev);
-      withVendors.forEach(({ c, vendorsToConfirm }) => (activeProfiles || []).forEach(p => {
+      (activeProfiles || []).forEach(p => {
         if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
         const promoInfo = c.promoPrices && c.promoPrices[p.vendor];
         if (!promoInfo) return;
         next[p.id] = Object.assign({}, next[p.id]);
         next[p.id][c.barcode] = promoInfo;
-      }));
+      });
       return next;
     });
-    setCandidates(null);
-    setSelected({});
     setReplacing(false);
-    setSearchScope(null);
-    withVendors.forEach(({ c, vendorsToConfirm }) => {
-      fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
-    });
+    if (!keepOpen) { setCandidates(null); setSearchScope(null); }
+    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
   };
-  const pickCandidate = (c) => applyCandidates([c]);
-  const confirmSelection = () => applyCandidates(Object.values(selected));
+  const pickCandidate = (c) => applyCandidate(c, { keepOpen: false });
+
+  // Unchecking only ever removes barcodes this exact candidate put there —
+  // it never touches a vendor some other candidate has since claimed.
+  function removeCandidate(c) {
+    const vendorsToConfirm = vendorsCoveredBy(c);
+    setDraft(prev => {
+      const nb = Object.assign({}, prev.barcodes || {});
+      const nn = Object.assign({}, prev.matchedNames || {});
+      vendorsToConfirm.forEach(v => { if (nb[v] === c.barcode) { delete nb[v]; delete nn[v]; } });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+    });
+  }
+
+  function toggleCommit(c, isChecked) {
+    if (isChecked) removeCandidate(c);
+    else applyCandidate(c, { keepOpen: true });
+  }
 
   const vendorEffectivePrices = {};
   (activeProfiles || []).forEach(p => {
@@ -942,46 +939,30 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
 
       {isResolving && (
         <p className="text-xs text-[#A79A7C] text-center py-2">
-          {searchTakingLong ? "עדיין מחפש — ברשתות חדשות זה לוקח קצת יותר זמן." : "מחפש..."}
+          {searchTakingLong ? "מעדכנים מחירים לרשת — רגע..." : "מחפש..."}
         </p>
       )}
 
       {candidates && !isResolving && (() => {
         const searchedVendors = candidates.vendors || [];
         const allowMultiSelect = searchedVendors.length > 1;
-        const selectedList = Object.values(selected);
-        const selectedVendorSet = new Set();
-        selectedList.forEach(c => vendorsCoveredBy(c).forEach(v => selectedVendorSet.add(v)));
         const qty = parseFloat(draft.quantity) || 1;
         return (
           <div className="space-y-2 mb-3">
-            {selectedList.length > 0 && (
-              <div className="flex items-center justify-between gap-2 bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2 sticky top-0 z-10">
-                <span className="text-xs font-medium text-[#2E4A3B]">{selectedList.length} התאמות נבחרו</span>
-                <div className="flex gap-3 items-center">
-                  <button onClick={() => setSelected({})} className="text-xs text-[#8A7F66] underline">נקה</button>
-                  <button onClick={confirmSelection} className="text-xs font-bold bg-[#2E4A3B] text-white px-3 py-1.5 rounded-lg">אישור בחירה</button>
-                </div>
-              </div>
-            )}
             {candidates.list.length === 0 ? (
               <p className="text-center text-[#A79A7C] text-sm py-6">{`לא נמצאו התאמות ל"${searchQuery || draft.name}"`}</p>
             ) : candidates.list.map(c => {
               const vendorsForC = vendorsCoveredBy(c);
-              const isSelected = !!selected[c.barcode];
-              const blocked = !isSelected && vendorsForC.some(v => selectedVendorSet.has(v));
+              // Checked = this exact candidate is what's currently matched
+              // for all the vendors it covers — derived straight from the
+              // item's own draft, so there's nothing separate to "confirm";
+              // checking a box already saved it.
+              const isChecked = vendorsForC.length > 0 && vendorsForC.every(v => draft.barcodes && draft.barcodes[v] === c.barcode);
+              const blocked = !isChecked && vendorsForC.some(v => draft.barcodes && draft.barcodes[v] && draft.barcodes[v] !== c.barcode);
               return (
-                <div key={c.barcode} onClick={() => {
-                    if (blocked) return;
-                    // Once a batch is already being built, a tap anywhere on
-                    // the row adds/removes it from that batch instead of
-                    // instantly applying just this one candidate and
-                    // silently discarding the rest of the pending selection.
-                    if (allowMultiSelect && selectedList.length > 0) { toggleSelectCandidate(c); return; }
-                    pickCandidate(c);
-                  }}
+                <div key={c.barcode} onClick={() => !blocked && pickCandidate(c)}
                   className={"w-full text-right rounded-xl px-3 py-3 border cursor-pointer " +
-                    (isSelected ? "bg-[#EEF5EC] border-[#B9D9B0]" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45 cursor-default" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
+                    (isChecked ? "bg-[#EEF5EC] border-[#B9D9B0]" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45 cursor-default" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
@@ -989,15 +970,15 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                     </div>
                     {allowMultiSelect && vendorsForC.length > 0 ? (
                       <button type="button"
-                        onClick={e => { e.stopPropagation(); if (!blocked) toggleSelectCandidate(c); }}
+                        onClick={e => { e.stopPropagation(); if (!blocked) toggleCommit(c, isChecked); }}
                         disabled={blocked}
-                        title={blocked ? "חופף עם רשת שכבר נבחרה" : isSelected ? "הסרה מהבחירה" : "הוספה לבחירה מרובה"}
-                        className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-[10px] font-bold leading-none disabled:cursor-not-allowed " +
-                          (isSelected ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>
+                        title={blocked ? "כבר הותאם ברשת אחרת — לחצו על השורה כדי להחליף" : isChecked ? "הסרת ההתאמה" : "בחירה (אפשר לבחור כמה)"}
+                        className={"w-5 h-5 rounded-[5px] border-2 flex-shrink-0 flex items-center justify-center text-[11px] font-bold leading-none disabled:cursor-not-allowed " +
+                          (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>
                         ✓
                       </button>
                     ) : (
-                      <span className="w-5 h-5 rounded-full border-2 border-[#DECBA1] flex-shrink-0" />
+                      <span className="w-5 h-5 rounded-[5px] border-2 border-[#DECBA1] flex-shrink-0" />
                     )}
                   </div>
                   <div className="flex flex-wrap gap-1.5 mt-2">
