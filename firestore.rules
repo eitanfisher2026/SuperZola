@@ -59,6 +59,13 @@ service cloud.firestore {
       allow read: if signedIn();
       allow write: if isEditor();
     }
+    // Which vendors have a known online-delivery branch, plus its delivery
+    // terms (fee, minimum order, depot location/radius) — none of that is
+    // in the regulated price feed, so it's entered by hand here.
+    match /onlineVendors/{vendor} {
+      allow read: if signedIn();
+      allow write: if isEditor();
+    }
 
     // Vendor/catalog data is server-only — every access goes through a
     // Cloud Function using the Admin SDK, which bypasses these rules

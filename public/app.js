@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.23";
+const VERSION = "v1.24";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -47,6 +47,17 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 function formatDistance(m) {
   return m < 1000 ? Math.round(m) + " מ׳" : (m / 1000).toFixed(1) + ' ק"מ';
 }
+// Shared with NearbyBranchPicker's own address search — free, no API key,
+// no billing risk. Returns null (never throws) so callers can just show a
+// "not found" message either way.
+function geocodeAddress(query) {
+  const q = (query || "").trim();
+  if (!q) return Promise.resolve(null);
+  return fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=il&q=" + encodeURIComponent(q))
+    .then(r => r.json())
+    .then(results => (results && results.length > 0) ? { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) } : null)
+    .catch(() => null);
+}
 
 // Seeded into Firestore (categories collection) the first time it's empty —
 // from then on this is only the emergency fallback if that read ever fails.
@@ -81,6 +92,41 @@ function useCategories() {
     });
   }, []);
   return categories;
+}
+
+// Vendors with a known online-delivery branch, admin-managed (Settings).
+// { [vendorId]: { branchId, label, depotLat, depotLng, radiusKm, deliveryFee, minimumOrder, active } }
+function useOnlineVendors() {
+  const [onlineVendors, setOnlineVendors] = useState({});
+  useEffect(() => {
+    return db.collection("onlineVendors").onSnapshot(snap => {
+      const map = {};
+      snap.docs.forEach(d => { map[d.id] = d.data(); });
+      setOnlineVendors(map);
+    });
+  }, []);
+  return onlineVendors;
+}
+// Creates the "premade list" of online vendor profiles — every configured
+// onlineVendors entry within delivery radius of the user's home address
+// that doesn't already have a profile. Called from both the Settings
+// online-vendors section and from opening an online list directly, so
+// whichever the user reaches first is enough to populate it; only ever
+// adds a missing profile, never removes one, so a vendor the user turned
+// off stays off. Also warms each new branch's catalog, same as adding a
+// physical branch by hand.
+function provisionOnlineVendorProfiles(uid, homeAddress, onlineVendors, existingProfiles) {
+  if (!homeAddress || existingProfiles === null) return;
+  const existingVendors = new Set(existingProfiles.filter(p => p.mode === "online").map(p => p.vendor));
+  Object.entries(onlineVendors).forEach(([vendor, cfg]) => {
+    if (existingVendors.has(vendor) || cfg.active === false || cfg.depotLat == null) return;
+    if (haversineMeters(homeAddress.lat, homeAddress.lng, cfg.depotLat, cfg.depotLng) > (cfg.radiusKm || 0) * 1000) return;
+    db.collection("users").doc(uid).collection("vendorProfiles").add({
+      vendor, branchId: cfg.branchId, active: true, mode: "online",
+      addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    fns.httpsCallable("prewarmVendorCatalog")({ vendor, branchId: cfg.branchId }).catch(() => {});
+  });
 }
 
 function combinations(arr, k) {
@@ -178,7 +224,8 @@ function itemDisplayName(item) {
 }
 function profileLabel(profile, allProfiles) {
   let label = vendorLabel(profile.vendor);
-  const sameChainCount = allProfiles.filter(p => p.vendor === profile.vendor).length;
+  if (profile.mode === "online") return label + " (אונליין)";
+  const sameChainCount = allProfiles.filter(p => p.vendor === profile.vendor && p.mode !== "online").length;
   if (sameChainCount > 1) label += ` (סניף ${parseInt(profile.branchId, 10)})`;
   return label;
 }
@@ -1117,6 +1164,7 @@ function ListCard({ list, onOpen }) {
       onClick={onOpen}
       className="bg-white border border-[#E0D4B4] rounded-2xl px-4 py-4 flex items-center gap-2 shadow-sm cursor-pointer"
     >
+      {list.mode === "online" && <span className="text-base flex-shrink-0" title="קנייה אונליין">🛒</span>}
       <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate text-[#2B2418]">
         {list.name}
       </span>
@@ -1156,10 +1204,10 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
   // menu) is one tap, and this way starting a list never blocks on typing.
-  async function quickCreate() {
+  async function quickCreate(mode) {
     if (creating) return;
     setCreating(true);
-    const prefix = "רשימת קניות #";
+    const prefix = mode === "online" ? "רשימת קנייה אונליין #" : "רשימת קניות #";
     let maxNum = 0;
     (lists || []).forEach(l => {
       if (l.name && l.name.indexOf(prefix) === 0) {
@@ -1171,6 +1219,7 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
     const ref = await db.collection("lists").add({
       name,
       ownerId: uid,
+      mode: mode === "online" ? "online" : "instore",
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     setCreating(false);
@@ -1221,21 +1270,30 @@ function Home({ uid, photoURL, displayName, onOpenList, onOpenSettings, onOpenHe
 
       <div className="px-4 mt-4 flex gap-2">
         <button
-          onClick={quickCreate}
+          onClick={() => quickCreate("instore")}
           disabled={creating}
           className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
         >
           {creating ? "יוצר..." : "+ רשימה חדשה"}
         </button>
-        {activeProfiles.length > 0 && (
+        <button
+          onClick={() => quickCreate("online")}
+          disabled={creating}
+          className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
+        >
+          {creating ? "יוצר..." : "+ קנייה אונליין"}
+        </button>
+      </div>
+      {activeProfiles.length > 0 && (
+        <div className="px-4 mt-2">
           <button
             onClick={() => setShowCheckPrice(true)}
-            className="flex-shrink-0 border border-[#DECBA1] bg-white rounded-2xl px-4 py-3 text-[#5B5749] text-[15px] font-medium flex items-center gap-1.5"
+            className="w-full border border-[#DECBA1] bg-white rounded-2xl px-4 py-3 text-[#5B5749] text-[15px] font-medium flex items-center justify-center gap-1.5"
           >
             🔍 בדיקת מחיר
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="text-center py-8 text-[11px] text-[#C7B78E]">
         SuperZola {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
@@ -1362,13 +1420,11 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
     if (!q) return;
     setGeocoding(true);
     setErrorMsg("");
-    fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=il&q=" + encodeURIComponent(q))
-      .then(r => r.json())
-      .then(results => {
-        setGeocoding(false);
-        if (!results || results.length === 0) { setErrorMsg("הכתובת לא נמצאה"); return; }
-        setOrigin({ lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) });
-      }, () => { setGeocoding(false); setErrorMsg("שגיאה בחיפוש הכתובת"); });
+    geocodeAddress(q).then(coords => {
+      setGeocoding(false);
+      if (!coords) { setErrorMsg("הכתובת לא נמצאה"); return; }
+      setOrigin(coords);
+    });
   }
 
   const allEntries = (branches && !loading) ? Object.entries(branches) : [];
@@ -1466,6 +1522,14 @@ function SettingsScreen({ uid, onBack }) {
   const [canInstall, setCanInstall] = useState(!isInstalled);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const [allUsers, setAllUsers] = useState(null);
+  const [homeAddress, setHomeAddress] = useState(null); // { address, lat, lng } | null
+  const [addressDraft, setAddressDraft] = useState("");
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [addressError, setAddressError] = useState("");
+  const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", depotAddress: "", radiusKm: 20, deliveryFee: "", minimumOrder: "" });
+  const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
+  const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
+  const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1515,6 +1579,46 @@ function SettingsScreen({ uid, onBack }) {
     db.collection("users").doc(userId).update({ role: newRole }).then(() => setToast("התפקיד עודכן"), () => setToast("שגיאה בעדכון תפקיד"));
   }
 
+  function startEditOnlineVendor(vendor, cfg) {
+    setNewOnlineVendorDraft({
+      vendor, branchId: cfg.branchId || "", depotAddress: cfg.depotAddress || "",
+      depotLat: cfg.depotLat, depotLng: cfg.depotLng,
+      radiusKm: cfg.radiusKm || 20, deliveryFee: cfg.deliveryFee ?? "", minimumOrder: cfg.minimumOrder ?? "",
+      active: cfg.active !== false,
+    });
+  }
+  function resetOnlineVendorDraft() {
+    setNewOnlineVendorDraft({ vendor: "", branchId: "", depotAddress: "", radiusKm: 20, deliveryFee: "", minimumOrder: "" });
+  }
+  function geocodeOnlineVendorDepot() {
+    const q = (newOnlineVendorDraft.depotAddress || "").trim();
+    if (!q) return;
+    setSavingOnlineVendor(true);
+    geocodeAddress(q).then(coords => {
+      setSavingOnlineVendor(false);
+      if (!coords) { setToast("הכתובת לא נמצאה"); return; }
+      setNewOnlineVendorDraft(prev => Object.assign({}, prev, { depotLat: coords.lat, depotLng: coords.lng }));
+    });
+  }
+  function saveOnlineVendor() {
+    const d = newOnlineVendorDraft;
+    if (!d.vendor || !d.branchId || d.depotLat == null) { setToast("נדרשים רשת, מספר סניף וכתובת מאותרת"); return; }
+    setSavingOnlineVendor(true);
+    db.collection("onlineVendors").doc(d.vendor).set({
+      branchId: d.branchId, label: vendorLabel(d.vendor), depotAddress: d.depotAddress,
+      depotLat: d.depotLat, depotLng: d.depotLng, radiusKm: parseFloat(d.radiusKm) || 20,
+      deliveryFee: parseFloat(d.deliveryFee) || 0, minimumOrder: parseFloat(d.minimumOrder) || 0,
+      active: d.active !== false,
+    }).then(() => {
+      setSavingOnlineVendor(false);
+      setToast("נשמר");
+      resetOnlineVendorDraft();
+    }, () => { setSavingOnlineVendor(false); setToast("שגיאה בשמירה"); });
+  }
+  function deleteOnlineVendor(vendor) {
+    db.collection("onlineVendors").doc(vendor).delete().then(() => setToast("הרשת הוסרה"));
+  }
+
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
 
@@ -1523,7 +1627,30 @@ function SettingsScreen({ uid, onBack }) {
     setAi(data.ai || null);
     if (data.ai) setAiDraft(prev => Object.assign({}, prev, data.ai));
     setRole(data.role || null);
+    if (data.homeLat != null && data.homeLng != null) {
+      setHomeAddress({ address: data.homeAddress || "", lat: data.homeLat, lng: data.homeLng });
+    } else {
+      setHomeAddress(null);
+    }
   }), [uid]);
+
+  function saveHomeAddress() {
+    const q = addressDraft.trim();
+    if (!q) return;
+    setSavingAddress(true);
+    setAddressError("");
+    geocodeAddress(q).then(coords => {
+      setSavingAddress(false);
+      if (!coords) { setAddressError("הכתובת לא נמצאה"); return; }
+      db.collection("users").doc(uid).update({ homeAddress: q, homeLat: coords.lat, homeLng: coords.lng });
+      setAddressDraft("");
+    });
+  }
+
+  useEffect(() => {
+    provisionOnlineVendorProfiles(uid, homeAddress, onlineVendors, profiles);
+    // eslint-disable-next-line
+  }, [homeAddress, profiles, JSON.stringify(onlineVendors)]);
 
   function loadCatalogTimestamps() {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -1578,7 +1705,7 @@ function SettingsScreen({ uid, onBack }) {
     const already = (profiles || []).some(p => p.vendor === addingVendor && String(p.branchId) === String(branchId));
     if (already) { setToast("הסניף כבר ברשימה שלך"); return; }
     db.collection("users").doc(uid).collection("vendorProfiles").add({
-      vendor: addingVendor, branchId, active: true, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      vendor: addingVendor, branchId, active: true, mode: "instore", addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     // Fire-and-forget: starts warming this branch's catalog in the
     // background right away, so the first real price search against it
@@ -1671,7 +1798,9 @@ function SettingsScreen({ uid, onBack }) {
   }
 
   const addingBranches = addingVendor ? branchCache[addingVendor] : null;
-  const activeCount = (profiles || []).filter(p => p.active).length;
+  const instoreProfiles = (profiles || []).filter(p => (p.mode || "instore") === "instore");
+  const onlineProfiles = (profiles || []).filter(p => p.mode === "online");
+  const activeCount = instoreProfiles.filter(p => p.active).length;
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
@@ -1684,16 +1813,16 @@ function SettingsScreen({ uid, onBack }) {
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות להשוואת מחירים</h2>
-            {profiles && profiles.length > 0 && (
-              <span className="text-xs text-[#8A7F66]">פעילים להשוואה: {activeCount} מתוך {profiles.length}</span>
+            {profiles && instoreProfiles.length > 0 && (
+              <span className="text-xs text-[#8A7F66]">פעילים להשוואה: {activeCount} מתוך {instoreProfiles.length}</span>
             )}
           </div>
           <p className="text-xs text-[#8A7F66] mb-3">הוסיפו את הסניפים שאתם קונים בהם — מחירים אמיתיים יופיעו על הפריטים ברשימות.</p>
 
           <div className="flex flex-col gap-2 mb-3">
             {profiles === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
-            {profiles && profiles.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו סניפים עדיין</div>}
-            {profiles && profiles.map(p => (
+            {profiles && instoreProfiles.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו סניפים עדיין</div>}
+            {profiles && instoreProfiles.map(p => (
               <div key={p.id} className={"rounded-xl px-3 py-2.5 border " +
                 (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
                 <div className="flex items-center gap-2">
@@ -1753,6 +1882,50 @@ function SettingsScreen({ uid, onBack }) {
               + הוספת סניף
             </button>
           </div>
+        </div>
+
+        <div>
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות לקנייה אונליין</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">
+            {homeAddress
+              ? "רשימת הרשתות שמגיעות לכתובת שלכם נוצרת אוטומטית — אפשר לכבות כל רשת שלא רוצים."
+              : "הזינו את כתובת המשלוח שלכם כדי לראות אילו רשתות אונליין מגיעות אליכם."}
+          </p>
+          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2 mb-3">
+            <div className="text-xs font-semibold text-[#8A7F66]">כתובת משלוח</div>
+            {homeAddress && (
+              <div className="text-sm text-[#2B2418] bg-[#F7F2E4] rounded-lg px-3 py-2">{homeAddress.address}</div>
+            )}
+            <div className="flex gap-2">
+              <input value={addressDraft} onChange={e => setAddressDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") saveHomeAddress(); }}
+                placeholder={homeAddress ? "עדכון כתובת..." : "הקלידו כתובת..."}
+                className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+              <button onClick={saveHomeAddress} disabled={!addressDraft.trim() || savingAddress}
+                className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+                {savingAddress ? <Spinner /> : "שמירה"}
+              </button>
+            </div>
+            {addressError && <p className="text-xs text-[#B8462F]">{addressError}</p>}
+          </div>
+          {homeAddress && (
+            <div className="flex flex-col gap-2">
+              {onlineProfiles.length === 0 && (
+                <div className="text-[#8A7F66] text-sm">אין עדיין רשתות אונליין שמגיעות לכתובת שלכם</div>
+              )}
+              {onlineProfiles.map(p => (
+                <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
+                  (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
+                  <button onClick={() => toggleProfile(p)}
+                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                    {p.active ? "פעיל" : "כבוי"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div>
@@ -1889,6 +2062,82 @@ function SettingsScreen({ uid, onBack }) {
         </React.Fragment>
         )}
 
+        {isEditorOrAdmin && (
+          <div>
+            <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול רשתות אונליין</h2>
+            <p className="text-xs text-[#8A7F66] mb-3">
+              רשתות עם סניף אונליין ידוע (נמצא בקובץ המחירים הרגיל שלהן), וכתובת המחסן/מוקד שממנו נקבע רדיוס המשלוח.
+            </p>
+            <div className="flex flex-col gap-2 mb-3">
+              {Object.keys(onlineVendors).length === 0 && (
+                <div className="text-[#8A7F66] text-sm">לא הוגדרו עדיין רשתות אונליין</div>
+              )}
+              {Object.entries(onlineVendors).map(([vendor, cfg]) => (
+                <div key={vendor} className={"rounded-xl px-3 py-2.5 border " + (cfg.active !== false ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(vendor)}</span>
+                    <button onClick={() => startEditOnlineVendor(vendor, cfg)} className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm flex-shrink-0">✏️</button>
+                    <button onClick={() => setConfirmDeleteOnlineVendor(vendor)} className="w-7 h-7 flex items-center justify-center text-[#B8462F] text-base flex-shrink-0">🗑️</button>
+                  </div>
+                  <div className="text-[11px] text-[#A79A7C] mt-1">
+                    סניף {cfg.branchId} · {cfg.depotAddress} · רדיוס {cfg.radiusKm} ק"מ · משלוח ₪{cfg.deliveryFee} · מינימום ₪{cfg.minimumOrder}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+              <div className="text-xs font-semibold text-[#8A7F66]">{newOnlineVendorDraft.vendor ? `עריכת ${vendorLabel(newOnlineVendorDraft.vendor)}` : "רשת אונליין חדשה"}</div>
+              <select value={newOnlineVendorDraft.vendor} disabled={!!onlineVendors[newOnlineVendorDraft.vendor]}
+                onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { vendor: e.target.value }))}
+                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none disabled:bg-[#F7F2E4]">
+                <option value="">בחירת רשת...</option>
+                {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+              </select>
+              <input value={newOnlineVendorDraft.branchId} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { branchId: e.target.value }))}
+                placeholder="מספר הסניף האונליין (מקובץ המחירים)"
+                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+              <div className="flex gap-2">
+                <input value={newOnlineVendorDraft.depotAddress} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { depotAddress: e.target.value, depotLat: null, depotLng: null }))}
+                  placeholder="כתובת מחסן/מוקד"
+                  className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+                <button onClick={geocodeOnlineVendorDepot} disabled={!newOnlineVendorDraft.depotAddress || savingOnlineVendor}
+                  className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+                  איתור
+                </button>
+              </div>
+              {newOnlineVendorDraft.depotLat != null && (
+                <p className="text-[11px] text-[#2E7D4F]">✓ הכתובת אותרה</p>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[11px] text-[#8A7F66] block mb-1">רדיוס (ק"מ)</label>
+                  <input type="number" value={newOnlineVendorDraft.radiusKm} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { radiusKm: e.target.value }))}
+                    className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-[#8A7F66] block mb-1">משלוח (₪)</label>
+                  <input type="number" value={newOnlineVendorDraft.deliveryFee} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { deliveryFee: e.target.value }))}
+                    className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+                </div>
+                <div>
+                  <label className="text-[11px] text-[#8A7F66] block mb-1">מינימום (₪)</label>
+                  <input type="number" value={newOnlineVendorDraft.minimumOrder} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { minimumOrder: e.target.value }))}
+                    className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={saveOnlineVendor} disabled={savingOnlineVendor}
+                  className="flex-1 bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+                  {savingOnlineVendor ? <Spinner /> : "שמירה"}
+                </button>
+                {newOnlineVendorDraft.vendor && (
+                  <button onClick={resetOnlineVendorDraft} className="px-4 rounded-lg border border-[#DECBA1] text-[#8A7F66] text-sm">ביטול</button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {role === "admin" && (
           <div>
             <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול משתמשים</h2>
@@ -1953,6 +2202,10 @@ function SettingsScreen({ uid, onBack }) {
         <ConfirmDialog
           message={`לרענן את קטלוג ${vendorLabel(confirmRefresh.vendor)} — ${branchLabel(confirmRefresh.vendor, confirmRefresh.branchId)}? זו פנייה חיה לרשת ועשויה לקחת עד דקה.`}
           confirmLabel="רענון" onConfirm={() => refreshCatalog(confirmRefresh)} onClose={() => setConfirmRefresh(null)} />
+      )}
+      {confirmDeleteOnlineVendor && (
+        <ConfirmDialog message={`להסיר את ${vendorLabel(confirmDeleteOnlineVendor)} מרשתות הקנייה האונליין?`}
+          onConfirm={() => deleteOnlineVendor(confirmDeleteOnlineVendor)} onClose={() => setConfirmDeleteOnlineVendor(null)} />
       )}
       {/* Fallback for browsers that never fired (or don't support) the
           native install prompt — iOS Safari gets exact steps since it has
@@ -2270,11 +2523,12 @@ function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToa
 // displayed), so plain enumeration of every combo is exact and fast — no
 // real optimizer needed. Never touches the original list; only writes
 // anything if the user picks a plan and asks to create lists from it.
-function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, priceMap, promoMap, onClose, onHome, showToast }) {
+function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onlineVendors, priceMap, promoMap, onClose, onHome, showToast }) {
   const [plans, setPlans] = useState(null);
   const [selectedK, setSelectedK] = useState(null);
   const [creating, setCreating] = useState(false);
   const [createdCount, setCreatedCount] = useState(null);
+  const isOnline = list.mode === "online";
 
   useEffect(() => {
     const pool = visibleProfiles;
@@ -2284,7 +2538,7 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
       const combos = combinations(pool, k);
       let best = null;
       combos.forEach(combo => {
-        let totalCost = 0;
+        let itemsCost = 0;
         const missingItems = [];
         const byVendor = {};
         combo.forEach(p => { byVendor[p.id] = []; });
@@ -2297,12 +2551,32 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
             return eff < accEff ? e : acc;
           });
           const effPrice = (bestEntry.promo && bestEntry.promo.active) ? bestEntry.promo.price : bestEntry.price;
-          totalCost += effPrice * (item.quantity || 1);
+          itemsCost += effPrice * (item.quantity || 1);
           byVendor[bestEntry.profile.id].push({ item, price: effPrice });
         });
+        // Delivery is per vendor actually used in this combo (a vendor with
+        // no items assigned to it in this split contributes nothing) — the
+        // "fewer stores wins unless splitting saves more" ranking below
+        // falls out on its own once delivery is folded into the same total,
+        // since a 2-store split now has to beat two delivery fees, not zero.
+        let deliveryCost = 0;
+        const belowMinimum = [];
+        if (isOnline) {
+          combo.forEach(p => {
+            const vendorItems = byVendor[p.id];
+            if (!vendorItems || vendorItems.length === 0) return;
+            const cfg = onlineVendors[p.vendor] || {};
+            deliveryCost += cfg.deliveryFee || 0;
+            const subtotal = vendorItems.reduce((s, e) => s + e.price * (e.item.quantity || 1), 0);
+            if (cfg.minimumOrder && subtotal < cfg.minimumOrder) {
+              belowMinimum.push({ profile: p, subtotal, minimumOrder: cfg.minimumOrder });
+            }
+          });
+        }
+        const totalCost = itemsCost + deliveryCost;
         if (!best || missingItems.length < best.missingItems.length ||
             (missingItems.length === best.missingItems.length && totalCost < best.totalCost)) {
-          best = { k, vendors: combo, totalCost, missingItems, byVendor };
+          best = { k, vendors: combo, itemsCost, deliveryCost, totalCost, missingItems, byVendor, belowMinimum };
         }
       });
       if (best) computed.push(best);
@@ -2324,7 +2598,7 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
       const hideIds = activeProfiles.filter(vp => vp.id !== x.profile.id).map(vp => vp.id);
       return db.collection("lists").add({
         name: list.name + " - " + profileLabel(x.profile, plan.vendors),
-        ownerId: uid, hiddenVendorIds: hideIds,
+        ownerId: uid, mode: (list.mode || "instore"), hiddenVendorIds: hideIds,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       }).then(ref => ({ ref, vendorItems: x.vendorItems }));
     })).then(created => {
@@ -2379,8 +2653,18 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
                         <span className="font-bold text-[#2E4A3B] text-sm">₪{plan.totalCost.toFixed(2)}</span>
                       </div>
                       <div className="text-xs text-[#8A7F66] mt-1">{vendorNames}</div>
+                      {isOnline && (
+                        <div className="text-[11px] text-[#8A7F66] mt-0.5">
+                          פריטים: ₪{plan.itemsCost.toFixed(2)} + משלוח: ₪{plan.deliveryCost.toFixed(2)}
+                        </div>
+                      )}
                       {plan.missingItems.length > 0 && (
                         <div className="text-[11px] text-[#B8462F] mt-1">חסר: {plan.missingItems.join(", ")}</div>
+                      )}
+                      {isOnline && plan.belowMinimum.length > 0 && (
+                        <div className="text-[11px] text-[#8A5A15] mt-1">
+                          {plan.belowMinimum.map(b => `${vendorLabel(b.profile.vendor)}: מתחת למינימום הזמנה (₪${b.subtotal.toFixed(2)} מתוך ₪${b.minimumOrder})`).join(" · ")}
+                        </div>
                       )}
                     </button>
                     {isSelected && (
@@ -2398,6 +2682,12 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, pri
                                     <span>₪{entry.price.toFixed(2)}</span>
                                   </div>
                                 ))}
+                                {isOnline && (onlineVendors[p.vendor] || {}).deliveryFee != null && (
+                                  <div className="flex items-center justify-between text-xs text-[#8A7F66] pt-0.5 border-t border-[#E5D8B5] mt-1">
+                                    <span>משלוח</span>
+                                    <span>₪{(onlineVendors[p.vendor].deliveryFee).toFixed(2)}</span>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           );
@@ -2439,8 +2729,37 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
   const [showCopyItems, setShowCopyItems] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
+  const [homeAddress, setHomeAddress] = useState(null);
+  const [addressDraft, setAddressDraft] = useState("");
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [addressError, setAddressError] = useState("");
+  const [profiles, setProfiles] = useState(null); // every vendorProfiles doc, active or not — needed to avoid re-provisioning a vendor the user turned off
 
-  const activeProfiles = useActiveVendorProfiles(uid);
+  function saveHomeAddress() {
+    const q = addressDraft.trim();
+    if (!q) return;
+    setSavingAddress(true);
+    setAddressError("");
+    geocodeAddress(q).then(coords => {
+      setSavingAddress(false);
+      if (!coords) { setAddressError("הכתובת לא נמצאה"); return; }
+      db.collection("users").doc(uid).update({ homeAddress: q, homeLat: coords.lat, homeLng: coords.lng });
+      setAddressDraft("");
+    });
+  }
+
+  useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
+    .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
+
+  const listMode = list.mode || "instore";
+  // A user's vendor profiles span both in-store and online — each list only
+  // ever deals with the ones matching its own mode, exactly like it never
+  // saw the others at all. Everything downstream (matching, pricing, promo
+  // tags, the optimizer) is unchanged either way; it just receives a
+  // pre-filtered set instead of the whole thing.
+  const allActiveProfiles = useActiveVendorProfiles(uid);
+  const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === listMode);
+  const onlineVendors = useOnlineVendors();
   const categories = useCategories();
   // Which of the user's active vendors THIS list currently shows — a
   // per-list display filter, distinct from "active" (a vendor stays
@@ -2473,7 +2792,20 @@ function ListScreen({ uid, listId, listName, onBack }) {
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     const data = snap.data() || {};
     setHasAi(!!(data.ai && data.ai.provider));
+    setHomeAddress(data.homeLat != null && data.homeLng != null
+      ? { address: data.homeAddress || "", lat: data.homeLat, lng: data.homeLng }
+      : null);
   }), [uid]);
+
+  // Opening an online list for the first time is what actually creates its
+  // "premade" vendor list (Settings does the same thing, so whichever the
+  // user reaches first is enough) — this is what makes the list usable
+  // without a separate trip to Settings first.
+  useEffect(() => {
+    if (listMode !== "online") return;
+    provisionOnlineVendorProfiles(uid, homeAddress, onlineVendors, profiles);
+    // eslint-disable-next-line
+  }, [listMode, homeAddress, profiles, JSON.stringify(onlineVendors)]);
 
   const barcodesByVendor = {};
   (items || []).forEach(it => {
@@ -2547,6 +2879,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     const newRef = await db.collection("lists").add({
       name: list.name + " (עותק)",
       ownerId: uid,
+      mode: listMode,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     const batch = db.batch();
@@ -2592,6 +2925,23 @@ function ListScreen({ uid, listId, listName, onBack }) {
         )}
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
+
+      {listMode === "online" && !homeAddress && (
+        <div className="bg-[#FBF0D9] border-b border-[#E9D8A6] px-4 py-3">
+          <p className="text-xs text-[#8A5A15] mb-2">הזינו כתובת משלוח כדי לראות אילו רשתות אונליין מגיעות אליכם</p>
+          <div className="flex gap-2">
+            <input value={addressDraft} onChange={e => setAddressDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") saveHomeAddress(); }}
+              placeholder="הקלידו כתובת..."
+              className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2 text-right bg-white outline-none text-sm" />
+            <button onClick={saveHomeAddress} disabled={!addressDraft.trim() || savingAddress}
+              className="px-4 rounded-lg bg-[#8A5A15] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+              {savingAddress ? <Spinner /> : "שמירה"}
+            </button>
+          </div>
+          {addressError && <p className="text-xs text-[#B8462F] mt-1">{addressError}</p>}
+        </div>
+      )}
 
       {pricesLoading && visibleProfiles.length > 0 && (
         <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2">
@@ -2722,7 +3072,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
       )}
       {showOptimizer && (
         <OptimizerModal uid={uid} list={list} items={items || []} visibleProfiles={visibleProfiles} activeProfiles={activeProfiles}
-          priceMap={priceMap} promoMap={promoMap} onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
+          onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
       )}
       {toast && <Toast msg={toast} />}
     </div>
