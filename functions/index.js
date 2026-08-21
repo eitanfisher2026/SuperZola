@@ -960,11 +960,19 @@ exports.resolveItemBarcodes = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
-    const { items, force, vendors } = request.data || {};
-    console.log('resolveItemBarcodes: start', { uid: request.auth.uid, items, force, vendors });
+    const { items, force, vendors, profileIds } = request.data || {};
+    console.log('resolveItemBarcodes: start', { uid: request.auth.uid, items, force, vendors, profileIds });
     if (!Array.isArray(items) || items.length === 0) throw new HttpsError('invalid-argument', 'items array required');
 
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const allActiveProfiles = await getUserActiveProfiles(request.auth.uid);
+    // A vendor can have more than one active profile at once (a physical
+    // branch for in-store lists, a separate branch for online lists) — the
+    // caller tells us exactly which profiles its list actually cares about,
+    // so a vendor with two profiles never gets an arbitrary one of them
+    // picked as "the" representative for pricing/matching.
+    const activeProfiles = Array.isArray(profileIds) && profileIds.length > 0
+      ? allActiveProfiles.filter(p => profileIds.includes(p.id))
+      : allActiveProfiles;
     console.log('resolveItemBarcodes: activeProfiles', activeProfiles);
     const repProfileByVendor = {};
     activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });

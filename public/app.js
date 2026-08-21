@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.27";
+const VERSION = "v1.28";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -744,7 +744,13 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     const q = (queryOverride != null ? queryOverride : searchQuery || draft.name || "").trim();
     if (!q) return;
     setIsResolving(true);
-    const payload = { items: [q], force: true };
+    // Scoped to this exact profile's id, not just the vendor name — a
+    // vendor can have more than one active profile (e.g. a physical branch
+    // for in-store lists and a separate online branch for online lists),
+    // and searching by vendor name alone lets the backend pick whichever
+    // one it likes, silently pricing/matching against the wrong branch.
+    const scopedProfiles = vendorId ? (activeProfiles || []).filter(p => p.vendor === vendorId) : (activeProfiles || []);
+    const payload = { items: [q], force: true, profileIds: scopedProfiles.map(p => p.id) };
     if (vendorId) payload.vendors = [vendorId];
     fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
       setIsResolving(false);
@@ -1212,8 +1218,13 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [toast, setToast] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const categories = useCategories();
   const activeProfiles = useActiveVendorProfiles(uid);
+
+  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
+    setIsAdmin((snap.data() || {}).role === "admin");
+  }), [uid]);
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1283,7 +1294,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
               </button>
               <button onClick={() => { setShowUserMenu(false); setShowFeedback(true); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
-                <span>💬</span><span>שליחת משוב</span>
+                <span>💬</span><span>{isAdmin ? "ניהול משובים" : "שליחת משוב"}</span>
               </button>
               <button onClick={() => { setShowUserMenu(false); onSignOut(); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#B8462F] hover:bg-[#FBEAE5] flex items-center gap-2 border-t border-[#E5D8B5]">
