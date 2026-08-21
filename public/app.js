@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.30";
+const VERSION = "v1.31";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -362,6 +362,21 @@ function Spinner() {
 // disappears on cream/mustard surfaces).
 function Spinner2() {
   return <span className="inline-block w-3.5 h-3.5 border-2 border-[#8A7F66]/30 border-t-[#8A7F66] rounded-full animate-spin" />;
+}
+
+// Drawn explicitly rather than using a "‹"/"›" text glyph — those get
+// silently flipped by the browser's own bidi mirroring inside an RTL page,
+// which is exactly backwards for a "back" affordance in a Hebrew reading
+// direction (back should point right, not left). An SVG path is never
+// auto-mirrored, so this always renders pointing right regardless of dir.
+function BackButton({ onClick }) {
+  return (
+    <button onClick={onClick} className="text-[#F3ECD9] w-9 h-9 -mr-1 flex items-center justify-center rounded-full bg-white/10 flex-shrink-0">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 6l6 6-6 6" />
+      </svg>
+    </button>
+  );
 }
 
 function Toast({ msg }) {
@@ -1825,7 +1840,7 @@ function SettingsScreen({ uid, onBack }) {
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
-        <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
+        <BackButton onClick={onBack} />
         <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>הגדרות</h1>
       </div>
 
@@ -2376,7 +2391,7 @@ function VendorVisibilityModal({ activeProfiles, hiddenVendorIds, onToggle, onCl
 }
 
 // ── COPY ITEMS TO ANOTHER LIST ────────────────────────────────────────────────
-function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToast }) {
+function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onClose, showToast }) {
   const [step, setStep] = useState("pick");
   const [selectedIds, setSelectedIds] = useState({});
   const [myLists, setMyLists] = useState(null);
@@ -2396,7 +2411,11 @@ function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToa
     setStep("dest");
     if (myLists === null) {
       db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => l.id !== sourceListId);
+        // A physical-branch list and an online list never share vendor
+        // profiles, so an item copied across modes would arrive unmatched —
+        // only offer destinations of the same mode as the list it's coming from.
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+          .filter(l => l.id !== sourceListId && (l.mode || "instore") === sourceMode);
         rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
         setMyLists(rows);
       });
@@ -2428,7 +2447,7 @@ function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToa
     const name = newListName.trim();
     if (!name || busy) return;
     setBusy(true);
-    db.collection("lists").add({ name, ownerId: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+    db.collection("lists").add({ name, ownerId: uid, mode: sourceMode, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
       copyToList(ref.id);
     }, () => { setBusy(false); showToast("שגיאה ביצירת הרשימה"); });
   }
@@ -2876,7 +2895,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   return (
     <div className="min-h-dvh bg-[#FBF4E7] flex flex-col">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
-        <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
+        <BackButton onClick={onBack} />
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
         {visibleProfiles.length > 0 && (
           <div className="flex bg-white/10 rounded-full p-0.5 flex-shrink-0">
@@ -3024,7 +3043,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
           onToggle={toggleVendorVisibility} onClose={() => setShowVendorVisibility(false)} />
       )}
       {showCopyItems && (
-        <CopyItemsModal uid={uid} sourceListId={listId} items={items || []} categories={categories}
+        <CopyItemsModal uid={uid} sourceListId={listId} sourceMode={listMode} items={items || []} categories={categories}
           onClose={() => setShowCopyItems(false)} showToast={setToast} />
       )}
       {showOptimizer && (
@@ -3313,7 +3332,7 @@ function ProfileScreen({ uid, onBack }) {
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
-        <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
+        <BackButton onClick={onBack} />
         <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>פרופיל</h1>
       </div>
 
@@ -3407,7 +3426,7 @@ function HelpScreen({ onBack }) {
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
-        <button onClick={onBack} className="text-[#F3ECD9] text-xl px-1">›</button>
+        <BackButton onClick={onBack} />
         <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>עזרה ומדריך</h1>
       </div>
 
