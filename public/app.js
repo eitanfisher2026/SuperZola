@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.42";
+const VERSION = "v1.43";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -110,6 +110,11 @@ const AI_PROVIDERS = {
   anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
   openai:    { name: "ChatGPT", label: "OpenAI",   defaultModel: "gpt-4o-mini",               keyHint: "sk-...",     free: false },
   gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash-lite",      keyHint: "AIza...",    free: true  },
+};
+const AI_KEY_LINKS = {
+  anthropic: "https://console.anthropic.com/settings/keys",
+  openai: "https://platform.openai.com/api-keys",
+  gemini: "https://aistudio.google.com/apikey",
 };
 // Shown before the admin presses "refresh list" to pull the real, current
 // catalog from the provider — kept short since it goes stale over time.
@@ -2233,7 +2238,13 @@ function SettingsScreen({ uid, onBack }) {
                 .filter(row => row[0] === aiProvider)
                 .map(([id, label, val, setter]) => (
                   <div key={id} className="mb-3">
-                    <p className="text-xs text-[#8A7F66] mb-1 text-right">{label}</p>
+                    <div className="flex items-center justify-between mb-1">
+                      <a href={AI_KEY_LINKS[id]} target="_blank" rel="noopener noreferrer"
+                        className="text-xs font-semibold text-[#2E4A3B] bg-[#EEF5EC] border border-[#B9D9B0] rounded-lg px-2 py-1 whitespace-nowrap">
+                        🔑 קבל מפתח API ↗
+                      </a>
+                      <p className="text-xs text-[#8A7F66] text-right">{label}</p>
+                    </div>
                     <input value={val} onChange={e => setter(e.target.value)} placeholder={AI_PROVIDERS[id].keyHint} type="password" dir="ltr"
                       className="w-full border border-[#C7B78E] rounded-xl px-4 py-3 text-left outline-none text-sm" />
                   </div>
