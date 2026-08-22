@@ -96,6 +96,19 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // App-wide config, admin-managed. "ai" holds the real provider/API key —
+    // admin-only in both directions, since it's a genuine secret that must
+    // never reach a regular user's client. "aiStatus" is a public, boolean-
+    // only mirror ({configured}) so any signed-in client can safely check
+    // whether AI features are available without ever touching the key.
+    match /appConfig/ai {
+      allow read, write: if isAdmin();
+    }
+    match /appConfig/aiStatus {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
     // AI spend ledger — a user can see their own usage, never edit it.
     // Cloud Functions (Admin SDK) write it; nested by month so quota checks
     // read one small document instead of the user's whole history.

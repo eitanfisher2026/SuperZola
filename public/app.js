@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.41";
+const VERSION = "v1.42";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -88,15 +88,56 @@ function useIsraeliCities() {
 // Seeded into Firestore (categories collection) the first time it's empty —
 // from then on this is only the emergency fallback if that read ever fails.
 const DEFAULT_CATEGORIES = [
-  { id: "vegetables", label: "ירקות ופירות",   emoji: "🥦", order: 0 },
-  { id: "pantry",     label: "קפה ושימורים",   emoji: "☕", order: 1 },
-  { id: "cleaning",   label: "חומרי ניקוי",    emoji: "🧴", order: 2 },
-  { id: "dairy",      label: "מוצרי חלב",      emoji: "🥛", order: 3 },
-  { id: "eggs",       label: "ביצים",           emoji: "🥚", order: 4 },
-  { id: "paper",      label: "מוצרי נייר",     emoji: "🧻", order: 5 },
-  { id: "other",      label: "שונות",           emoji: "🛍️", order: 6 },
+  { id: "dairyEggs",   label: "מוצרי חלב וביצים",                                                      emoji: "🥛", order: 0 },
+  { id: "meatFish",    label: "בשר, עוף ודגים (כולל קפואים)",                                          emoji: "🥩", order: 1 },
+  { id: "produce",     label: "פירות וירקות (טריים)",                                                   emoji: "🥦", order: 2 },
+  { id: "bakery",      label: "מוצרי מאפה ולחם",                                                        emoji: "🍞", order: 3 },
+  { id: "dryGoods",    label: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", emoji: "🥫", order: 4 },
+  { id: "snacks",      label: "חטיפים וממתקים (כולל אגוזים ופירות יבשים)",                              emoji: "🍫", order: 5 },
+  { id: "frozen",      label: "קפואים (ירקות, בצק ומאכלים מוכנים קפואים)",                              emoji: "🧊", order: 6 },
+  { id: "beverages",   label: "משקאות (קלים, מים, קפה ותה, אלכוהול)",                                   emoji: "🥤", order: 7 },
+  { id: "cleaning",    label: "חומרי ניקוי ותחזוקת בית",                                                emoji: "🧹", order: 8 },
+  { id: "personalCare",label: "טיפוח אישי והיגיינה (כולל מוצרי תינוקות)",                               emoji: "🧼", order: 9 },
+  { id: "paper",       label: "מוצרי נייר וחד־פעמי",                                                    emoji: "🧻", order: 10 },
+  { id: "other",       label: "שונות (חיות מחמד, סוללות ומוצרי בית)",                                   emoji: "🛍️", order: 11 },
 ];
 const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופסה", "חבילה", "צרור"];
+
+// One shared AI provider for the whole app, configured once by an admin
+// (SettingsScreen) — every user gets AI features (bulk add, auto-category)
+// through it, nobody brings their own key.
+const AI_PROVIDERS = {
+  anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
+  openai:    { name: "ChatGPT", label: "OpenAI",   defaultModel: "gpt-4o-mini",               keyHint: "sk-...",     free: false },
+  gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash-lite",      keyHint: "AIza...",    free: true  },
+};
+// Shown before the admin presses "refresh list" to pull the real, current
+// catalog from the provider — kept short since it goes stale over time.
+const FALLBACK_MODELS = {
+  anthropic: [
+    { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 — מהיר וזול" },
+    { id: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6 — חזק יותר" },
+  ],
+  openai: [
+    { id: "gpt-4o-mini", label: "GPT-4o Mini — מהיר וזול" },
+    { id: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
+  ],
+  gemini: [
+    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite — הכי זול" },
+    { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash" },
+  ],
+};
+function aiModelLabel(m, cheapestId) {
+  const price = m.price ? ` — $${m.price.in}/$${m.price.out} למיליון` : "";
+  const cheap = m.id === cheapestId ? " · 💰 הכי זול" : "";
+  return (m.label || m.id) + price + cheap;
+}
+// Always include the currently-selected model, even if it fell out of the
+// live/fallback list, so the <select> never silently blanks it.
+function aiModelOptions(models, currentId) {
+  if (currentId && !models.some(m => m.id === currentId)) return [{ id: currentId, label: currentId }].concat(models);
+  return models;
+}
 
 // Live categories from Firestore, ordered per the admin-managed sort order
 // (Settings). Seeds the collection with the defaults above the first time
@@ -118,6 +159,22 @@ function useCategories() {
     });
   }, []);
   return categories;
+}
+
+// Whether an admin has configured a shared AI provider — the actual
+// provider/key lives in appConfig/ai, which only admins can read (it's a
+// real secret); this is a separate public boolean doc so every signed-in
+// user's client can safely know AI features are available without ever
+// seeing the key itself.
+function useAiAvailable() {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    return db.collection("appConfig").doc("aiStatus").onSnapshot(
+      snap => setAvailable(!!(snap.data() || {}).configured),
+      () => setAvailable(false)
+    );
+  }, []);
+  return available;
 }
 
 // Vendors with a known online-delivery branch, admin-managed (Settings).
@@ -1140,6 +1197,25 @@ function ItemWizard({ mode, item, categories, activeProfiles, onInsert, onSave, 
     // eslint-disable-next-line
   }, []);
 
+  // New items only — there's no category field shown at all on add, so the
+  // category is decided here, quietly, in the background. Editing an
+  // existing item still shows the field and lets it be changed by hand,
+  // which is also the escape hatch if this ever guesses wrong.
+  useEffect(() => {
+    if (isEdit) return;
+    const name = draft.name.trim();
+    if (name.length < 2) return;
+    const t = setTimeout(() => {
+      fns.httpsCallable("categorizeItemName")({ name, categories: categories.map(c => ({ label: c.label })) }).then(res => {
+        const label = res.data && res.data.category;
+        const cat = label && categories.find(c => c.label === label);
+        if (cat) set({ category: cat.label, categoryEmoji: cat.emoji });
+      }).catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line
+  }, [draft.name, isEdit]);
+
   const set = (patch) => setDraft(prev => Object.assign({}, prev, patch));
 
   const toPayload = (d) => ({
@@ -1240,18 +1316,20 @@ function ItemWizard({ mode, item, categories, activeProfiles, onInsert, onSave, 
               </select>
             </div>
           </div>
-          <div>
-            <label className="text-xs text-[#8A7F66] block mb-1">קטגוריה</label>
-            <select
-              value={draft.category}
-              onChange={e => { const cat = categories.find(c => c.label === e.target.value); if (cat) set({ category: cat.label, categoryEmoji: cat.emoji }); }}
-              className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none"
-            >
-              {categories.slice().sort((a, b) => a.label.localeCompare(b.label, "he")).map(cat => (
-                <option key={cat.id} value={cat.label}>{cat.emoji} {cat.label}</option>
-              ))}
-            </select>
-          </div>
+          {isEdit && (
+            <div>
+              <label className="text-xs text-[#8A7F66] block mb-1">קטגוריה</label>
+              <select
+                value={draft.category}
+                onChange={e => { const cat = categories.find(c => c.label === e.target.value); if (cat) set({ category: cat.label, categoryEmoji: cat.emoji }); }}
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-3 text-right outline-none"
+              >
+                {categories.slice().sort((a, b) => a.label.localeCompare(b.label, "he")).map(cat => (
+                  <option key={cat.id} value={cat.label}>{cat.emoji} {cat.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {showNote ? (
             <div>
               <label className="text-xs text-[#8A7F66] block mb-1">הערה</label>
@@ -1688,8 +1766,15 @@ function SettingsScreen({ uid, onBack }) {
   const [addingVendor, setAddingVendor] = useState("");
   const [branchId, setBranchId] = useState("");
   const [pickerMode, setPickerMode] = useState("text"); // "text" | "nearby"
-  const [ai, setAi] = useState(null);
-  const [aiDraft, setAiDraft] = useState({ provider: "", geminiApiKey: "", openaiApiKey: "", anthropicApiKey: "" });
+  const [showAiSettings, setShowAiSettings] = useState(false);
+  const [aiProvider, setAiProvider] = useState("anthropic");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [aiModel, setAiModel] = useState(AI_PROVIDERS.anthropic.defaultModel);
+  const [liveModels, setLiveModels] = useState({}); // { [provider]: { models, cheapestId } }
+  const [liveModelsLoading, setLiveModelsLoading] = useState(false);
+  const [liveModelsErr, setLiveModelsErr] = useState("");
   const [savingAi, setSavingAi] = useState(false);
   const [toast, setToast] = useState(null);
   const [role, setRole] = useState(null);
@@ -1788,10 +1873,22 @@ function SettingsScreen({ uid, onBack }) {
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     const data = snap.data() || {};
-    setAi(data.ai || null);
-    if (data.ai) setAiDraft(prev => Object.assign({}, prev, data.ai));
     setRole(data.role || null);
   }), [uid]);
+
+  // Only reachable for an admin (see the Firestore rule) — a non-admin
+  // simply gets an empty snapshot back, never an error, since they never
+  // render this section anyway.
+  useEffect(() => db.collection("appConfig").doc("ai").onSnapshot(snap => {
+    const data = snap.data();
+    if (!data) return;
+    setAiProvider(data.provider || "anthropic");
+    setOpenaiKey(data.openaiApiKey || "");
+    setGeminiKey(data.geminiApiKey || "");
+    setAnthropicKey(data.anthropicApiKey || "");
+    const p = data.provider || "anthropic";
+    setAiModel((p === "openai" ? data.openaiModel : p === "gemini" ? data.geminiModel : data.anthropicModel) || AI_PROVIDERS[p].defaultModel);
+  }, () => {}), [uid]);
 
   useEffect(() => {
     provisionOnlineVendorProfiles(uid, onlineVendors, profiles);
@@ -1867,9 +1964,39 @@ function SettingsScreen({ uid, onBack }) {
     db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).delete();
   }
 
+  const currentAiProviderKey = () => (aiProvider === "openai" ? openaiKey : aiProvider === "gemini" ? geminiKey : anthropicKey);
+  function switchAiProvider(p) {
+    setAiProvider(p);
+    setAiModel(AI_PROVIDERS[p].defaultModel);
+    setLiveModelsErr("");
+  }
+  function refreshAiModels() {
+    const key = currentAiProviderKey();
+    if (!key.trim() || liveModelsLoading) return;
+    setLiveModelsLoading(true);
+    setLiveModelsErr("");
+    fns.httpsCallable("listProviderModels")({ provider: aiProvider, apiKey: key.trim() }).then(res => {
+      setLiveModels(prev => Object.assign({}, prev, { [aiProvider]: res.data }));
+      setLiveModelsLoading(false);
+    }).catch(e => {
+      setLiveModelsErr(e.message);
+      setLiveModelsLoading(false);
+    });
+  }
   function saveAi() {
+    if (!currentAiProviderKey().trim()) { setToast(`נדרש מפתח ${AI_PROVIDERS[aiProvider].name} — הזן מפתח או בחר ספק אחר`); return; }
     setSavingAi(true);
-    db.collection("users").doc(uid).update({ ai: aiDraft }).then(() => { setSavingAi(false); setToast("נשמר"); });
+    const model = aiModel.trim() || AI_PROVIDERS[aiProvider].defaultModel;
+    const config = {
+      provider: aiProvider,
+      openaiApiKey: openaiKey.trim(), openaiModel: aiProvider === "openai" ? model : AI_PROVIDERS.openai.defaultModel,
+      geminiApiKey: geminiKey.trim(), geminiModel: aiProvider === "gemini" ? model : AI_PROVIDERS.gemini.defaultModel,
+      anthropicApiKey: anthropicKey.trim(), anthropicModel: aiProvider === "anthropic" ? model : AI_PROVIDERS.anthropic.defaultModel,
+    };
+    const batch = db.batch();
+    batch.set(db.collection("appConfig").doc("ai"), config);
+    batch.set(db.collection("appConfig").doc("aiStatus"), { configured: true });
+    batch.commit().then(() => { setSavingAi(false); setToast("נשמר — זמין לכל המשתמשים"); }, () => { setSavingAi(false); setToast("שגיאה בשמירה"); });
   }
 
   // ── Categories ──
@@ -2072,36 +2199,76 @@ function SettingsScreen({ uid, onBack }) {
 
         {role === "admin" && (
         <div>
-          <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הגדרות AI</h2>
-          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-            <select value={aiDraft.provider || ""} onChange={e => setAiDraft(Object.assign({}, aiDraft, { provider: e.target.value }))}
-              className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
-              <option value="">ללא</option>
-              <option value="gemini">Gemini (Google)</option>
-              <option value="openai">ChatGPT (OpenAI)</option>
-              <option value="anthropic">Claude (Anthropic)</option>
-            </select>
-            {aiDraft.provider === "gemini" && (
-              <input value={aiDraft.geminiApiKey || ""} onChange={e => setAiDraft(Object.assign({}, aiDraft, { geminiApiKey: e.target.value }))}
-                placeholder="Gemini API key" type="password" dir="ltr"
-                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none" />
-            )}
-            {aiDraft.provider === "openai" && (
-              <input value={aiDraft.openaiApiKey || ""} onChange={e => setAiDraft(Object.assign({}, aiDraft, { openaiApiKey: e.target.value }))}
-                placeholder="OpenAI API key" type="password" dir="ltr"
-                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none" />
-            )}
-            {aiDraft.provider === "anthropic" && (
-              <input value={aiDraft.anthropicApiKey || ""} onChange={e => setAiDraft(Object.assign({}, aiDraft, { anthropicApiKey: e.target.value }))}
-                placeholder="Anthropic API key" type="password" dir="ltr"
-                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none" />
-            )}
-            <button onClick={saveAi} disabled={savingAi}
-              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
-              {savingAi ? "שומר..." : "שמירה"}
-            </button>
-            <p className="text-[11px] text-[#A79A7C]">המפתח נשמר בחשבון שלך בלבד ומשמש להוספה מהירה של פריטים מטקסט חופשי.</p>
-          </div>
+          <button onClick={() => setShowAiSettings(v => !v)}
+            className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showAiSettings ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+            <div className="flex items-center gap-3">
+              <span className="text-lg w-7 text-center">🤖</span>
+              <div className="text-right">
+                <div className="text-sm font-semibold text-[#2B2418]">הגדרות AI (למנהל)</div>
+                <div className="text-xs text-[#A79A7C]">{AI_PROVIDERS[aiProvider].name} · משותף לכל המשתמשים</div>
+              </div>
+            </div>
+            <span className="text-[#A79A7C] text-xs flex-shrink-0">{showAiSettings ? "▲ הסתר" : "▼ הצג"}</span>
+          </button>
+          {showAiSettings && (
+            <div className="mt-2 bg-white border border-[#E0D4B4] rounded-2xl p-4">
+              <p className="text-xs text-[#8A7F66] mb-2 text-right">ספק AI</p>
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {Object.entries(AI_PROVIDERS).map(([id, p]) => {
+                  const hasKey = !!(id === "openai" ? openaiKey : id === "gemini" ? geminiKey : anthropicKey);
+                  const active = aiProvider === id;
+                  return (
+                    <button key={id} onClick={() => switchAiProvider(id)}
+                      className={"py-2 rounded-xl text-sm font-medium border transition flex flex-col items-center gap-0.5 " + (active ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
+                      <span className="font-semibold">{p.name} {hasKey ? "✓" : ""}</span>
+                      <span className={"text-xs " + (active ? "text-[#C9BE9E]" : "text-[#A79A7C]")}>{p.label}{p.free ? " · חינם" : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {[["anthropic", "Anthropic API Key", anthropicKey, setAnthropicKey],
+                ["openai", "OpenAI API Key", openaiKey, setOpenaiKey],
+                ["gemini", "Google AI Studio API Key", geminiKey, setGeminiKey]]
+                .filter(row => row[0] === aiProvider)
+                .map(([id, label, val, setter]) => (
+                  <div key={id} className="mb-3">
+                    <p className="text-xs text-[#8A7F66] mb-1 text-right">{label}</p>
+                    <input value={val} onChange={e => setter(e.target.value)} placeholder={AI_PROVIDERS[id].keyHint} type="password" dir="ltr"
+                      className="w-full border border-[#C7B78E] rounded-xl px-4 py-3 text-left outline-none text-sm" />
+                  </div>
+                ))}
+
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <button onClick={refreshAiModels} disabled={!currentAiProviderKey().trim() || liveModelsLoading}
+                    className="text-xs font-semibold text-[#2E4A3B] bg-[#EEF5EC] border border-[#B9D9B0] rounded-lg px-2 py-1 whitespace-nowrap disabled:opacity-40">
+                    {liveModelsLoading ? "בודק..." : "🔄 רענן רשימה"}
+                  </button>
+                  <p className="text-xs text-[#8A7F66] text-right">מודל</p>
+                </div>
+                <select value={aiModel} onChange={e => setAiModel(e.target.value)} dir="ltr"
+                  className="w-full border border-[#C7B78E] rounded-xl px-4 py-3 text-left outline-none text-sm font-mono bg-white">
+                  {aiModelOptions((liveModels[aiProvider] && liveModels[aiProvider].models) || FALLBACK_MODELS[aiProvider], aiModel).map(m => (
+                    <option key={m.id} value={m.id}>{aiModelLabel(m, liveModels[aiProvider] && liveModels[aiProvider].cheapestId)}</option>
+                  ))}
+                </select>
+                {liveModelsErr ? (
+                  <p className="text-xs text-[#B8462F] mt-1 text-right">{liveModelsErr}</p>
+                ) : liveModels[aiProvider] ? (
+                  <p className="text-xs text-[#A79A7C] mt-1 text-right">נמצאו {liveModels[aiProvider].models.length} מודלים בחשבון.</p>
+                ) : (
+                  <p className="text-xs text-[#A79A7C] mt-1 text-right">רשימת ברירת מחדל — לחצו "רענן רשימה" למודלים העדכניים מהחשבון.</p>
+                )}
+              </div>
+
+              <button onClick={saveAi} disabled={savingAi}
+                className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+                {savingAi ? "שומר..." : "שמירה"}
+              </button>
+              <p className="text-[11px] text-[#A79A7C] mt-2">מפתח אחד, מוגדר פעם אחת, משמש את כל המשתמשים — להוספה מרובה מטקסט חופשי ולסיווג קטגוריה אוטומטי לפריט חדש.</p>
+            </div>
+          )}
         </div>
         )}
 
@@ -2875,7 +3042,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
   const [pricesLoading, setPricesLoading] = useState(false);
-  const [hasAi, setHasAi] = useState(false);
+  const hasAi = useAiAvailable();
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
@@ -2930,10 +3097,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       .onSnapshot(snap => setItems(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
   }, [listId]);
 
-  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
-    const data = snap.data() || {};
-    setHasAi(!!(data.ai && data.ai.provider));
-  }), [uid]);
 
   // Opening an online list for the first time is what actually creates its
   // "premade" vendor list (Settings does the same thing, so whichever the
