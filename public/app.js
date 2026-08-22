@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.40";
+const VERSION = "v1.41";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1313,7 +1313,11 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
   const [isAdmin, setIsAdmin] = useState(false);
   const categories = useCategories();
   const { profiles: activeProfiles, loaded: profilesLoaded } = useActiveVendorProfilesState(uid);
-  const isNewUser = profilesLoaded && activeProfiles.length === 0;
+  // Online vendors are admin-configured and the same for everyone — a user
+  // never "sets those up," so an online profile auto-provisioned just from
+  // opening an online list shouldn't count as having completed setup. Only
+  // a real in-store branch, which the user actually chose to add, does.
+  const isNewUser = profilesLoaded && activeProfiles.filter(p => (p.mode || "instore") === "instore").length === 0;
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     setIsAdmin((snap.data() || {}).role === "admin");
