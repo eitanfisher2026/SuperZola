@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.44";
+const VERSION = "v1.45";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -109,7 +109,7 @@ const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופ
 const AI_PROVIDERS = {
   anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
   openai:    { name: "ChatGPT", label: "OpenAI",   defaultModel: "gpt-4o-mini",               keyHint: "sk-...",     free: false },
-  gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash-lite",      keyHint: "AIza...",    free: true  },
+  gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-flash-lite-latest",   keyHint: "AIza...",    free: true  },
 };
 const AI_KEY_LINKS = {
   anthropic: "https://console.anthropic.com/settings/keys",
@@ -128,8 +128,8 @@ const FALLBACK_MODELS = {
     { id: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
   ],
   gemini: [
-    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite — הכי זול" },
-    { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash" },
+    { id: "gemini-flash-lite-latest", label: "Gemini Flash-Lite (latest) — הכי זול" },
+    { id: "gemini-flash-latest",      label: "Gemini Flash (latest)" },
   ],
 };
 function aiModelLabel(m, cheapestId) {

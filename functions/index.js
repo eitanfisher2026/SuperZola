@@ -84,7 +84,7 @@ const PRICING = {
 function makeAI(data) {
   const { provider, geminiApiKey, geminiModel, openaiApiKey, openaiModel, anthropicApiKey, anthropicModel } = data || {};
   if (provider === 'gemini' && geminiApiKey) {
-    const model = geminiModel || 'gemini-2.5-flash-lite';
+    const model = geminiModel || 'gemini-flash-lite-latest';
     return { type: 'gemini', client: new GoogleGenerativeAI(geminiApiKey), model };
   }
   if (provider === 'openai' && openaiApiKey) {
