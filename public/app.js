@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.38";
+const VERSION = "v1.39";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1352,7 +1352,12 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
         <AppIcon size={30} />
         <div className="text-[17px]" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>סופר זולה</div>
         <div className="flex-1" />
-        <button onClick={onOpenHelp} className="text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">ⓘ</button>
+        <button onClick={onOpenHelp} className="relative text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">
+          ⓘ
+          {activeProfiles.length === 0 && (
+            <span className="absolute top-0.5 left-0.5 w-2 h-2 rounded-full bg-[#E3A939]" />
+          )}
+        </button>
         <div className="relative">
           <button onClick={e => { e.stopPropagation(); setShowUserMenu(v => !v); }}
             className="w-8 h-8 rounded-full overflow-hidden border border-[#DECBA1] bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0">
@@ -1386,6 +1391,30 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
         <h1 className="text-2xl" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הרשימות שלי</h1>
       </div>
 
+      {activeProfiles.length === 0 && (
+        <div className="px-4 pb-4">
+          <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-lg">👋</span>
+              <h2 className="text-[15px] font-bold text-[#2E4A3B]">בואו נתחיל!</h2>
+            </div>
+            <p className="text-[13px] text-[#3F5A38] leading-snug mb-3">
+              כדי שהאפליקציה תשווה מחירים, קודם צריך להוסיף את הסניפים שבהם אתם קונים — זה לוקח דקה, וזה השלב היחיד שחוזר על עצמו.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={onOpenSettings}
+                className="flex-1 bg-[#2E4A3B] text-white rounded-xl py-2.5 text-sm font-semibold">
+                ➕ הוספת סניפים
+              </button>
+              <button onClick={onOpenHelp}
+                className="flex-1 bg-white border border-[#B9D9B0] text-[#2E4A3B] rounded-xl py-2.5 text-sm font-semibold">
+                📖 מדריך שימוש
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="px-4 flex flex-col gap-2">
         {lists === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען רשימות...</div>}
         {lists !== null && lists.length === 0 && (
@@ -1402,7 +1431,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
           disabled={creating}
           className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
         >
-          {creating ? "יוצר..." : "+ רשימה חדשה"}
+          {creating ? "יוצר..." : "+ קניה בסניף"}
         </button>
         <button
           onClick={() => quickCreate("online")}
@@ -3629,7 +3658,7 @@ function HelpScreen({ onBack }) {
               אין צורך להוסיף כלום ידנית. כשפותחים רשימה מסוג "קנייה אונליין" האפליקציה בונה אוטומטית רשימת רשתות שתומכות במשלוח, ואפשר לכבות מהן את מה שלא רלוונטי. הזמינות בפועל תלויה בעיר המשלוח שלכם — האפליקציה לא בודקת זאת אוטומטית, כדאי לוודא באתר הרשת לפני ההזמנה.
             </HelpCard>
             <HelpCard icon="📝" title="4. יצירת רשימה">
-              במסך הבית: "+ רשימה חדשה" לקנייה רגילה, או "+ קנייה אונליין" לרשימה שמושווית מול הרשתות האונליין. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
+              במסך הבית: "+ קניה בסניף" לקנייה רגילה, או "+ קנייה אונליין" לרשימה שמושווית מול הרשתות האונליין. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
               בתוך רשימה, לחצו "+ הוספת פריט" ותנו לו שם, כמות וקטגוריה.
