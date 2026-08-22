@@ -151,21 +151,6 @@ function calcCostUsd(ai, inputTokens, outputTokens) {
   return (inputTokens * p.in + outputTokens * p.out) / 1_000_000;
 }
 
-function extractJsonArray(text) {
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new HttpsError('internal', 'לא ניתן לפרסר את תשובת ה-AI');
-  let parsed;
-  try { parsed = JSON.parse(match[0]); }
-  catch { throw new HttpsError('internal', 'לא ניתן לפרסר את תשובת ה-AI'); }
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new HttpsError('internal', 'לא זוהו פריטים בטקסט');
-  return parsed;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Item parsing — free-text shopping input → structured, categorized items
-// ─────────────────────────────────────────────────────────────────────────────
-const DEFAULT_AI_PROMPT = 'אתה מסייע לסיווג פריטי קנייה בעברית לקטגוריות.\n\nקטגוריות זמינות — חייב להשתמש באחד השמות המדויקים האלו:\n{categories}\n\nכללים:\n1. זהה כל פריט נפרד בטקסט\n2. לכל פריט, בחר את הקטגוריה המתאימה ביותר מהרשימה\n3. שם הקטגוריה חייב להיות זהה לחלוטין לאחד השמות ברשימה\n4. "שונות" — רק אם אין שום קטגוריה מתאימה אחרת\n5. אם לא צוינה כמות — הכנס 1. אם לא צוינה יחידה — הכנס "יחידות"\n6. הערה (note) — רק אם קיימת בטקסט, אחרת ""\n7. שם הפריט (name) — העתק בדיוק כפי שהמשתמש כתב, באותה שפה\n\nיחידות אפשריות: יחידות / ק"ג / גרם / ליטר / מ"ל / קופסה / חבילה / צרור\n\nפרמט JSON נדרש:\n[{"name":"שם הפריט","quantity":1,"unit":"יחידות","category":"שם קטגוריה מדויק","note":""}]\n\nטקסט: {text}\n\nהחזר מערך JSON בלבד, ללא הסברים:';
-
 // The AI provider/key is configured once by an admin (appConfig/ai) and
 // shared by every user — nobody brings their own key. The client never
 // sees this doc (Firestore rules restrict it to admin reads); every AI
@@ -175,34 +160,10 @@ async function getAppAiConfig() {
   return snap.exists ? snap.data() : null;
 }
 
-exports.parseItems = onCall(
-  { timeoutSeconds: 60, memory: '256MiB', region: REGION },
-  async (request) => {
-    requireSignedIn(request);
-    const { text, categories, prompt } = request.data || {};
-    if (!text || typeof text !== 'string' || !text.trim()) {
-      throw new HttpsError('invalid-argument', 'text required');
-    }
-    const cats = Array.isArray(categories) && categories.length > 0 ? categories : [{ label: 'שונות' }];
-    const catLabels = cats.map(c => c.label).join(' / ');
-    let template = DEFAULT_AI_PROMPT;
-    if (typeof prompt === 'string' && prompt.includes('{categories}') && prompt.includes('{text}')) template = prompt;
-    const finalPrompt = template.replace('{categories}', catLabels).replace('{text}', text);
-
-    const config = await getAppAiConfig();
-    if (!config) throw new HttpsError('failed-precondition', 'לא הוגדר ספק AI. פנה למנהל המערכת.');
-    const ai = makeAI(config);
-    const { text: raw, usage } = await callAI(ai, finalPrompt, 2048);
-    await recordCost(request, ai, usage?.input_tokens || 0, usage?.output_tokens || 0);
-    return { items: extractJsonArray(raw) };
-  }
-);
-
-// Real-time, single-item categorization at add-time — a much smaller ask
-// of the model than parseItems, so it gets a short, cheap prompt and never
-// throws: no admin config, a bad response, or a rate limit all just mean
-// "no suggestion," and the user still picks manually, same as before this
-// feature existed.
+// Real-time, single-item categorization at add-time — a short, cheap
+// prompt that never throws: no admin config, a bad response, or a rate
+// limit all just mean "no suggestion," and the user still picks manually,
+// same as before this feature existed.
 exports.categorizeItemName = onCall(
   { timeoutSeconds: 20, memory: '128MiB', region: REGION },
   async (request) => {
@@ -216,11 +177,17 @@ exports.categorizeItemName = onCall(
     let ai;
     try { ai = makeAI(config); } catch (e) { return { category: null }; }
     const catLabels = cats.map(c => c.label);
-    const prompt = `בחר את הקטגוריה המתאימה ביותר לפריט הקנייה הבא, מהרשימה בלבד.\n\nקטגוריות:\n${catLabels.map(l => '- ' + l).join('\n')}\n\nפריט: ${name.trim()}\n\nהחזר אך ורק את שם הקטגוריה המדויק מהרשימה, ללא כל טקסט נוסף.`;
+    // A numbered choice is far more reliable to parse back out than asking
+    // for the exact label as free text — no risk of the model wrapping the
+    // answer in extra words that break an exact-match check. The explicit
+    // examples and the "last resort" rule for "שונות" are here because a
+    // plain "pick the best category" prompt was landing everyday items like
+    // yogurt in the misc bucket instead of dairy.
+    const prompt = `אתה מסווג פריטי קניה בסופרמרקט לקטגוריות, לפי ידע כללי על מוצרי מזון וצריכה.\n\nקטגוריות (ממוספרות):\n${catLabels.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\nפריט לסיווג: "${name.trim()}"\n\nכללים:\n- בחר לפי הידע הכללי שלך על מוצרי סופרמרקט. לדוגמה: יוגורט, גבינה, קוטג', חמאה, שמנת וחלב שייכים לקטגוריית מוצרי חלב; עגבניה ומלפפון שייכים לירקות טריים.\n- הקטגוריה "שונות" היא מוצא אחרון בלבד — רק אם שום קטגוריה אחרת לא מתאימה כלל.\n- החזר אך ורק את המספר של הקטגוריה שבחרת, ללא שום טקסט נוסף.`;
     try {
-      const { text: raw, usage } = await callAI(ai, prompt, 30);
-      const guess = raw.trim().replace(/^["'.]+|["'.]+$/g, '');
-      const match = catLabels.find(l => l === guess) || catLabels.find(l => guess.includes(l)) || null;
+      const { text: raw, usage } = await callAI(ai, prompt, 10);
+      const num = parseInt((raw.match(/\d+/) || [])[0], 10);
+      const match = (num >= 1 && num <= catLabels.length) ? catLabels[num - 1] : null;
       await recordCost(request, ai, usage?.input_tokens || 0, usage?.output_tokens || 0);
       return { category: match };
     } catch (e) {

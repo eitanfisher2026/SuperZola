@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.43";
+const VERSION = "v1.44";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -99,7 +99,7 @@ const DEFAULT_CATEGORIES = [
   { id: "cleaning",    label: "חומרי ניקוי ותחזוקת בית",                                                emoji: "🧹", order: 8 },
   { id: "personalCare",label: "טיפוח אישי והיגיינה (כולל מוצרי תינוקות)",                               emoji: "🧼", order: 9 },
   { id: "paper",       label: "מוצרי נייר וחד־פעמי",                                                    emoji: "🧻", order: 10 },
-  { id: "other",       label: "שונות (חיות מחמד, סוללות ומוצרי בית)",                                   emoji: "🛍️", order: 11 },
+  { id: "other",       label: "שונות (ציוד/אוכל לחיות מחמד, סוללות ומוצרי בית)",                         emoji: "🛍️", order: 11 },
 ];
 const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופסה", "חבילה", "צרור"];
 
@@ -164,22 +164,6 @@ function useCategories() {
     });
   }, []);
   return categories;
-}
-
-// Whether an admin has configured a shared AI provider — the actual
-// provider/key lives in appConfig/ai, which only admins can read (it's a
-// real secret); this is a separate public boolean doc so every signed-in
-// user's client can safely know AI features are available without ever
-// seeing the key itself.
-function useAiAvailable() {
-  const [available, setAvailable] = useState(false);
-  useEffect(() => {
-    return db.collection("appConfig").doc("aiStatus").onSnapshot(
-      snap => setAvailable(!!(snap.data() || {}).configured),
-      () => setAvailable(false)
-    );
-  }, []);
-  return available;
 }
 
 // Vendors with a known online-delivery branch, admin-managed (Settings).
@@ -763,51 +747,6 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
         </div>
       )}
     </div>
-  );
-}
-
-// ── BULK ADD (AI) ─────────────────────────────────────────────────────────────
-function BulkAddModal({ categories, hasAi, onInsertMany, onClose }) {
-  const [text, setText] = useState("");
-  const [processing, setProcessing] = useState(false);
-  const [error, setError] = useState("");
-
-  function process() {
-    const t = text.trim();
-    if (!t) return;
-    setProcessing(true);
-    setError("");
-    fns.httpsCallable("parseItems")({ text: t, categories: categories.map(c => ({ label: c.label })) }).then(res => {
-      setProcessing(false);
-      onInsertMany(res.data.items || []);
-      onClose();
-    }).catch(e => {
-      setProcessing(false);
-      setError((e && e.message) || "שגיאה בעיבוד הטקסט");
-    });
-  }
-
-  return (
-    <Modal onClose={onClose} footer={
-      hasAi ? (
-        <button onClick={process} disabled={!text.trim() || processing}
-          className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-          {processing ? <Spinner /> : "פענוח והוספה"}
-        </button>
-      ) : null
-    }>
-      <h3 className="text-lg text-center mb-3" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספה מרובה (AI)</h3>
-      {!hasAi ? (
-        <p className="text-sm text-[#8A7F66] text-center py-4">יש להגדיר ספק AI תחילה בהגדרות כדי להשתמש בתכונה הזו.</p>
-      ) : (
-        <React.Fragment>
-          <textarea value={text} onChange={e => setText(e.target.value)} autoFocus rows={5}
-            placeholder={'לדוגמה:\n3 ק"ג עגבניות\nחלב 3% שני ליטר\nסבון כלים\n6 ביצים'}
-            className="w-full border border-[#C7B78E] bg-white rounded-xl p-3 text-right resize-none outline-none text-sm" />
-          {error && <p className="text-[#B8462F] text-sm text-center mt-2">{error}</p>}
-        </React.Fragment>
-      )}
-    </Modal>
   );
 }
 
@@ -1998,10 +1937,8 @@ function SettingsScreen({ uid, onBack }) {
       geminiApiKey: geminiKey.trim(), geminiModel: aiProvider === "gemini" ? model : AI_PROVIDERS.gemini.defaultModel,
       anthropicApiKey: anthropicKey.trim(), anthropicModel: aiProvider === "anthropic" ? model : AI_PROVIDERS.anthropic.defaultModel,
     };
-    const batch = db.batch();
-    batch.set(db.collection("appConfig").doc("ai"), config);
-    batch.set(db.collection("appConfig").doc("aiStatus"), { configured: true });
-    batch.commit().then(() => { setSavingAi(false); setToast("נשמר — זמין לכל המשתמשים"); }, () => { setSavingAi(false); setToast("שגיאה בשמירה"); });
+    db.collection("appConfig").doc("ai").set(config)
+      .then(() => { setSavingAi(false); setToast("נשמר — זמין לכל המשתמשים"); }, () => { setSavingAi(false); setToast("שגיאה בשמירה"); });
   }
 
   // ── Categories ──
@@ -2277,7 +2214,7 @@ function SettingsScreen({ uid, onBack }) {
                 className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
                 {savingAi ? "שומר..." : "שמירה"}
               </button>
-              <p className="text-[11px] text-[#A79A7C] mt-2">מפתח אחד, מוגדר פעם אחת, משמש את כל המשתמשים — להוספה מרובה מטקסט חופשי ולסיווג קטגוריה אוטומטי לפריט חדש.</p>
+              <p className="text-[11px] text-[#A79A7C] mt-2">מפתח אחד, מוגדר פעם אחת, משמש את כל המשתמשים — לסיווג קטגוריה אוטומטי לפריט חדש.</p>
             </div>
           )}
         </div>
@@ -3044,7 +2981,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [list, setList] = useState({ name: listName });
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [showBulkAdd, setShowBulkAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -3053,7 +2989,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
   const [pricesLoading, setPricesLoading] = useState(false);
-  const hasAi = useAiAvailable();
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
@@ -3149,29 +3084,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       addedBy: uid,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     })).then(() => done());
-  }
-
-  function insertMany(rawItems) {
-    const valid = rawItems.filter(r => (r.name || r.item || "").trim());
-    if (valid.length === 0) return;
-    const batch = db.batch();
-    const now = Date.now();
-    valid.forEach((raw, i) => {
-      const name = (raw.name || raw.item || "").trim();
-      const cat = categories.find(c => c.label === raw.category) || categories[categories.length - 1];
-      const ref = db.collection("lists").doc(listId).collection("items").doc();
-      batch.set(ref, {
-        name,
-        category: cat.label,
-        categoryEmoji: cat.emoji,
-        quantity: parseFloat(raw.quantity) || 1,
-        unit: raw.unit || "יחידות",
-        note: raw.note || "",
-        addedBy: uid,
-        addedAt: firebase.firestore.Timestamp.fromMillis(now + i),
-      });
-    });
-    batch.commit().then(() => setToast(valid.length + " פריטים נוספו"));
   }
 
   function saveEdit(payload) {
@@ -3319,12 +3231,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       </div>
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
-        {hasAi && (
-          <button onClick={() => setShowBulkAdd(true)}
-            className="bg-white border border-[#DECBA1] text-[#5B5749] px-4 py-3 rounded-2xl shadow-md font-medium text-sm">
-            ✍️ הוספה מרובה
-          </button>
-        )}
         <button
           onClick={() => setShowAdd(true)}
           className="bg-[#2E4A3B] text-[#FBF4E7] px-5 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5"
@@ -3338,9 +3244,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       )}
       {editItem && (
         <ItemWizard mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
-      )}
-      {showBulkAdd && (
-        <BulkAddModal categories={categories} hasAi={hasAi} onInsertMany={insertMany} onClose={() => setShowBulkAdd(false)} />
       )}
 
       {showMenu && (
