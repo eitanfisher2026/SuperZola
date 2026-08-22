@@ -165,7 +165,7 @@ async function getAppAiConfig() {
 // limit all just mean "no suggestion," and the user still picks manually,
 // same as before this feature existed.
 exports.categorizeItemName = onCall(
-  { timeoutSeconds: 20, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 20, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     const { name, categories } = request.data || {};
