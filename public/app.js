@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.39";
+const VERSION = "v1.40";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -346,6 +346,21 @@ function useActiveVendorProfiles(uid) {
       .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
   }, [uid]);
   return profiles;
+}
+// Same query as useActiveVendorProfiles, but also reports whether the
+// first snapshot has actually arrived — an empty array is the initial
+// state too, so anything that treats "zero" as meaningful (e.g. a
+// first-time-setup banner) needs to know not to trust it before the real
+// data has had a chance to load, or it flashes for every existing user.
+function useActiveVendorProfilesState(uid) {
+  const [state, setState] = useState({ profiles: [], loaded: false });
+  useEffect(() => {
+    if (!uid) return;
+    return db.collection("users").doc(uid).collection("vendorProfiles")
+      .where("active", "==", true)
+      .onSnapshot(snap => setState({ profiles: snap.docs.map(d => ({ id: d.id, ...d.data() })), loaded: true }));
+  }, [uid]);
+  return state;
 }
 
 // ── SHARED UI ─────────────────────────────────────────────────────────────────
@@ -1297,7 +1312,8 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
   const [toast, setToast] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const categories = useCategories();
-  const activeProfiles = useActiveVendorProfiles(uid);
+  const { profiles: activeProfiles, loaded: profilesLoaded } = useActiveVendorProfilesState(uid);
+  const isNewUser = profilesLoaded && activeProfiles.length === 0;
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     setIsAdmin((snap.data() || {}).role === "admin");
@@ -1354,7 +1370,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
         <div className="flex-1" />
         <button onClick={onOpenHelp} className="relative text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">
           ⓘ
-          {activeProfiles.length === 0 && (
+          {isNewUser && (
             <span className="absolute top-0.5 left-0.5 w-2 h-2 rounded-full bg-[#E3A939]" />
           )}
         </button>
@@ -1391,7 +1407,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
         <h1 className="text-2xl" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הרשימות שלי</h1>
       </div>
 
-      {activeProfiles.length === 0 && (
+      {isNewUser && (
         <div className="px-4 pb-4">
           <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-2xl p-4">
             <div className="flex items-center gap-2 mb-1">
