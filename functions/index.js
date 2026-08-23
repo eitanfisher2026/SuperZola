@@ -231,7 +231,7 @@ exports.categorizeCatalogBatch = onCall(
     // identical call to call within one run. A small batch size meant that
     // overhead got paid dozens of times over for a big catalog; a much
     // bigger batch means far fewer calls, so it's paid far fewer times.
-    const batchSize = Math.min(parseInt(limit, 10) || 500, 600);
+    const batchSize = Math.min(parseInt(limit, 10) || 250, 300);
 
     // Categorization is barcode-keyed and shared regardless of which branch
     // sells it, so the caller only ever needs to name a vendor — any one
@@ -309,7 +309,7 @@ function cheapestModelId(models) {
 }
 
 exports.listProviderModels = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     const { provider, apiKey } = request.data || {};
@@ -355,7 +355,7 @@ exports.listProviderModels = onCall(
 );
 
 exports.getCosts = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     const { scope } = request.data || {};
@@ -981,7 +981,7 @@ async function getUserActiveProfiles(uid) {
 }
 
 exports.getVendorList = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     return { vendors: VENDOR_IDS.map(id => ({ id, label: VENDOR_LABELS[id] || id })) };
@@ -993,7 +993,7 @@ exports.getVendorList = onCall(
 // only ever offers real places, not free text. Cached in Firestore and
 // refreshed at most weekly; this list changes extremely rarely.
 exports.getIsraeliCities = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     const cacheRef = db.collection('staticData').doc('israeliCities');
@@ -1174,7 +1174,7 @@ exports.resolveItemBarcodes = onCall(
 );
 
 exports.confirmItemBarcode = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     const { name, barcode, matchedName, vendors } = request.data || {};
@@ -1190,7 +1190,7 @@ exports.confirmItemBarcode = onCall(
 );
 
 exports.getActiveCatalogTimestamps = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
     const activeProfiles = await getUserActiveProfiles(request.auth.uid);

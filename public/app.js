@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.51";
+const VERSION = "v1.52";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1761,6 +1761,11 @@ function SettingsScreen({ uid, onBack }) {
   // decide whether to keep going, and a ref is never stale inside a
   // long-running async function the way a captured state value could be.
   const stopRequestedRef = useRef(false);
+  // Mirrors the ref purely so the stop button can show it registered the
+  // click right away — the current in-flight call still has to finish
+  // (it can't be interrupted mid-request), but the button shouldn't look
+  // like nothing happened while that's in progress.
+  const [stopRequested, setStopRequested] = useState(false);
   const isEditorOrAdmin = role === "editor" || role === "admin";
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
@@ -1962,10 +1967,16 @@ function SettingsScreen({ uid, onBack }) {
     let remaining = 1;
     let noCatalog = false;
     while (remaining > 0) {
+      // Checked only between calls, not during one — a bigger batch cuts
+      // down on repeated full-catalog rescans, but also makes "stop" wait
+      // longer to take effect, since a call already in flight can't be
+      // interrupted mid-way. 250 is a middle ground: still far fewer
+      // round trips than the original 150, but each one finishes in well
+      // under a minute so stopping still feels reasonably responsive.
       if (stopRequestedRef.current) break;
       let res;
       try {
-        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 300000 })({ vendor, limit: 500 });
+        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 300000 })({ vendor, limit: 250 });
       } catch (e) {
         setToast((e && e.message) || "שגיאה בסיווג הקטלוג");
         break;
@@ -1996,14 +2007,17 @@ function SettingsScreen({ uid, onBack }) {
 
   function startSingleVendorRun(vendor) {
     stopRequestedRef.current = false;
+    setStopRequested(false);
     runCatalogBackfill(vendor, false);
   }
   function stopBackfill() {
     stopRequestedRef.current = true;
+    setStopRequested(true);
   }
 
   async function runCatalogBackfillAll() {
     stopRequestedRef.current = false;
+    setStopRequested(false);
     setRunningAll(true);
     let totalDone = 0;
     for (const v of VENDOR_LIST) {
@@ -2251,9 +2265,9 @@ function SettingsScreen({ uid, onBack }) {
                     פעם אחת לכל רשת מספיקה, לא לכל סניף בנפרד — התיוג משותף לכל מי שמוכר אותו ברקוד. רשימה מלאה, לא רק הרשתות שאתם עצמכם עוקבים אחריהן.
                   </p>
                   {(runningVendor || runningAll) ? (
-                    <button onClick={stopBackfill}
-                      className="w-full bg-[#B8462F] text-white text-xs font-bold py-2.5 rounded-lg mb-2">
-                      ⏹ עצירה
+                    <button onClick={stopBackfill} disabled={stopRequested}
+                      className="w-full bg-[#B8462F] text-white text-xs font-bold py-2.5 rounded-lg mb-2 disabled:opacity-60">
+                      {stopRequested ? "עוצר... (מסיים את הקבוצה הנוכחית)" : "⏹ עצירה"}
                     </button>
                   ) : (
                     <button onClick={runCatalogBackfillAll}
