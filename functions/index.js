@@ -221,12 +221,17 @@ async function runWithConcurrency(items, concurrency, worker) {
 }
 
 exports.categorizeCatalogBatch = onCall(
-  { timeoutSeconds: 120, memory: '256MiB', region: REGION },
+  { timeoutSeconds: 300, memory: '256MiB', region: REGION },
   async (request) => {
     await requireEditorOrAdmin(request);
     const { vendor, limit } = request.data || {};
     if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
-    const batchSize = Math.min(parseInt(limit, 10) || 100, 150);
+    // Every call re-reads the whole catalog and re-checks cache membership
+    // for every barcode before it can even start — fixed overhead that's
+    // identical call to call within one run. A small batch size meant that
+    // overhead got paid dozens of times over for a big catalog; a much
+    // bigger batch means far fewer calls, so it's paid far fewer times.
+    const batchSize = Math.min(parseInt(limit, 10) || 500, 600);
 
     // Categorization is barcode-keyed and shared regardless of which branch
     // sells it, so the caller only ever needs to name a vendor — any one
@@ -259,7 +264,7 @@ exports.categorizeCatalogBatch = onCall(
     const todo = barcodes.filter(bc => !cachedSet.has(bc)).slice(0, batchSize);
 
     let processed = 0;
-    await runWithConcurrency(todo, 10, async (bc) => {
+    await runWithConcurrency(todo, 15, async (bc) => {
       const name = items[bc].name;
       if (!name) return;
       try {

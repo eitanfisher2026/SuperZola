@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.50";
+const VERSION = "v1.51";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1757,6 +1757,10 @@ function SettingsScreen({ uid, onBack }) {
   const [runningAll, setRunningAll] = useState(false);
   const [categorizationRuns, setCategorizationRuns] = useState({}); // { [vendor]: {lastRunAt, itemsProcessed} }
   const [showCategorizeSection, setShowCategorizeSection] = useState(false);
+  // A ref, not state — the backfill loops read this on every iteration to
+  // decide whether to keep going, and a ref is never stale inside a
+  // long-running async function the way a captured state value could be.
+  const stopRequestedRef = useRef(false);
   const isEditorOrAdmin = role === "editor" || role === "admin";
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
@@ -1944,9 +1948,13 @@ function SettingsScreen({ uid, onBack }) {
 
   // Calls the batch backfill repeatedly (same "keep calling until done"
   // shape as branch geocoding) until nothing's left uncategorized for this
-  // vendor — the server picks any one already-cached branch on its own, so
-  // this only ever needs a vendor id, never a specific branch.
-  async function runCatalogBackfill(vendor) {
+  // vendor, or until stopRequestedRef is set — the server picks any one
+  // already-cached branch on its own, so this only ever needs a vendor id,
+  // never a specific branch. Doesn't reset the stop flag itself, since
+  // runCatalogBackfillAll calls this once per vendor in sequence and a
+  // stop mid-way through vendor 3 must not get silently cleared when
+  // vendor 4's run starts — only the two entry points below reset it.
+  async function runCatalogBackfill(vendor, silent) {
     setRunningVendor(vendor);
     setRunProgress({ done: 0, total: null });
     let totalTodo = null;
@@ -1954,9 +1962,10 @@ function SettingsScreen({ uid, onBack }) {
     let remaining = 1;
     let noCatalog = false;
     while (remaining > 0) {
+      if (stopRequestedRef.current) break;
       let res;
       try {
-        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 120000 })({ vendor, limit: 100 });
+        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 300000 })({ vendor, limit: 500 });
       } catch (e) {
         setToast((e && e.message) || "שגיאה בסיווג הקטלוג");
         break;
@@ -1971,25 +1980,41 @@ function SettingsScreen({ uid, onBack }) {
     }
     setRunningVendor(null);
     if (noCatalog) {
-      setToast(`אין עדיין קטלוג שמור עבור ${vendorLabel(vendor)} — צריך שמישהו יעקוב אחרי סניף שלה קודם`);
+      if (!silent) setToast(`אין עדיין קטלוג שמור עבור ${vendorLabel(vendor)} — צריך שמישהו יעקוב אחרי סניף שלה קודם`);
     } else {
-      await db.collection("categorizationRuns").doc(vendor).set({
-        lastRunAt: firebase.firestore.FieldValue.serverTimestamp(), lastRunBy: uid, itemsProcessed: done,
-      }, { merge: true });
-      if (!runningAll) setToast(done > 0 ? `סווגו ${done} פריטים` : "אין פריטים חדשים לסווג");
+      if (done > 0) {
+        await db.collection("categorizationRuns").doc(vendor).set({
+          lastRunAt: firebase.firestore.FieldValue.serverTimestamp(), lastRunBy: uid, itemsProcessed: done,
+        }, { merge: true });
+      }
+      if (!silent) {
+        setToast(stopRequestedRef.current ? `נעצר — סווגו ${done} פריטים` : (done > 0 ? `סווגו ${done} פריטים` : "אין פריטים חדשים לסווג"));
+      }
     }
     return { done, noCatalog };
   }
 
+  function startSingleVendorRun(vendor) {
+    stopRequestedRef.current = false;
+    runCatalogBackfill(vendor, false);
+  }
+  function stopBackfill() {
+    stopRequestedRef.current = true;
+  }
+
   async function runCatalogBackfillAll() {
+    stopRequestedRef.current = false;
     setRunningAll(true);
     let totalDone = 0;
     for (const v of VENDOR_LIST) {
-      const { done } = await runCatalogBackfill(v.id);
+      if (stopRequestedRef.current) break;
+      const { done } = await runCatalogBackfill(v.id, true);
       totalDone += done;
     }
     setRunningAll(false);
-    setToast(`הושלם לכל הרשתות — סווגו ${totalDone} פריטים בסך הכול`);
+    setToast(stopRequestedRef.current
+      ? `נעצר — סווגו ${totalDone} פריטים בסך הכול`
+      : `הושלם לכל הרשתות — סווגו ${totalDone} פריטים בסך הכול`);
   }
 
   function loadBranches(vendorId) {
@@ -2225,10 +2250,17 @@ function SettingsScreen({ uid, onBack }) {
                   <p className="text-[11px] text-[#8A7F66] mb-2">
                     פעם אחת לכל רשת מספיקה, לא לכל סניף בנפרד — התיוג משותף לכל מי שמוכר אותו ברקוד. רשימה מלאה, לא רק הרשתות שאתם עצמכם עוקבים אחריהן.
                   </p>
-                  <button onClick={runCatalogBackfillAll} disabled={!!runningVendor || runningAll}
-                    className="w-full bg-[#8A5A15] text-white text-xs font-bold py-2.5 rounded-lg disabled:opacity-40 mb-2">
-                    {runningAll ? "מריץ לכל הרשתות..." : "▶ הרץ לכל הרשתות"}
-                  </button>
+                  {(runningVendor || runningAll) ? (
+                    <button onClick={stopBackfill}
+                      className="w-full bg-[#B8462F] text-white text-xs font-bold py-2.5 rounded-lg mb-2">
+                      ⏹ עצירה
+                    </button>
+                  ) : (
+                    <button onClick={runCatalogBackfillAll}
+                      className="w-full bg-[#8A5A15] text-white text-xs font-bold py-2.5 rounded-lg mb-2">
+                      ▶ הרץ לכל הרשתות
+                    </button>
+                  )}
                   <div className="flex flex-col gap-1.5">
                     {VENDOR_LIST.map(v => {
                       const run = categorizationRuns[v.id];
@@ -2241,7 +2273,7 @@ function SettingsScreen({ uid, onBack }) {
                               {run && run.lastRunAt ? `הורץ לאחרונה: ${formatRelativeUpdatedAt(run.lastRunAt.toMillis?.())}` : "מעולם לא הורץ"}
                             </div>
                           </div>
-                          <button onClick={() => runCatalogBackfill(v.id)} disabled={!!runningVendor || runningAll}
+                          <button onClick={() => startSingleVendorRun(v.id)} disabled={!!runningVendor || runningAll}
                             className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40 flex-shrink-0">
                             {isRunning ? `מסווג... ${runProgress.done}${runProgress.total != null ? "/" + runProgress.total : ""}` : "🏷️ הרצה"}
                           </button>
