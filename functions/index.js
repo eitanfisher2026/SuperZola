@@ -181,6 +181,75 @@ async function categorizeName(ai, name, catLabels) {
   return { category, usage };
 }
 
+// Catalog backfill only — picks a category AND subcategory together, one
+// leaf choice out of every category>subcategory combination (falling back
+// to just the category if it has no subcategories defined yet). Not used
+// for the live per-item guess, since there's nowhere in the item UI that
+// shows a subcategory today; this is purely for the shared catalog cache
+// that will eventually power browsing by category.
+async function categorizeNameWithSubcategory(ai, name, categories) {
+  const leaves = [];
+  categories.forEach(cat => {
+    const subs = cat.subcategories || [];
+    if (subs.length === 0) leaves.push({ label: cat.label, category: cat.label, subcategory: null });
+    else subs.forEach(s => leaves.push({ label: `${cat.label} > ${s.label}`, category: cat.label, subcategory: s.label }));
+  });
+  const prompt = `אתה מסווג פריטי קניה בסופרמרקט לקטגוריות ותתי-קטגוריות, לפי ידע כללי על מוצרי מזון וצריכה.\n\nאפשרויות (ממוספרות, קטגוריה > תת-קטגוריה):\n${leaves.map((l, i) => `${i + 1}. ${l.label}`).join('\n')}\n\nפריט לסיווג: "${name.trim()}"\n\nכללים:\n- בחר את האפשרות הספציפית והמתאימה ביותר, לפי ידע כללי על מוצרי סופרמרקט.\n- "שונות" הוא מוצא אחרון בלבד — רק אם שום אפשרות אחרת לא מתאימה כלל.\n- החזר אך ורק את המספר של האפשרות שבחרת, ללא שום טקסט נוסף.`;
+  const { text: raw, usage } = await callAI(ai, prompt, 10);
+  const num = parseInt((raw.match(/\d+/) || [])[0], 10);
+  const picked = (num >= 1 && num <= leaves.length) ? leaves[num - 1] : null;
+  return { category: picked ? picked.category : null, subcategory: picked ? picked.subcategory : null, usage };
+}
+
+// Admin/editor-triggered, one batch at a time — the client calls this
+// repeatedly (same shape as geocodeVendorBranchesBatch) until `remaining`
+// hits 0. Only ever touches barcodes not already in productCategories, so
+// re-running it costs nothing once a catalog's fully tagged.
+exports.categorizeCatalogBatch = onCall(
+  { timeoutSeconds: 120, memory: '256MiB', region: REGION },
+  async (request) => {
+    await requireEditorOrAdmin(request);
+    const { vendor, branchId, limit } = request.data || {};
+    if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
+    const batchSize = Math.min(parseInt(limit, 10) || 25, 50);
+    const key = docKey(vendor, String(branchId));
+
+    const [catsSnap, config, items] = await Promise.all([
+      db.collection('categories').get(),
+      getAppAiConfig(),
+      readAllCatalogItems(key),
+    ]);
+    if (!config) throw new HttpsError('failed-precondition', 'לא הוגדר ספק AI');
+    const categories = catsSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    const ai = makeAI(config);
+
+    const barcodes = Object.keys(items);
+    const cachedSet = new Set();
+    const CHUNK = 300;
+    for (let i = 0; i < barcodes.length; i += CHUNK) {
+      const chunk = barcodes.slice(i, i + CHUNK);
+      const snaps = await db.getAll(...chunk.map(bc => db.collection('productCategories').doc(bc)));
+      snaps.forEach(d => { if (d.exists) cachedSet.add(d.id); });
+    }
+    const todo = barcodes.filter(bc => !cachedSet.has(bc)).slice(0, batchSize);
+
+    let processed = 0;
+    for (const bc of todo) {
+      const name = items[bc].name;
+      if (!name) continue;
+      try {
+        const { category, subcategory } = await categorizeNameWithSubcategory(ai, name, categories);
+        if (category) {
+          await db.collection('productCategories').doc(bc).set({ category, subcategory: subcategory || null, categorizedAt: Date.now() }, { merge: true });
+        }
+        processed++;
+      } catch (e) { /* leave this one for the next batch rather than aborting the whole run */ }
+    }
+    const remaining = Math.max(0, barcodes.length - cachedSet.size - processed);
+    return { totalInCatalog: barcodes.length, alreadyCached: cachedSet.size, processedNow: processed, remaining };
+  }
+);
+
 exports.categorizeItemName = onCall(
   { timeoutSeconds: 20, memory: '256MiB', region: REGION },
   async (request) => {

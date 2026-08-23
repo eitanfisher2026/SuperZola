@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.47";
+const VERSION = "v1.48";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1752,6 +1752,7 @@ function SettingsScreen({ uid, onBack }) {
   const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
   const [confirmRefresh, setConfirmRefresh] = useState(null); // profile or null
   const [refreshingId, setRefreshingId] = useState(null);
+  const [categorizingProfile, setCategorizingProfile] = useState(null); // { id, done, total } | null
   const isEditorOrAdmin = role === "editor" || role === "admin";
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
@@ -1928,6 +1929,34 @@ function SettingsScreen({ uid, onBack }) {
     }, () => { setRefreshingId(null); setToast("שגיאה ברענון הקטלוג"); });
   }
 
+  // Calls the batch backfill repeatedly (same "keep calling until done"
+  // shape as branch geocoding) until nothing's left uncategorized for this
+  // branch — each call only ever touches barcodes the shared cache doesn't
+  // have yet, so running this again later just picks up where it left off.
+  async function runCatalogBackfill(p) {
+    setCategorizingProfile({ id: p.id, done: 0, total: null });
+    let totalTodo = null;
+    let done = 0;
+    let remaining = 1;
+    while (remaining > 0) {
+      let res;
+      try {
+        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 120000 })({ vendor: p.vendor, branchId: p.branchId, limit: 25 });
+      } catch (e) {
+        setToast((e && e.message) || "שגיאה בסיווג הקטלוג");
+        break;
+      }
+      const data = res.data;
+      if (totalTodo === null) totalTodo = data.totalInCatalog - data.alreadyCached;
+      done += data.processedNow;
+      remaining = data.remaining;
+      setCategorizingProfile({ id: p.id, done, total: totalTodo });
+      if (data.processedNow === 0) break;
+    }
+    setCategorizingProfile(null);
+    setToast(done > 0 ? `סווגו ${done} פריטים` : "אין פריטים חדשים לסווג");
+  }
+
   function loadBranches(vendorId) {
     setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
     fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
@@ -2017,6 +2046,8 @@ function SettingsScreen({ uid, onBack }) {
   const [newCatLabel, setNewCatLabel] = useState("");
   const [newCatEmoji, setNewCatEmoji] = useState("📦");
   const [confirmDeleteCat, setConfirmDeleteCat] = useState(null);
+  const [expandedCatId, setExpandedCatId] = useState(null);
+  const [newSubcatLabel, setNewSubcatLabel] = useState("");
 
   function addCategory() {
     if (!newCatLabel.trim()) return;
@@ -2042,6 +2073,19 @@ function SettingsScreen({ uid, onBack }) {
     batch.update(db.collection("categories").doc(categories[idx].id), { order: j });
     batch.update(db.collection("categories").doc(categories[j].id), { order: idx });
     batch.commit();
+  }
+  function addSubcategory(cat) {
+    const label = newSubcatLabel.trim();
+    if (!label) return;
+    const sub = { id: "sub_" + Date.now(), label };
+    db.collection("categories").doc(cat.id).update({
+      subcategories: (cat.subcategories || []).concat(sub),
+    }).then(() => setNewSubcatLabel(""));
+  }
+  function removeSubcategory(cat, subId) {
+    db.collection("categories").doc(cat.id).update({
+      subcategories: (cat.subcategories || []).filter(s => s.id !== subId),
+    });
   }
 
   // ── Store category-order profiles (aisle layout per chain) ──
@@ -2124,10 +2168,18 @@ function SettingsScreen({ uid, onBack }) {
                 <div className="flex items-center justify-between gap-2 mt-1.5">
                   <span className="text-[11px] text-[#A79A7C]">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</span>
                   {isEditorOrAdmin && (
-                    <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
-                      className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40 flex-shrink-0">
-                      {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
-                    </button>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
+                        className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40">
+                        {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
+                      </button>
+                      <button onClick={() => runCatalogBackfill(p)} disabled={!!categorizingProfile}
+                        className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40">
+                        {categorizingProfile && categorizingProfile.id === p.id
+                          ? `מסווג... ${categorizingProfile.done}${categorizingProfile.total != null ? "/" + categorizingProfile.total : ""}`
+                          : "🏷️ סיווג קטלוג"}
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -2181,14 +2233,26 @@ function SettingsScreen({ uid, onBack }) {
               <div className="text-[#8A7F66] text-sm">אין עדיין רשתות לקנייה אונליין</div>
             )}
             {onlineProfiles.map(p => (
-              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 border " +
                 (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
-                <button onClick={() => toggleProfile(p)}
-                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
-                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
-                  {p.active ? "פעיל" : "כבוי"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
+                  <button onClick={() => toggleProfile(p)}
+                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                    {p.active ? "פעיל" : "כבוי"}
+                  </button>
+                </div>
+                {isEditorOrAdmin && (
+                  <div className="flex justify-end mt-1.5">
+                    <button onClick={() => runCatalogBackfill(p)} disabled={!!categorizingProfile}
+                      className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40">
+                      {categorizingProfile && categorizingProfile.id === p.id
+                        ? `מסווג... ${categorizingProfile.done}${categorizingProfile.total != null ? "/" + categorizingProfile.total : ""}`
+                        : "🏷️ סיווג קטלוג"}
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -2325,10 +2389,39 @@ function SettingsScreen({ uid, onBack }) {
                     </div>
                     <span className="text-xl">{cat.emoji}</span>
                     <span className="flex-1 font-medium text-[#2B2418] text-sm text-right">{cat.label}</span>
+                    <button onClick={() => { setExpandedCatId(expandedCatId === cat.id ? null : cat.id); setNewSubcatLabel(""); }}
+                      className="text-[10px] text-[#8A7F66] flex-shrink-0 underline">
+                      תתי-קטגוריה ({(cat.subcategories || []).length}) {expandedCatId === cat.id ? "▲" : "▼"}
+                    </button>
                     <button onClick={() => { setEditingCatId(cat.id); setEditCatLabel(cat.label); setEditCatEmoji(cat.emoji); }}
                       className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm">✏️</button>
                     <button onClick={() => setConfirmDeleteCat(cat)}
                       className="w-7 h-7 flex items-center justify-center text-[#C7B78E] text-base">🗑️</button>
+                  </div>
+                )}
+                {expandedCatId === cat.id && (
+                  <div className="mt-2.5 pt-2.5 border-t border-[#F0E9D4]">
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {(cat.subcategories || []).length === 0 && (
+                        <span className="text-xs text-[#A79A7C]">אין עדיין תתי-קטגוריה</span>
+                      )}
+                      {(cat.subcategories || []).map(sub => (
+                        <span key={sub.id} className="flex items-center gap-1 bg-[#F3ECD9] rounded-full px-2.5 py-1 text-xs text-[#2B2418]">
+                          {sub.label}
+                          <button onClick={() => removeSubcategory(cat, sub.id)} className="text-[#B8462F] font-bold">✕</button>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input value={newSubcatLabel} onChange={e => setNewSubcatLabel(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && addSubcategory(cat)}
+                        placeholder="תת-קטגוריה חדשה..."
+                        className="flex-1 border border-[#C7B78E] rounded-lg px-3 py-1.5 text-right text-xs outline-none bg-white" />
+                      <button onClick={() => addSubcategory(cat)} disabled={!newSubcatLabel.trim()}
+                        className="px-3 bg-[#2E4A3B] text-white text-xs font-semibold rounded-lg disabled:opacity-40">
+                        + הוספה
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
