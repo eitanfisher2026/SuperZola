@@ -205,13 +205,28 @@ async function categorizeNameWithSubcategory(ai, name, categories) {
 // repeatedly (same shape as geocodeVendorBranchesBatch) until `remaining`
 // hits 0. Only ever touches barcodes not already in productCategories, so
 // re-running it costs nothing once a catalog's fully tagged.
+// Runs `worker` over `items` with at most `concurrency` in flight at once —
+// categorizing one barcode at a time sequentially made a real branch
+// catalog (thousands of items) take hours; this cuts a batch of 100 down
+// to roughly the time of one AI call instead of one hundred.
+async function runWithConcurrency(items, concurrency, worker) {
+  let i = 0;
+  async function lane() {
+    while (i < items.length) {
+      const idx = i++;
+      await worker(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, lane));
+}
+
 exports.categorizeCatalogBatch = onCall(
   { timeoutSeconds: 120, memory: '256MiB', region: REGION },
   async (request) => {
     await requireEditorOrAdmin(request);
     const { vendor, branchId, limit } = request.data || {};
     if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
-    const batchSize = Math.min(parseInt(limit, 10) || 25, 50);
+    const batchSize = Math.min(parseInt(limit, 10) || 100, 150);
     const key = docKey(vendor, String(branchId));
 
     const [catsSnap, config, items] = await Promise.all([
@@ -234,9 +249,9 @@ exports.categorizeCatalogBatch = onCall(
     const todo = barcodes.filter(bc => !cachedSet.has(bc)).slice(0, batchSize);
 
     let processed = 0;
-    for (const bc of todo) {
+    await runWithConcurrency(todo, 10, async (bc) => {
       const name = items[bc].name;
-      if (!name) continue;
+      if (!name) return;
       try {
         const { category, subcategory } = await categorizeNameWithSubcategory(ai, name, categories);
         if (category) {
@@ -244,7 +259,7 @@ exports.categorizeCatalogBatch = onCall(
         }
         processed++;
       } catch (e) { /* leave this one for the next batch rather than aborting the whole run */ }
-    }
+    });
     const remaining = Math.max(0, barcodes.length - cachedSet.size - processed);
     return { totalInCatalog: barcodes.length, alreadyCached: cachedSet.size, processedNow: processed, remaining };
   }

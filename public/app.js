@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.48";
+const VERSION = "v1.49";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2128,6 +2128,12 @@ function SettingsScreen({ uid, onBack }) {
   const instoreProfiles = (profiles || []).filter(p => (p.mode || "instore") === "instore");
   const onlineProfiles = (profiles || []).filter(p => p.mode === "online");
   const activeCount = instoreProfiles.filter(p => p.active).length;
+  // Categorization is keyed by barcode, shared across every branch and
+  // mode that vendor sells under — one run per vendor already covers it,
+  // so this collapses in-store + online profiles down to one row per
+  // distinct vendor instead of repeating the action per branch.
+  const uniqueVendorProfiles = [...instoreProfiles, ...onlineProfiles]
+    .filter((p, idx, arr) => arr.findIndex(x => x.vendor === p.vendor) === idx);
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
@@ -2168,23 +2174,35 @@ function SettingsScreen({ uid, onBack }) {
                 <div className="flex items-center justify-between gap-2 mt-1.5">
                   <span className="text-[11px] text-[#A79A7C]">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</span>
                   {isEditorOrAdmin && (
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
-                        className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40">
-                        {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
-                      </button>
-                      <button onClick={() => runCatalogBackfill(p)} disabled={!!categorizingProfile}
-                        className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40">
-                        {categorizingProfile && categorizingProfile.id === p.id
-                          ? `מסווג... ${categorizingProfile.done}${categorizingProfile.total != null ? "/" + categorizingProfile.total : ""}`
-                          : "🏷️ סיווג קטלוג"}
-                      </button>
-                    </div>
+                    <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
+                      className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40 flex-shrink-0">
+                      {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
+                    </button>
                   )}
                 </div>
               </div>
             ))}
           </div>
+
+          {isEditorOrAdmin && uniqueVendorProfiles.length > 0 && (
+            <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl p-3 mb-3">
+              <div className="text-xs font-semibold text-[#8A5A15] mb-1">סיווג קטלוג לקטגוריות</div>
+              <p className="text-[11px] text-[#8A7F66] mb-2">פעם אחת לכל רשת מספיקה — לא לכל סניף בנפרד, כי התיוג משותף לכל מי שמוכר אותו ברקוד.</p>
+              <div className="flex flex-col gap-1.5">
+                {uniqueVendorProfiles.map(p => (
+                  <div key={p.vendor} className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-[#2B2418]">{vendorLabel(p.vendor)}</span>
+                    <button onClick={() => runCatalogBackfill(p)} disabled={!!categorizingProfile}
+                      className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40 flex-shrink-0">
+                      {categorizingProfile && categorizingProfile.id === p.id
+                        ? `מסווג... ${categorizingProfile.done}${categorizingProfile.total != null ? "/" + categorizingProfile.total : ""}`
+                        : "🏷️ סיווג קטלוג"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
             <div className="text-xs font-semibold text-[#8A7F66]">הוספת סניף להשוואה</div>
@@ -2233,26 +2251,14 @@ function SettingsScreen({ uid, onBack }) {
               <div className="text-[#8A7F66] text-sm">אין עדיין רשתות לקנייה אונליין</div>
             )}
             {onlineProfiles.map(p => (
-              <div key={p.id} className={"rounded-xl px-3 py-2.5 border " +
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
                 (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <div className="flex items-center gap-2">
-                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
-                  <button onClick={() => toggleProfile(p)}
-                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
-                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
-                    {p.active ? "פעיל" : "כבוי"}
-                  </button>
-                </div>
-                {isEditorOrAdmin && (
-                  <div className="flex justify-end mt-1.5">
-                    <button onClick={() => runCatalogBackfill(p)} disabled={!!categorizingProfile}
-                      className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40">
-                      {categorizingProfile && categorizingProfile.id === p.id
-                        ? `מסווג... ${categorizingProfile.done}${categorizingProfile.total != null ? "/" + categorizingProfile.total : ""}`
-                        : "🏷️ סיווג קטלוג"}
-                    </button>
-                  </div>
-                )}
+                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
+                <button onClick={() => toggleProfile(p)}
+                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                  {p.active ? "פעיל" : "כבוי"}
+                </button>
               </div>
             ))}
           </div>
