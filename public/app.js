@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.45";
+const VERSION = "v1.46";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -239,6 +239,15 @@ function groupByCategory(items, categories) {
     map[label].items.push(item);
   });
   return Object.values(map).sort((a, b) => categoryOrder(a.label, categories) - categoryOrder(b.label, categories));
+}
+// The "שונות" category's full label spells out examples in parentheses
+// (useful when picking it from a dropdown) — but repeating that on every
+// list's group header is just clutter, and it's also the one category
+// whose stored text varies across items added before a category rename,
+// so trimming it to the plain word here keeps every such group heading
+// looking the same regardless of which exact wording that item has saved.
+function categoryHeaderLabel(label) {
+  return label.indexOf("שונות") === 0 ? "שונות" : label;
 }
 
 // ── VENDOR PRICE COMPARISON — shared helpers ─────────────────────────────────
@@ -2724,7 +2733,7 @@ function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onCl
             {groups.map(group => (
               <div key={group.label}>
                 <div className="text-xs font-semibold text-[#8A9A72] mb-1 flex items-center gap-1.5">
-                  <span>{group.emoji}</span><span>{group.label}</span>
+                  <span>{group.emoji}</span><span>{categoryHeaderLabel(group.label)}</span>
                 </div>
                 <div className="space-y-1">
                   {group.items.map(item => {
@@ -3212,7 +3221,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
             <div key={group.label} className="mb-5">
               <div className="text-xs font-semibold text-[#8A9A72] mb-1.5 flex items-center justify-between gap-1.5 uppercase tracking-wide px-1">
                 <span className="flex items-center gap-1.5">
-                  <span>{group.emoji}</span><span>{group.label}</span>
+                  <span>{group.emoji}</span><span>{categoryHeaderLabel(group.label)}</span>
                 </span>
                 <span className="text-[#A79A7C] normal-case tracking-normal font-normal" style={{ fontVariantNumeric: "tabular-nums" }}>
                   {group.items.length}/{(items || []).length}
