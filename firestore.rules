@@ -86,9 +86,20 @@ service cloud.firestore {
       allow read, write: if false;
     }
     // Shared category tag per barcode, reused across every vendor's copy of
-    // that same product — server-only, same reasoning as the catalog data.
+    // that same product. Same trust model as categories/onlineVendors below
+    // — editors/admin can read and correct it directly; nobody else needs
+    // (or gets) a client path to it at all.
     match /productCategories/{barcode} {
-      allow read, write: if false;
+      allow read, write: if isEditor();
+    }
+    // A regular user's own edit of their item's category is the signal —
+    // logged automatically, not something they have to "report." Anyone
+    // signed in can create one (tied to their own uid), but only an editor
+    // can read the queue or clear an entry once it's been reviewed.
+    match /categoryCorrections/{id} {
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow read, delete: if isEditor();
+      allow update: if false;
     }
 
     // Feedback conversation threads — a regular user can only see/reply to

@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.46";
+const VERSION = "v1.47";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1111,7 +1111,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   );
 }
 
-function ItemWizard({ mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast }) {
+function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast }) {
   const isEdit = mode === "edit";
   const [step, setStep] = useState(1);
   const blankDraft = () => {
@@ -1180,7 +1180,25 @@ function ItemWizard({ mode, item, categories, activeProfiles, onInsert, onSave, 
   function finish() {
     if (!draft.name.trim() || saving) return;
     setSaving(true);
-    if (isEdit) { onSave(toPayload(draft)); return; }
+    if (isEdit) {
+      // Fixing your own item's category is itself the signal that
+      // something's off with that product's shared tag — logged
+      // automatically here rather than asking anyone to "report" it. Only
+      // meaningful for a matched item (there's a real barcode to attach
+      // the correction to); an editor reviews these in Settings later.
+      if (item && item.category !== draft.category) {
+        const barcodes = [...new Set(Object.values(draft.barcodes || {}))];
+        barcodes.forEach(barcode => {
+          db.collection("categoryCorrections").add({
+            barcode, itemName: draft.name.trim(),
+            oldCategory: item.category || null, newCategory: draft.category,
+            uid, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          }).catch(() => {});
+        });
+      }
+      onSave(toPayload(draft));
+      return;
+    }
     onInsert(toPayload(draft), () => { setSaving(false); onClose(); });
   }
 
@@ -1743,11 +1761,52 @@ function SettingsScreen({ uid, onBack }) {
   const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
+  const [corrections, setCorrections] = useState(null);
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
   }, [toast]);
+
+  useEffect(() => {
+    if (!isEditorOrAdmin) return;
+    return db.collection("categoryCorrections").onSnapshot(snap => {
+      setCorrections(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+  }, [isEditorOrAdmin]);
+
+  // One review row per barcode, not per correction — several users fixing
+  // the same product collapses into one row with a count, and the
+  // most-common new category becomes the suggestion (stronger signal than
+  // any single person's opinion).
+  const correctionGroups = (corrections || []).reduce((groups, c) => {
+    let g = groups.find(x => x.barcode === c.barcode);
+    if (!g) { g = { barcode: c.barcode, itemName: c.itemName, oldCategory: c.oldCategory, entries: [] }; groups.push(g); }
+    g.itemName = c.itemName;
+    g.entries.push(c);
+    return groups;
+  }, []).map(g => {
+    const counts = {};
+    g.entries.forEach(e => { counts[e.newCategory] = (counts[e.newCategory] || 0) + 1; });
+    const suggested = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return Object.assign({}, g, { count: g.entries.length, suggestedCategory: suggested ? suggested[0] : null });
+  }).sort((a, b) => b.count - a.count);
+
+  function applyCorrection(group) {
+    if (!group.suggestedCategory) return;
+    db.collection("productCategories").doc(group.barcode).set({
+      category: group.suggestedCategory, categorizedAt: Date.now(),
+    }, { merge: true }).then(() => {
+      const batch = db.batch();
+      group.entries.forEach(e => batch.delete(db.collection("categoryCorrections").doc(e.id)));
+      return batch.commit();
+    }).then(() => setToast("הקטגוריה עודכנה בקטלוג המשותף"), () => setToast("שגיאה בעדכון"));
+  }
+  function dismissCorrection(group) {
+    const batch = db.batch();
+    group.entries.forEach(e => batch.delete(db.collection("categoryCorrections").doc(e.id)));
+    batch.commit().then(() => setToast("סומן כטופל"));
+  }
 
   useEffect(() => {
     function onReady() { setCanInstall(true); }
@@ -2034,6 +2093,7 @@ function SettingsScreen({ uid, onBack }) {
       </div>
 
       <div className="p-4 space-y-6">
+        <div className="text-[11px] font-bold text-[#A79A7C] uppercase tracking-wide -mb-2">🏪 הרשתות שלי</div>
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות להשוואת מחירים</h2>
@@ -2134,6 +2194,7 @@ function SettingsScreen({ uid, onBack }) {
           </div>
         </div>
 
+        <div className="text-[11px] font-bold text-[#A79A7C] uppercase tracking-wide -mb-2">⚙️ כללי</div>
         <div>
           <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>האפליקציה</h2>
           <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
@@ -2147,6 +2208,13 @@ function SettingsScreen({ uid, onBack }) {
             </button>
           </div>
         </div>
+
+        {isEditorOrAdmin && (
+          <div className="pt-2 border-t-2 border-[#C7B78E] flex items-center gap-2">
+            <span className="text-[11px] font-bold text-[#8A5A15] uppercase tracking-wide">🛠️ ניהול מערכת</span>
+            <span className="text-[10px] text-[#A79A7C]">(עורכים ומנהלים)</span>
+          </div>
+        )}
 
         {role === "admin" && (
         <div>
@@ -2279,6 +2347,41 @@ function SettingsScreen({ uid, onBack }) {
               className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 mt-2">
               + הוספת קטגוריה
             </button>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>תיקוני קטגוריה</h2>
+            {correctionGroups.length > 0 && (
+              <span className="text-xs text-[#8A7F66]">{correctionGroups.length} ממתינים</span>
+            )}
+          </div>
+          <p className="text-xs text-[#8A7F66] mb-3">כשמישהו משנה קטגוריה לפריט מותאם, זה מופיע כאן — אפשר לעדכן בקטלוג המשותף כדי שזה יתוקן לכולם, או להתעלם.</p>
+          <div className="flex flex-col gap-2">
+            {corrections === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
+            {corrections !== null && correctionGroups.length === 0 && (
+              <div className="text-[#8A7F66] text-sm">אין תיקונים ממתינים</div>
+            )}
+            {correctionGroups.map(g => (
+              <div key={g.barcode} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-medium text-[#2B2418] text-sm truncate">{g.itemName}</span>
+                  {g.count > 1 && <span className="text-[10px] text-[#8A7F66] bg-[#F3ECD9] rounded-full px-2 py-0.5 flex-shrink-0">{g.count} דיווחים</span>}
+                </div>
+                <div className="text-[11px] text-[#A79A7C] mb-2">
+                  {g.oldCategory ? categoryHeaderLabel(g.oldCategory) : "—"} ← {categoryHeaderLabel(g.suggestedCategory)}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => applyCorrection(g)} className="flex-1 bg-[#2E4A3B] text-white text-xs font-semibold py-2 rounded-lg">
+                    ✓ עדכון בקטלוג המשותף
+                  </button>
+                  <button onClick={() => dismissCorrection(g)} className="px-3 text-xs text-[#8A7F66] underline">
+                    התעלמות
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -3249,10 +3352,10 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       </div>
 
       {showAdd && (
-        <ItemWizard mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
+        <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
       {editItem && (
-        <ItemWizard mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
+        <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
       )}
 
       {showMenu && (
