@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.49";
+const VERSION = "v1.50";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1752,7 +1752,11 @@ function SettingsScreen({ uid, onBack }) {
   const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
   const [confirmRefresh, setConfirmRefresh] = useState(null); // profile or null
   const [refreshingId, setRefreshingId] = useState(null);
-  const [categorizingProfile, setCategorizingProfile] = useState(null); // { id, done, total } | null
+  const [runningVendor, setRunningVendor] = useState(null); // vendor id currently being categorized, or null
+  const [runProgress, setRunProgress] = useState({ done: 0, total: null });
+  const [runningAll, setRunningAll] = useState(false);
+  const [categorizationRuns, setCategorizationRuns] = useState({}); // { [vendor]: {lastRunAt, itemsProcessed} }
+  const [showCategorizeSection, setShowCategorizeSection] = useState(false);
   const isEditorOrAdmin = role === "editor" || role === "admin";
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
@@ -1773,6 +1777,15 @@ function SettingsScreen({ uid, onBack }) {
     if (!isEditorOrAdmin) return;
     return db.collection("categoryCorrections").onSnapshot(snap => {
       setCorrections(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+  }, [isEditorOrAdmin]);
+
+  useEffect(() => {
+    if (!isEditorOrAdmin) return;
+    return db.collection("categorizationRuns").onSnapshot(snap => {
+      const map = {};
+      snap.docs.forEach(d => { map[d.id] = d.data(); });
+      setCategorizationRuns(map);
     });
   }, [isEditorOrAdmin]);
 
@@ -1931,30 +1944,52 @@ function SettingsScreen({ uid, onBack }) {
 
   // Calls the batch backfill repeatedly (same "keep calling until done"
   // shape as branch geocoding) until nothing's left uncategorized for this
-  // branch — each call only ever touches barcodes the shared cache doesn't
-  // have yet, so running this again later just picks up where it left off.
-  async function runCatalogBackfill(p) {
-    setCategorizingProfile({ id: p.id, done: 0, total: null });
+  // vendor — the server picks any one already-cached branch on its own, so
+  // this only ever needs a vendor id, never a specific branch.
+  async function runCatalogBackfill(vendor) {
+    setRunningVendor(vendor);
+    setRunProgress({ done: 0, total: null });
     let totalTodo = null;
     let done = 0;
     let remaining = 1;
+    let noCatalog = false;
     while (remaining > 0) {
       let res;
       try {
-        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 120000 })({ vendor: p.vendor, branchId: p.branchId, limit: 25 });
+        res = await fns.httpsCallable("categorizeCatalogBatch", { timeout: 120000 })({ vendor, limit: 100 });
       } catch (e) {
         setToast((e && e.message) || "שגיאה בסיווג הקטלוג");
         break;
       }
       const data = res.data;
+      if (data.noCatalog) { noCatalog = true; break; }
       if (totalTodo === null) totalTodo = data.totalInCatalog - data.alreadyCached;
       done += data.processedNow;
       remaining = data.remaining;
-      setCategorizingProfile({ id: p.id, done, total: totalTodo });
+      setRunProgress({ done, total: totalTodo });
       if (data.processedNow === 0) break;
     }
-    setCategorizingProfile(null);
-    setToast(done > 0 ? `סווגו ${done} פריטים` : "אין פריטים חדשים לסווג");
+    setRunningVendor(null);
+    if (noCatalog) {
+      setToast(`אין עדיין קטלוג שמור עבור ${vendorLabel(vendor)} — צריך שמישהו יעקוב אחרי סניף שלה קודם`);
+    } else {
+      await db.collection("categorizationRuns").doc(vendor).set({
+        lastRunAt: firebase.firestore.FieldValue.serverTimestamp(), lastRunBy: uid, itemsProcessed: done,
+      }, { merge: true });
+      if (!runningAll) setToast(done > 0 ? `סווגו ${done} פריטים` : "אין פריטים חדשים לסווג");
+    }
+    return { done, noCatalog };
+  }
+
+  async function runCatalogBackfillAll() {
+    setRunningAll(true);
+    let totalDone = 0;
+    for (const v of VENDOR_LIST) {
+      const { done } = await runCatalogBackfill(v.id);
+      totalDone += done;
+    }
+    setRunningAll(false);
+    setToast(`הושלם לכל הרשתות — סווגו ${totalDone} פריטים בסך הכול`);
   }
 
   function loadBranches(vendorId) {
@@ -2128,12 +2163,6 @@ function SettingsScreen({ uid, onBack }) {
   const instoreProfiles = (profiles || []).filter(p => (p.mode || "instore") === "instore");
   const onlineProfiles = (profiles || []).filter(p => p.mode === "online");
   const activeCount = instoreProfiles.filter(p => p.active).length;
-  // Categorization is keyed by barcode, shared across every branch and
-  // mode that vendor sells under — one run per vendor already covers it,
-  // so this collapses in-store + online profiles down to one row per
-  // distinct vendor instead of repeating the action per branch.
-  const uniqueVendorProfiles = [...instoreProfiles, ...onlineProfiles]
-    .filter((p, idx, arr) => arr.findIndex(x => x.vendor === p.vendor) === idx);
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
@@ -2184,23 +2213,44 @@ function SettingsScreen({ uid, onBack }) {
             ))}
           </div>
 
-          {isEditorOrAdmin && uniqueVendorProfiles.length > 0 && (
-            <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl p-3 mb-3">
-              <div className="text-xs font-semibold text-[#8A5A15] mb-1">סיווג קטלוג לקטגוריות</div>
-              <p className="text-[11px] text-[#8A7F66] mb-2">פעם אחת לכל רשת מספיקה — לא לכל סניף בנפרד, כי התיוג משותף לכל מי שמוכר אותו ברקוד.</p>
-              <div className="flex flex-col gap-1.5">
-                {uniqueVendorProfiles.map(p => (
-                  <div key={p.vendor} className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-[#2B2418]">{vendorLabel(p.vendor)}</span>
-                    <button onClick={() => runCatalogBackfill(p)} disabled={!!categorizingProfile}
-                      className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40 flex-shrink-0">
-                      {categorizingProfile && categorizingProfile.id === p.id
-                        ? `מסווג... ${categorizingProfile.done}${categorizingProfile.total != null ? "/" + categorizingProfile.total : ""}`
-                        : "🏷️ סיווג קטלוג"}
-                    </button>
+          {isEditorOrAdmin && (
+            <div className="mb-3">
+              <button onClick={() => setShowCategorizeSection(v => !v)}
+                className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showCategorizeSection ? "bg-white border-[#E9D8A6]" : "bg-[#FBF0D9] border-transparent")}>
+                <span className="text-xs font-semibold text-[#8A5A15]">🏷️ סיווג קטלוג לקטגוריות (לכל 15 הרשתות)</span>
+                <span className="text-[#8A7F66] text-xs flex-shrink-0">{showCategorizeSection ? "▲ הסתר" : "▼ הצג"}</span>
+              </button>
+              {showCategorizeSection && (
+                <div className="mt-2 bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl p-3">
+                  <p className="text-[11px] text-[#8A7F66] mb-2">
+                    פעם אחת לכל רשת מספיקה, לא לכל סניף בנפרד — התיוג משותף לכל מי שמוכר אותו ברקוד. רשימה מלאה, לא רק הרשתות שאתם עצמכם עוקבים אחריהן.
+                  </p>
+                  <button onClick={runCatalogBackfillAll} disabled={!!runningVendor || runningAll}
+                    className="w-full bg-[#8A5A15] text-white text-xs font-bold py-2.5 rounded-lg disabled:opacity-40 mb-2">
+                    {runningAll ? "מריץ לכל הרשתות..." : "▶ הרץ לכל הרשתות"}
+                  </button>
+                  <div className="flex flex-col gap-1.5">
+                    {VENDOR_LIST.map(v => {
+                      const run = categorizationRuns[v.id];
+                      const isRunning = runningVendor === v.id;
+                      return (
+                        <div key={v.id} className="flex items-center justify-between gap-2 bg-white rounded-lg px-2.5 py-2">
+                          <div className="min-w-0">
+                            <div className="text-sm text-[#2B2418]">{v.label}</div>
+                            <div className="text-[10px] text-[#A79A7C]">
+                              {run && run.lastRunAt ? `הורץ לאחרונה: ${formatRelativeUpdatedAt(run.lastRunAt.toMillis?.())}` : "מעולם לא הורץ"}
+                            </div>
+                          </div>
+                          <button onClick={() => runCatalogBackfill(v.id)} disabled={!!runningVendor || runningAll}
+                            className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40 flex-shrink-0">
+                            {isRunning ? `מסווג... ${runProgress.done}${runProgress.total != null ? "/" + runProgress.total : ""}` : "🏷️ הרצה"}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
             </div>
           )}
 

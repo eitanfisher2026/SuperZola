@@ -224,10 +224,20 @@ exports.categorizeCatalogBatch = onCall(
   { timeoutSeconds: 120, memory: '256MiB', region: REGION },
   async (request) => {
     await requireEditorOrAdmin(request);
-    const { vendor, branchId, limit } = request.data || {};
-    if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
+    const { vendor, limit } = request.data || {};
+    if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
     const batchSize = Math.min(parseInt(limit, 10) || 100, 150);
-    const key = docKey(vendor, String(branchId));
+
+    // Categorization is barcode-keyed and shared regardless of which branch
+    // sells it, so the caller only ever needs to name a vendor — any one
+    // cached branch is a fine representative sample of that chain's
+    // catalog. Whichever branch happens to already be cached (from some
+    // user tracking it) is picked automatically.
+    const idxSnap = await db.collection('vendorCatalogIndex')
+      .orderBy(admin.firestore.FieldPath.documentId())
+      .startAt(vendor + '__').endAt(vendor + '__' + String.fromCharCode(0xFFFF)).limit(1).get();
+    if (idxSnap.empty) return { noCatalog: true, totalInCatalog: 0, alreadyCached: 0, processedNow: 0, remaining: 0 };
+    const key = idxSnap.docs[0].id;
 
     const [catsSnap, config, items] = await Promise.all([
       db.collection('categories').get(),

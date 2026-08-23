@@ -92,6 +92,11 @@ service cloud.firestore {
     match /productCategories/{barcode} {
       allow read, write: if isEditor();
     }
+    // When each vendor's catalog was last run through categorization —
+    // editor-managed, same trust level as the tag data itself.
+    match /categorizationRuns/{vendor} {
+      allow read, write: if isEditor();
+    }
     // A regular user's own edit of their item's category is the signal —
     // logged automatically, not something they have to "report." Anyone
     // signed in can create one (tied to their own uid), but only an editor
