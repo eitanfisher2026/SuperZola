@@ -164,6 +164,23 @@ async function getAppAiConfig() {
 // prompt that never throws: no admin config, a bad response, or a rate
 // limit all just mean "no suggestion," and the user still picks manually,
 // same as before this feature existed.
+// Shared by the live per-item guess (categorizeItemName) and the catalog
+// backfill (categorizeCatalogBatch) — same prompt shape either way, just
+// called against a typed name in one case and a full catalog product name
+// in the other. A numbered choice is far more reliable to parse back out
+// than asking for the exact label as free text — no risk of the model
+// wrapping the answer in extra words that break an exact-match check. The
+// explicit examples and the "last resort" rule for "שונות" are here
+// because a plain "pick the best category" prompt was landing everyday
+// items like yogurt in the misc bucket instead of dairy.
+async function categorizeName(ai, name, catLabels) {
+  const prompt = `אתה מסווג פריטי קניה בסופרמרקט לקטגוריות, לפי ידע כללי על מוצרי מזון וצריכה.\n\nקטגוריות (ממוספרות):\n${catLabels.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\nפריט לסיווג: "${name.trim()}"\n\nכללים:\n- בחר לפי הידע הכללי שלך על מוצרי סופרמרקט. לדוגמה: יוגורט, גבינה, קוטג', חמאה, שמנת וחלב שייכים לקטגוריית מוצרי חלב; עגבניה ומלפפון שייכים לירקות טריים.\n- הקטגוריה "שונות" היא מוצא אחרון בלבד — רק אם שום קטגוריה אחרת לא מתאימה כלל.\n- החזר אך ורק את המספר של הקטגוריה שבחרת, ללא שום טקסט נוסף.`;
+  const { text: raw, usage } = await callAI(ai, prompt, 10);
+  const num = parseInt((raw.match(/\d+/) || [])[0], 10);
+  const category = (num >= 1 && num <= catLabels.length) ? catLabels[num - 1] : null;
+  return { category, usage };
+}
+
 exports.categorizeItemName = onCall(
   { timeoutSeconds: 20, memory: '256MiB', region: REGION },
   async (request) => {
@@ -176,20 +193,10 @@ exports.categorizeItemName = onCall(
     if (!config) return { category: null };
     let ai;
     try { ai = makeAI(config); } catch (e) { return { category: null }; }
-    const catLabels = cats.map(c => c.label);
-    // A numbered choice is far more reliable to parse back out than asking
-    // for the exact label as free text — no risk of the model wrapping the
-    // answer in extra words that break an exact-match check. The explicit
-    // examples and the "last resort" rule for "שונות" are here because a
-    // plain "pick the best category" prompt was landing everyday items like
-    // yogurt in the misc bucket instead of dairy.
-    const prompt = `אתה מסווג פריטי קניה בסופרמרקט לקטגוריות, לפי ידע כללי על מוצרי מזון וצריכה.\n\nקטגוריות (ממוספרות):\n${catLabels.map((l, i) => `${i + 1}. ${l}`).join('\n')}\n\nפריט לסיווג: "${name.trim()}"\n\nכללים:\n- בחר לפי הידע הכללי שלך על מוצרי סופרמרקט. לדוגמה: יוגורט, גבינה, קוטג', חמאה, שמנת וחלב שייכים לקטגוריית מוצרי חלב; עגבניה ומלפפון שייכים לירקות טריים.\n- הקטגוריה "שונות" היא מוצא אחרון בלבד — רק אם שום קטגוריה אחרת לא מתאימה כלל.\n- החזר אך ורק את המספר של הקטגוריה שבחרת, ללא שום טקסט נוסף.`;
     try {
-      const { text: raw, usage } = await callAI(ai, prompt, 10);
-      const num = parseInt((raw.match(/\d+/) || [])[0], 10);
-      const match = (num >= 1 && num <= catLabels.length) ? catLabels[num - 1] : null;
+      const { category, usage } = await categorizeName(ai, name, cats.map(c => c.label));
       await recordCost(request, ai, usage?.input_tokens || 0, usage?.output_tokens || 0);
-      return { category: match };
+      return { category };
     } catch (e) {
       return { category: null };
     }
@@ -326,8 +333,12 @@ async function writeCatalogItems(key, items) {
   const BATCH_SIZE = 400; // Firestore caps a batch at 500 writes; keep margin
   for (let i = 0; i < barcodes.length; i += BATCH_SIZE) {
     const batch = db.batch();
+    // merge: true — a plain overwrite here would wipe any field a later
+    // feature adds to an item doc (e.g. a cached category) every time this
+    // branch's price feed refreshes, since a fresh scrape only ever knows
+    // about name/price/unit/manufacturer.
     barcodes.slice(i, i + BATCH_SIZE).forEach(bc => {
-      batch.set(db.collection('vendorCatalogs').doc(key).collection('items').doc(bc), items[bc]);
+      batch.set(db.collection('vendorCatalogs').doc(key).collection('items').doc(bc), items[bc], { merge: true });
     });
     await batch.commit();
   }
@@ -1194,4 +1205,3 @@ exports.getVendorPromotions = onCall(
     return { promotionsByProfile, profiles: activeProfiles };
   }
 );
-

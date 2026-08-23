@@ -85,6 +85,11 @@ service cloud.firestore {
     match /catalogs/{key}/items/{barcode} {
       allow read, write: if false;
     }
+    // Shared category tag per barcode, reused across every vendor's copy of
+    // that same product — server-only, same reasoning as the catalog data.
+    match /productCategories/{barcode} {
+      allow read, write: if false;
+    }
 
     // Feedback conversation threads — a regular user can only see/reply to
     // their own threads; an admin can see and reply to everyone's, since
