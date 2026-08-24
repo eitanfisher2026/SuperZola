@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.56";
+const VERSION = "v1.57";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -991,9 +991,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       )}
 
       {isResolving && (
-        <p className="text-xs text-[#A79A7C] text-center py-2">
-          {searchTakingLong ? "מעדכנים מחירים לרשת — רגע..." : "מחפש..."}
-        </p>
+        <div className="py-2">
+          <div className="sz-progress-track"><div className="sz-progress-bar" /></div>
+          <p className="text-xs text-[#A79A7C] text-center mt-2">
+            {searchTakingLong ? "מעדכנים מחירים לרשת — רגע..." : "מחפש..."}
+          </p>
+        </div>
       )}
 
       {candidates && !isResolving && (() => {
@@ -2804,6 +2807,11 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [addedBarcodes, setAddedBarcodes] = useState({});
+  // Pending picks not yet committed to the list — { barcode: { name, unit, vendors: [...] } }.
+  // Lets several different products be checked (each with its own vendor
+  // subset) before adding them all in one action, same as checking several
+  // boxes in a form before submitting.
+  const [selections, setSelections] = useState({});
   const [resultsQuery, setResultsQuery] = useState("");
   const [subStageQuery, setSubStageQuery] = useState("");
 
@@ -2850,17 +2858,36 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     if (stage === "subcategories") { setSelectedCat(null); return; }
     onClose();
   }
-  function addItem(it) {
-    const payload = {
-      name: it.name, category: selectedCat.label, categoryEmoji: selectedCat.emoji,
-      quantity: 1, unit: it.unit || "יחידות", note: "", barcodes: {}, matchedNames: {},
-    };
-    Object.keys(it.prices || {}).forEach(v => { payload.barcodes[v] = it.barcode; payload.matchedNames[v] = it.name; });
-    onInsert(payload, () => {
-      setAddedBarcodes(prev => Object.assign({}, prev, { [it.barcode]: true }));
-      showToast(`${it.name} נוסף לרשימה`);
+  function toggleVendor(it, v) {
+    if (!it.prices || it.prices[v] == null) return; // not sold there — nothing to select
+    setSelections(prev => {
+      const cur = prev[it.barcode] || { name: it.name, unit: it.unit, vendors: [] };
+      const nextVendors = cur.vendors.includes(v) ? cur.vendors.filter(x => x !== v) : cur.vendors.concat(v);
+      const next = Object.assign({}, prev);
+      if (nextVendors.length === 0) delete next[it.barcode];
+      else next[it.barcode] = Object.assign({}, cur, { vendors: nextVendors });
+      return next;
     });
-    fns.httpsCallable("confirmItemBarcode")({ name: it.name, barcode: it.barcode, matchedName: it.name, vendors: Object.keys(it.prices || {}) }).catch(() => {});
+  }
+  const selectedCount = Object.keys(selections).length;
+  function addSelected() {
+    const entries = Object.entries(selections);
+    entries.forEach(([barcode, sel]) => {
+      const payload = {
+        name: sel.name, category: selectedCat.label, categoryEmoji: selectedCat.emoji,
+        quantity: 1, unit: sel.unit || "יחידות", note: "", barcodes: {}, matchedNames: {},
+      };
+      sel.vendors.forEach(v => { payload.barcodes[v] = barcode; payload.matchedNames[v] = sel.name; });
+      onInsert(payload, () => {});
+      fns.httpsCallable("confirmItemBarcode")({ name: sel.name, barcode, matchedName: sel.name, vendors: sel.vendors }).catch(() => {});
+    });
+    setAddedBarcodes(prev => {
+      const next = Object.assign({}, prev);
+      entries.forEach(([barcode]) => { next[barcode] = true; });
+      return next;
+    });
+    showToast(entries.length === 1 ? `${entries[0][1].name} נוסף לרשימה` : `${entries.length} פריטים נוספו לרשימה`);
+    setSelections({});
   }
 
   const title = stage === "categories" ? "עיון לפי קטגוריה"
@@ -2868,7 +2895,11 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     : `${selectedCat.emoji} ${selectedCat.label}` + (selectedSub && selectedSub !== "ALL" ? ` · ${selectedSub.label}` : "");
 
   return (
-    <Modal onClose={onClose}>
+    <Modal onClose={onClose} footer={selectedCount > 0 && (
+      <button onClick={addSelected} className="w-full bg-[#2E4A3B] text-white py-3 rounded-xl font-semibold text-sm">
+        הוספת {selectedCount} פריטים לרשימה
+      </button>
+    )}>
       <div className="flex items-center gap-2 mb-4">
         <button onClick={back} className="text-[#8A7F66] w-8 h-8 -mr-1 flex items-center justify-center flex-shrink-0">
           <BrowseChevron />
@@ -2911,7 +2942,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
 
       {stage === "results" && (
         loading ? (
-          <div className="flex justify-center py-8"><Spinner2 /></div>
+          <div className="py-8 px-4"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>
         ) : (() => {
           // Filters the results already fetched for this category/subcategory
           // (no extra call) — the query is a plain point-read by barcode, not
@@ -2938,27 +2969,31 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
             ) : filteredItems.map(it => {
               const vendorIds = (activeProfiles || []).map(p => p.vendor);
               const added = !!addedBarcodes[it.barcode];
+              const selectedVendors = (selections[it.barcode] && selections[it.barcode].vendors) || [];
               return (
-                <div key={it.barcode} className="bg-white border border-[#E5D8B5] rounded-xl px-3 py-2.5">
+                <div key={it.barcode} className={"bg-white border rounded-xl px-3 py-2.5 " + (added ? "border-[#B9D9B0] opacity-60" : "border-[#E5D8B5]")}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418]">{it.name}</div>
                       {it.unit && <div className="text-[11px] text-[#A79A7C] mt-0.5">{it.unit}</div>}
                     </div>
-                    <button onClick={() => !added && addItem(it)} disabled={added}
-                      className={"w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold " +
-                        (added ? "bg-[#EEF5EC] text-[#2E7D4F]" : "bg-[#2E4A3B] text-white")}>
-                      {added ? "✓" : "+"}
-                    </button>
+                    {added && <span className="text-xs font-bold text-[#2E7D4F] flex-shrink-0">✓ נוסף</span>}
                   </div>
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {vendorIds.map(v => {
                       const price = it.prices ? it.prices[v] : null;
                       const others = vendorIds.filter(o => o !== v).map(o => (it.prices ? it.prices[o] : null)).filter(x => x != null);
+                      const isChecked = selectedVendors.includes(v);
+                      const sellable = price != null;
                       return (
-                        <span key={v} className={"text-[11px] rounded px-2 py-0.5 " + cheapestBadgeClass(price, others)}>
-                          {vendorLabel(v)}: {price != null ? "₪" + price.toFixed(2) : "לא נמכר כאן"}
-                        </span>
+                        <button key={v} type="button" disabled={added || !sellable}
+                          onClick={() => toggleVendor(it, v)}
+                          className={"flex items-center gap-1.5 text-[11px] rounded px-2 py-1 disabled:cursor-default " +
+                            cheapestBadgeClass(price, others) + (isChecked ? " ring-2 ring-[#2E4A3B]" : "") + (!sellable ? " opacity-60" : "")}>
+                          <span className={"w-3.5 h-3.5 rounded-[3px] border-2 flex-shrink-0 flex items-center justify-center text-[8px] font-bold leading-none " +
+                            (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent bg-white")}>✓</span>
+                          {vendorLabel(v)}: {sellable ? "₪" + price.toFixed(2) : "לא נמכר כאן"}
+                        </button>
                       );
                     })}
                   </div>
