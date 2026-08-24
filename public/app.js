@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.57";
+const VERSION = "v1.58";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2858,14 +2858,16 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     if (stage === "subcategories") { setSelectedCat(null); return; }
     onClose();
   }
-  function toggleVendor(it, v) {
-    if (!it.prices || it.prices[v] == null) return; // not sold there — nothing to select
+  // One checkbox per item, not per vendor — same as the name-search flow,
+  // where checking a candidate picks it for every vendor that carries it at
+  // once, rather than choosing vendors individually.
+  function toggleItem(it) {
+    const vendors = Object.keys(it.prices || {}).filter(v => it.prices[v] != null);
+    if (vendors.length === 0) return;
     setSelections(prev => {
-      const cur = prev[it.barcode] || { name: it.name, unit: it.unit, vendors: [] };
-      const nextVendors = cur.vendors.includes(v) ? cur.vendors.filter(x => x !== v) : cur.vendors.concat(v);
       const next = Object.assign({}, prev);
-      if (nextVendors.length === 0) delete next[it.barcode];
-      else next[it.barcode] = Object.assign({}, cur, { vendors: nextVendors });
+      if (next[it.barcode]) delete next[it.barcode];
+      else next[it.barcode] = { name: it.name, unit: it.unit, vendors };
       return next;
     });
   }
@@ -2969,31 +2971,31 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
             ) : filteredItems.map(it => {
               const vendorIds = (activeProfiles || []).map(p => p.vendor);
               const added = !!addedBarcodes[it.barcode];
-              const selectedVendors = (selections[it.barcode] && selections[it.barcode].vendors) || [];
+              const isChecked = !!selections[it.barcode];
               return (
-                <div key={it.barcode} className={"bg-white border rounded-xl px-3 py-2.5 " + (added ? "border-[#B9D9B0] opacity-60" : "border-[#E5D8B5]")}>
+                <div key={it.barcode} onClick={() => !added && toggleItem(it)}
+                  className={"rounded-xl px-3 py-2.5 border " +
+                    (added ? "bg-white border-[#B9D9B0] opacity-60" : isChecked ? "bg-[#EEF5EC] border-[#B9D9B0] cursor-pointer" : "bg-white border-[#E5D8B5] cursor-pointer")}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418]">{it.name}</div>
                       {it.unit && <div className="text-[11px] text-[#A79A7C] mt-0.5">{it.unit}</div>}
                     </div>
-                    {added && <span className="text-xs font-bold text-[#2E7D4F] flex-shrink-0">✓ נוסף</span>}
+                    {added ? (
+                      <span className="text-xs font-bold text-[#2E7D4F] flex-shrink-0">✓ נוסף</span>
+                    ) : (
+                      <span className={"w-5 h-5 rounded-[5px] border-2 flex-shrink-0 flex items-center justify-center text-[11px] font-bold leading-none " +
+                        (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5 mt-2">
                     {vendorIds.map(v => {
                       const price = it.prices ? it.prices[v] : null;
                       const others = vendorIds.filter(o => o !== v).map(o => (it.prices ? it.prices[o] : null)).filter(x => x != null);
-                      const isChecked = selectedVendors.includes(v);
-                      const sellable = price != null;
                       return (
-                        <button key={v} type="button" disabled={added || !sellable}
-                          onClick={() => toggleVendor(it, v)}
-                          className={"flex items-center gap-1.5 text-[11px] rounded px-2 py-1 disabled:cursor-default " +
-                            cheapestBadgeClass(price, others) + (isChecked ? " ring-2 ring-[#2E4A3B]" : "") + (!sellable ? " opacity-60" : "")}>
-                          <span className={"w-3.5 h-3.5 rounded-[3px] border-2 flex-shrink-0 flex items-center justify-center text-[8px] font-bold leading-none " +
-                            (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent bg-white")}>✓</span>
-                          {vendorLabel(v)}: {sellable ? "₪" + price.toFixed(2) : "לא נמכר כאן"}
-                        </button>
+                        <span key={v} className={"text-[11px] rounded px-2 py-0.5 " + cheapestBadgeClass(price, others)}>
+                          {vendorLabel(v)}: {price != null ? "₪" + price.toFixed(2) : "לא נמכר כאן"}
+                        </span>
                       );
                     })}
                   </div>
