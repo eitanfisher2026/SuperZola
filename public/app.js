@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.55";
+const VERSION = "v1.56";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2805,14 +2805,15 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   const [truncated, setTruncated] = useState(false);
   const [addedBarcodes, setAddedBarcodes] = useState({});
   const [resultsQuery, setResultsQuery] = useState("");
+  const [subStageQuery, setSubStageQuery] = useState("");
 
   const subs = (selectedCat && selectedCat.subcategories) || [];
   const stage = !selectedCat ? "categories" : (selectedSub === null && subs.length > 0) ? "subcategories" : "results";
 
-  function load(cat, subLabel) {
+  function load(cat, subLabel, seedQuery) {
     setLoading(true);
     setItems(null);
-    setResultsQuery("");
+    setResultsQuery(seedQuery || "");
     const profileIds = (activeProfiles || []).map(p => p.id);
     fns.httpsCallable("browseCategoryItems", { timeout: 30000 })({ category: cat.label, subcategory: subLabel, profileIds }).then(res => {
       setItems(res.data.items || []);
@@ -2824,11 +2825,22 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     setSelectedCat(cat);
     setSelectedSub(null);
     setItems(null);
+    setSubStageQuery("");
     if ((cat.subcategories || []).length === 0) load(cat, null);
   }
   function pickSub(sub) {
     setSelectedSub(sub);
     load(selectedCat, sub === "ALL" ? null : sub.label);
+  }
+  // Not sure which subcategory a product falls under (e.g. "מילקי" — dairy?
+  // yogurt?) — searching here loads the whole category (same as "כל
+  // הקטגוריה") and pre-fills the results filter with what was typed, so it
+  // reads as one search instead of two separate steps.
+  function searchWholeCategory() {
+    const q = subStageQuery.trim();
+    if (!q) return;
+    setSelectedSub("ALL");
+    load(selectedCat, null, q);
   }
   function back() {
     if (stage === "results") {
@@ -2877,13 +2889,23 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
       )}
 
       {stage === "subcategories" && (
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => pickSub("ALL")}
-            className="bg-[#F3ECD9] rounded-full px-3 py-1.5 text-sm text-[#2B2418] hover:bg-[#EADFC0]">כל הקטגוריה</button>
-          {subs.map(sub => (
-            <button key={sub.id} onClick={() => pickSub(sub)}
-              className="bg-[#F3ECD9] rounded-full px-3 py-1.5 text-sm text-[#2B2418] hover:bg-[#EADFC0]">{sub.label}</button>
-          ))}
+        <div>
+          <div className="flex gap-2 mb-3">
+            <input value={subStageQuery} onChange={e => setSubStageQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") searchWholeCategory(); }}
+              placeholder="לא בטוחים באיזו תת-קטגוריה? חפשו שם..."
+              className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2 text-sm outline-none" />
+            <button onClick={searchWholeCategory} disabled={!subStageQuery.trim()}
+              className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">חיפוש</button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => pickSub("ALL")}
+              className="bg-[#F3ECD9] rounded-full px-3 py-1.5 text-sm text-[#2B2418] hover:bg-[#EADFC0]">כל הקטגוריה</button>
+            {subs.map(sub => (
+              <button key={sub.id} onClick={() => pickSub(sub)}
+                className="bg-[#F3ECD9] rounded-full px-3 py-1.5 text-sm text-[#2B2418] hover:bg-[#EADFC0]">{sub.label}</button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -3470,6 +3492,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showBrowse, setShowBrowse] = useState(false);
+  const [showAddChoice, setShowAddChoice] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -3721,19 +3744,36 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
         <button
-          onClick={() => setShowBrowse(true)}
-          className="bg-white text-[#2E4A3B] border border-[#2E4A3B] px-4 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5"
-        >
-          📂 עיון לפי קטגוריה
-        </button>
-        <button
-          onClick={() => setShowAdd(true)}
+          onClick={() => setShowAddChoice(true)}
           className="bg-[#2E4A3B] text-[#FBF4E7] px-5 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5"
         >
           <span className="text-base font-light">+</span> הוספת פריט
         </button>
       </div>
 
+      {showAddChoice && (
+        <Modal onClose={() => setShowAddChoice(false)}>
+          <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספת פריט</h3>
+          <div className="space-y-2">
+            <button onClick={() => { setShowAddChoice(false); setShowAdd(true); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+              <span className="text-xl">🔎</span>
+              <span>
+                <div className="text-sm font-semibold text-[#2B2418]">לפי שם</div>
+                <div className="text-[11px] text-[#8A7F66]">מקלידים שם ובוחרים התאמה</div>
+              </span>
+            </button>
+            <button onClick={() => { setShowAddChoice(false); setShowBrowse(true); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+              <span className="text-xl">📂</span>
+              <span>
+                <div className="text-sm font-semibold text-[#2B2418]">עיון לפי קטגוריה</div>
+                <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
+              </span>
+            </button>
+          </div>
+        </Modal>
+      )}
       {showAdd && (
         <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
