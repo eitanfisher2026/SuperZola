@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.53";
+const VERSION = "v1.54";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2785,6 +2785,155 @@ function SettingsScreen({ uid, onBack }) {
   );
 }
 
+// ── BROWSE BY CATEGORY (add item without knowing its exact name) ───────────
+// category -> (subcategory, if any are defined) -> matching items from the
+// active vendors, straight from the shared productCategories/subcategory
+// backfill. A plain chevron drawn as SVG for "back" — see BackButton's own
+// comment: a "‹" text glyph gets silently flipped by RTL bidi mirroring.
+function BrowseChevron() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 6l-6 6 6 6" />
+    </svg>
+  );
+}
+function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, showToast }) {
+  const [selectedCat, setSelectedCat] = useState(null);
+  const [selectedSub, setSelectedSub] = useState(null); // {id,label} | "ALL" | null
+  const [items, setItems] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [truncated, setTruncated] = useState(false);
+  const [addedBarcodes, setAddedBarcodes] = useState({});
+
+  const subs = (selectedCat && selectedCat.subcategories) || [];
+  const stage = !selectedCat ? "categories" : (selectedSub === null && subs.length > 0) ? "subcategories" : "results";
+
+  function load(cat, subLabel) {
+    setLoading(true);
+    setItems(null);
+    const profileIds = (activeProfiles || []).map(p => p.id);
+    fns.httpsCallable("browseCategoryItems", { timeout: 30000 })({ category: cat.label, subcategory: subLabel, profileIds }).then(res => {
+      setItems(res.data.items || []);
+      setTruncated(!!res.data.truncated);
+      setLoading(false);
+    }, () => { setLoading(false); setItems([]); showToast("שגיאה בטעינה"); });
+  }
+  function pickCategory(cat) {
+    setSelectedCat(cat);
+    setSelectedSub(null);
+    setItems(null);
+    if ((cat.subcategories || []).length === 0) load(cat, null);
+  }
+  function pickSub(sub) {
+    setSelectedSub(sub);
+    load(selectedCat, sub === "ALL" ? null : sub.label);
+  }
+  function back() {
+    if (stage === "results") {
+      if (subs.length > 0) { setSelectedSub(null); setItems(null); } else { setSelectedCat(null); }
+      return;
+    }
+    if (stage === "subcategories") { setSelectedCat(null); return; }
+    onClose();
+  }
+  function addItem(it) {
+    const payload = {
+      name: it.name, category: selectedCat.label, categoryEmoji: selectedCat.emoji,
+      quantity: 1, unit: it.unit || "יחידות", note: "", barcodes: {}, matchedNames: {},
+    };
+    Object.keys(it.prices || {}).forEach(v => { payload.barcodes[v] = it.barcode; payload.matchedNames[v] = it.name; });
+    onInsert(payload, () => {
+      setAddedBarcodes(prev => Object.assign({}, prev, { [it.barcode]: true }));
+      showToast(`${it.name} נוסף לרשימה`);
+    });
+    fns.httpsCallable("confirmItemBarcode")({ name: it.name, barcode: it.barcode, matchedName: it.name, vendors: Object.keys(it.prices || {}) }).catch(() => {});
+  }
+
+  const title = stage === "categories" ? "עיון לפי קטגוריה"
+    : stage === "subcategories" ? `${selectedCat.emoji} ${selectedCat.label}`
+    : `${selectedCat.emoji} ${selectedCat.label}` + (selectedSub && selectedSub !== "ALL" ? ` · ${selectedSub.label}` : "");
+
+  return (
+    <Modal onClose={onClose}>
+      <div className="flex items-center gap-2 mb-4">
+        <button onClick={back} className="text-[#8A7F66] w-8 h-8 -mr-1 flex items-center justify-center flex-shrink-0">
+          <BrowseChevron />
+        </button>
+        <h3 className="flex-1 text-base font-medium text-[#2B2418] truncate">{title}</h3>
+      </div>
+
+      {stage === "categories" && (
+        <div className="grid grid-cols-2 gap-2">
+          {categories.map(cat => (
+            <button key={cat.id} onClick={() => pickCategory(cat)}
+              className="flex items-center gap-2 bg-white border border-[#E0D4B4] rounded-xl px-3 py-3 text-right hover:bg-[#FBF4E7]">
+              <span className="text-xl">{cat.emoji}</span>
+              <span className="text-sm text-[#2B2418] leading-tight">{categoryHeaderLabel(cat.label)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {stage === "subcategories" && (
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => pickSub("ALL")}
+            className="bg-[#F3ECD9] rounded-full px-3 py-1.5 text-sm text-[#2B2418] hover:bg-[#EADFC0]">כל הקטגוריה</button>
+          {subs.map(sub => (
+            <button key={sub.id} onClick={() => pickSub(sub)}
+              className="bg-[#F3ECD9] rounded-full px-3 py-1.5 text-sm text-[#2B2418] hover:bg-[#EADFC0]">{sub.label}</button>
+          ))}
+        </div>
+      )}
+
+      {stage === "results" && (
+        loading ? (
+          <div className="flex justify-center py-8"><Spinner2 /></div>
+        ) : (
+          <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+            {truncated && (
+              <p className="text-[11px] text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-lg px-2.5 py-1.5">
+                מוצגות עד 200 תוצאות — לרשימה מלאה יותר נסו לבחור תת-קטגוריה
+              </p>
+            )}
+            {items.length === 0 ? (
+              <p className="text-center text-[#A79A7C] text-sm py-6">עדיין אין פריטים מסווגים בקטגוריה הזו מהרשתות הפעילות שלכם</p>
+            ) : items.map(it => {
+              const vendorIds = (activeProfiles || []).map(p => p.vendor);
+              const added = !!addedBarcodes[it.barcode];
+              return (
+                <div key={it.barcode} className="bg-white border border-[#E5D8B5] rounded-xl px-3 py-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-[#2B2418]">{it.name}</div>
+                      {it.unit && <div className="text-[11px] text-[#A79A7C] mt-0.5">{it.unit}</div>}
+                    </div>
+                    <button onClick={() => !added && addItem(it)} disabled={added}
+                      className={"w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold " +
+                        (added ? "bg-[#EEF5EC] text-[#2E7D4F]" : "bg-[#2E4A3B] text-white")}>
+                      {added ? "✓" : "+"}
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {vendorIds.map(v => {
+                      const price = it.prices ? it.prices[v] : null;
+                      const others = vendorIds.filter(o => o !== v).map(o => (it.prices ? it.prices[o] : null)).filter(x => x != null);
+                      return (
+                        <span key={v} className={"text-[11px] rounded px-2 py-0.5 " + cheapestBadgeClass(price, others)}>
+                          {vendorLabel(v)}: {price != null ? "₪" + price.toFixed(2) : "לא נמכר כאן"}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
+      )}
+    </Modal>
+  );
+}
+
 // ── CHECK PRICE (standalone — no list yet) ────────────────────────────────────
 // For "saw something in the store, want to know its price before deciding
 // whether it's worth buying" — reuses the same search/match core as the
@@ -3302,6 +3451,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [list, setList] = useState({ name: listName });
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showBrowse, setShowBrowse] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -3553,6 +3703,12 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
         <button
+          onClick={() => setShowBrowse(true)}
+          className="bg-white text-[#2E4A3B] border border-[#2E4A3B] px-4 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5"
+        >
+          📂 עיון לפי קטגוריה
+        </button>
+        <button
           onClick={() => setShowAdd(true)}
           className="bg-[#2E4A3B] text-[#FBF4E7] px-5 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5"
         >
@@ -3562,6 +3718,9 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
 
       {showAdd && (
         <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
+      )}
+      {showBrowse && (
+        <CategoryBrowseModal categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowBrowse(false)} showToast={setToast} />
       )}
       {editItem && (
         <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />

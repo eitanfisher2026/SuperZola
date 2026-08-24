@@ -1173,6 +1173,58 @@ exports.resolveItemBarcodes = onCall(
   }
 );
 
+// Lets the add-item flow browse the shared category/subcategory cache
+// instead of typing a name — useful exactly when you don't know a product's
+// exact name (e.g. "which milk options are there"). productCategories only
+// holds category tags, not names/prices, so this queries it for matching
+// barcodes first and then looks up those specific barcodes (not the whole
+// catalog) in each active vendor's catalog via the existing point-read
+// helper. Capped so a big, unnarrowed category can't turn into an
+// unbounded read — the `truncated` flag tells the client to suggest
+// picking a subcategory instead.
+exports.browseCategoryItems = onCall(
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
+  async (request) => {
+    requireSignedIn(request);
+    const { category, subcategory, profileIds } = request.data || {};
+    if (!category) throw new HttpsError('invalid-argument', 'category required');
+    const allActiveProfiles = await getUserActiveProfiles(request.auth.uid);
+    const activeProfiles = Array.isArray(profileIds) && profileIds.length > 0
+      ? allActiveProfiles.filter(p => profileIds.includes(p.id))
+      : allActiveProfiles;
+    if (activeProfiles.length === 0) throw new HttpsError('invalid-argument', 'no active vendors');
+    const repProfileByVendor = {};
+    activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
+
+    const LIMIT = 200;
+    let q = db.collection('productCategories').where('category', '==', category);
+    if (subcategory) q = q.where('subcategory', '==', subcategory);
+    const snap = await q.limit(LIMIT).get();
+    const barcodes = snap.docs.map(d => d.id);
+    if (barcodes.length === 0) return { items: [], truncated: false };
+
+    const perVendorItems = {};
+    await Promise.all(Object.entries(repProfileByVendor).map(async ([vendor, p]) => {
+      perVendorItems[vendor] = await readCatalogItemsBatch(docKey(vendor, p.branchId), barcodes);
+    }));
+
+    const results = [];
+    for (const bc of barcodes) {
+      let name = null, unit = '', manufacturer = '';
+      const prices = {};
+      for (const vendor of Object.keys(repProfileByVendor)) {
+        const item = perVendorItems[vendor][bc];
+        if (!item) continue;
+        prices[vendor] = item.price;
+        if (!name) { name = item.name; unit = item.unit || ''; manufacturer = item.manufacturer || ''; }
+      }
+      if (name) results.push({ barcode: bc, name, unit, manufacturer, prices });
+    }
+    results.sort((a, b) => a.name.localeCompare(b.name, 'he'));
+    return { items: results, truncated: snap.size === LIMIT };
+  }
+);
+
 exports.confirmItemBarcode = onCall(
   { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
