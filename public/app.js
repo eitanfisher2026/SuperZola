@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.52";
+const VERSION = "v1.53";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -193,7 +193,7 @@ function useOnlineVendors() {
 // onlineVendors entry gets provisioned for every user, and the actual
 // "does this vendor deliver to me" question is left to the user, with a
 // disclaimer shown alongside the list (Settings) pointing at that.
-function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles) {
+function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, showToast) {
   if (existingProfiles === null) return;
   const existingVendors = new Set(existingProfiles.filter(p => p.mode === "online").map(p => p.vendor));
   Object.entries(onlineVendors).forEach(([vendor, cfg]) => {
@@ -202,7 +202,14 @@ function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles) {
       vendor, branchId: cfg.branchId, active: true, mode: "online",
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
-    fns.httpsCallable("prewarmVendorCatalog")({ vendor, branchId: cfg.branchId }).catch(() => {});
+    // The very first time anyone activates a given online branch, its
+    // catalog isn't cached yet and this real fetch can take up to ~100s —
+    // after that it's already warm for everyone else. Without this, prices
+    // for the new vendor would just silently not show up during that wait.
+    if (showToast) showToast(`מוסיפים את ${vendorLabel(vendor)} — טוען קטלוג, זה עשוי לקחת עד דקה...`);
+    fns.httpsCallable("prewarmVendorCatalog")({ vendor, branchId: cfg.branchId }).then(() => {
+      if (showToast) showToast(`הקטלוג של ${vendorLabel(vendor)} מוכן`);
+    }).catch(() => {});
   });
 }
 
@@ -770,7 +777,7 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
 // still-missing vendor only (so a gap-fill can never overwrite a working
 // match), and one explicit "🔄 החלפה" action that clears everything and
 // starts over. See the "Edit Item Flow" proposal for the reasoning.
-function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, setPriceMap, promoMap, setPromoMap, onQueryChange }) {
+function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, setPriceMap, promoMap, setPromoMap, onQueryChange, categories }) {
   const [searchQuery, setSearchQuery] = useState(draft.name || "");
   const [candidates, setCandidates] = useState(null);
   const [isResolving, setIsResolving] = useState(false);
@@ -900,7 +907,14 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     });
     setReplacing(false);
     if (!keepOpen) { setCandidates(null); setSearchScope(null); }
-    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).catch(() => {});
+    // A matched barcode may already carry a known category from the catalog
+    // backfill — more reliable than the free-text guess made from the typed
+    // name before any barcode existed, so it wins when present.
+    fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).then(res => {
+      const label = res.data && res.data.category;
+      const cat = label && categories && categories.find(cc => cc.label === label);
+      if (cat) setDraft(prev => Object.assign({}, prev, { category: cat.label, categoryEmoji: cat.emoji }));
+    }).catch(() => {});
   };
   const pickCandidate = (c) => applyCandidate(c, { keepOpen: false });
 
@@ -1327,7 +1341,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
         </div>
       ) : (
         <PriceMatchStep draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
-          priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
+          priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} categories={categories} />
       )}
     </Modal>
   );
@@ -1926,7 +1940,7 @@ function SettingsScreen({ uid, onBack }) {
   }, () => {}), [uid]);
 
   useEffect(() => {
-    provisionOnlineVendorProfiles(uid, onlineVendors, profiles);
+    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
     // eslint-disable-next-line
   }, [profiles, JSON.stringify(onlineVendors)]);
 
@@ -2869,7 +2883,7 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
         <p className="text-xs text-[#A79A7C] text-center py-4">{mode === "online" ? "אין רשתות אונליין פעילות" : "אין רשתות פעילות"}</p>
       ) : (
         <PriceMatchStep key={mode} draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
-          priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap}
+          priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} categories={categories}
           onQueryChange={name => setDraft(prev => Object.assign({}, prev, { name }))} />
       )}
       <div className="flex gap-2 mt-5">
@@ -3357,7 +3371,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   // without a separate trip to Settings first.
   useEffect(() => {
     if (listMode !== "online") return;
-    provisionOnlineVendorProfiles(uid, onlineVendors, profiles);
+    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
     // eslint-disable-next-line
   }, [listMode, profiles, JSON.stringify(onlineVendors)]);
 

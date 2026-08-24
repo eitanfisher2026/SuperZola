@@ -1184,8 +1184,12 @@ exports.confirmItemBarcode = onCall(
     const entry = { barcode: String(barcode), name: String(matchedName || name).trim(), matchedAt: Date.now() };
     const payload = {};
     vendorList.forEach(v => { payload[v] = entry; });
-    await db.collection('itemBarcodes').doc(itemNameKey(name)).set(payload, { merge: true });
-    return { ok: true };
+    const [, catSnap] = await Promise.all([
+      db.collection('itemBarcodes').doc(itemNameKey(name)).set(payload, { merge: true }),
+      db.collection('productCategories').doc(String(barcode)).get(),
+    ]);
+    const cat = catSnap.exists ? catSnap.data() : null;
+    return { ok: true, category: (cat && cat.category) || null, subcategory: (cat && cat.subcategory) || null };
   }
 );
 
