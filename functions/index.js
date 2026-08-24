@@ -1216,7 +1216,14 @@ exports.browseCategoryItems = onCall(
         const item = perVendorItems[vendor][bc];
         if (!item) continue;
         prices[vendor] = item.price;
-        if (!name) { name = item.name; unit = item.unit || ''; manufacturer = item.manufacturer || ''; }
+        // The government price-transparency feeds hard-cap item names
+        // (commonly right at 20 characters) and some vendors reuse one
+        // generic truncated name across real flavor/size variants of the
+        // same product line — the longest name available across vendors is
+        // the one least likely to have lost the distinguishing part.
+        if (item.name && (!name || item.name.length > name.length)) {
+          name = item.name; unit = item.unit || unit; manufacturer = item.manufacturer || manufacturer;
+        }
       }
       if (name) results.push({ barcode: bc, name, unit, manufacturer, prices });
     }
