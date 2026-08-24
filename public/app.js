@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.54";
+const VERSION = "v1.55";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2804,6 +2804,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [addedBarcodes, setAddedBarcodes] = useState({});
+  const [resultsQuery, setResultsQuery] = useState("");
 
   const subs = (selectedCat && selectedCat.subcategories) || [];
   const stage = !selectedCat ? "categories" : (selectedSub === null && subs.length > 0) ? "subcategories" : "results";
@@ -2811,6 +2812,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   function load(cat, subLabel) {
     setLoading(true);
     setItems(null);
+    setResultsQuery("");
     const profileIds = (activeProfiles || []).map(p => p.id);
     fns.httpsCallable("browseCategoryItems", { timeout: 30000 })({ category: cat.label, subcategory: subLabel, profileIds }).then(res => {
       setItems(res.data.items || []);
@@ -2888,16 +2890,30 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
       {stage === "results" && (
         loading ? (
           <div className="flex justify-center py-8"><Spinner2 /></div>
-        ) : (
-          <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+        ) : (() => {
+          // Filters the results already fetched for this category/subcategory
+          // (no extra call) — the query is a plain point-read by barcode, not
+          // full-text search, so this is the way to narrow "which of these
+          // 80 items is the one I want" down by typing.
+          const q = resultsQuery.trim().toLowerCase();
+          const filteredItems = q ? items.filter(it => it.name.toLowerCase().includes(q)) : items;
+          return (
+          <div className="space-y-2">
+            {items.length > 0 && (
+              <input value={resultsQuery} onChange={e => setResultsQuery(e.target.value)} placeholder="סינון לפי שם..."
+                className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-2 text-sm outline-none" />
+            )}
             {truncated && (
               <p className="text-[11px] text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-lg px-2.5 py-1.5">
                 מוצגות עד 200 תוצאות — לרשימה מלאה יותר נסו לבחור תת-קטגוריה
               </p>
             )}
+            <div className="space-y-2 max-h-[52vh] overflow-y-auto">
             {items.length === 0 ? (
               <p className="text-center text-[#A79A7C] text-sm py-6">עדיין אין פריטים מסווגים בקטגוריה הזו מהרשתות הפעילות שלכם</p>
-            ) : items.map(it => {
+            ) : filteredItems.length === 0 ? (
+              <p className="text-center text-[#A79A7C] text-sm py-6">{`אין תוצאות ל"${resultsQuery}"`}</p>
+            ) : filteredItems.map(it => {
               const vendorIds = (activeProfiles || []).map(p => p.vendor);
               const added = !!addedBarcodes[it.barcode];
               return (
@@ -2927,8 +2943,10 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
                 </div>
               );
             })}
+            </div>
           </div>
-        )
+          );
+        })()
       )}
     </Modal>
   );
