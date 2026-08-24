@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.58";
+const VERSION = "v1.59";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1022,7 +1022,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
-                      <div className="text-[11px] text-[#A79A7C] mt-0.5">ברקוד {c.barcode}</div>
+                      <div className="text-[11px] text-[#A79A7C] mt-0.5">
+                        ברקוד {c.barcode}{c.unit ? ` · ${c.unit}` : ""}
+                      </div>
                     </div>
                     {allowMultiSelect && vendorsForC.length > 0 ? (
                       <button type="button"
@@ -2979,7 +2981,9 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418]">{it.name}</div>
-                      {it.unit && <div className="text-[11px] text-[#A79A7C] mt-0.5">{it.unit}</div>}
+                      <div className="text-[11px] text-[#A79A7C] mt-0.5">
+                        ברקוד {it.barcode}{it.unit ? ` · ${it.unit}` : ""}
+                      </div>
                     </div>
                     {added ? (
                       <span className="text-xs font-bold text-[#2E7D4F] flex-shrink-0">✓ נוסף</span>
