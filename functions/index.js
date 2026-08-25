@@ -625,7 +625,33 @@ async function woltDownloadXmlObject(fileEntry) {
   return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
 }
 
-function branchesFromStoresXml(obj) {
+// Israel's official settlement-code registry (same dataset getIsraeliCities
+// uses) — despite the schema calling it "City", most chains' real store
+// feeds put the numeric סמל ישוב (settlement code) in that field instead of
+// an actual city name (confirmed across every vendor checked: Carrefour,
+// Rami Levy, Shufersal, Yohananof were all 100% numeric). Left unresolved,
+// this breaks both text search (a real city name a user types never
+// matches the stored code) and geocoding (the address query sent to
+// Nominatim included the bare code instead of a real place name).
+async function getSettlementCityMap() {
+  const cacheRef = db.collection('staticData').doc('settlementCodes');
+  const cached = await cacheRef.get();
+  const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  if (cached.exists && Date.now() - (cached.data().updatedAt || 0) < ONE_WEEK_MS) {
+    return cached.data().map || {};
+  }
+  const res = await fetch('https://data.gov.il/api/3/action/datastore_search?resource_id=d4901968-dad3-4845-a9b0-a57d027f11ab&limit=1500');
+  const json = await res.json();
+  const map = {};
+  (json.result.records || []).forEach(r => {
+    const code = r['סמל_ישוב'];
+    const name = (r['שם_ישוב'] || '').trim();
+    if (code != null && name) map[String(code)] = name;
+  });
+  await cacheRef.set({ map, updatedAt: Date.now() });
+  return map;
+}
+function branchesFromStoresXml(obj, cityMap) {
   const root = obj.Root || obj.Chain || {};
   const branches = {};
   for (const subChain of asArray(root.SubChains?.SubChain)) {
@@ -637,10 +663,12 @@ function branchesFromStoresXml(obj) {
       // branches" can skip these instead of showing them at the equator.
       const lat = parseFloat(s.Latitude);
       const lng = parseFloat(s.Longitude);
+      const rawCity = String(s.City ?? '').trim();
+      const city = (cityMap && /^\d+$/.test(rawCity) && cityMap[rawCity]) ? cityMap[rawCity] : rawCity;
       branches[id] = {
         name: String(s.StoreName ?? '').trim() || `Store ${id}`,
         address: String(s.Address ?? '').replace(/&#x0?[dDaA];/g, '').replace(/[\r\n]+/g, '').trim(),
-        city: String(s.City ?? '').trim(),
+        city,
         lat: Number.isFinite(lat) && lat !== 0 ? lat : null,
         lng: Number.isFinite(lng) && lng !== 0 ? lng : null,
       };
@@ -772,13 +800,14 @@ async function ingestVendorBranches(vendor) {
       obj = await ftpDownloadXmlObject(client, storeFiles[0]);
     } finally { client.close(); }
   }
-  const branches = branchesFromStoresXml(obj);
+  const cityMap = await getSettlementCityMap();
+  const branches = branchesFromStoresXml(obj, cityMap);
   if (Object.keys(branches).length === 0) return null;
-  // schemaVersion 2 = branches carry lat/lng — bumping it forces a one-time
-  // re-ingest of anything cached under the old (coordinate-less) schema,
-  // without permanently re-fetching chains whose feed just doesn't have
-  // coordinates at all.
-  await db.collection('vendorBranches').doc(vendor).set({ branches, updatedAt: Date.now(), schemaVersion: 2 });
+  // schemaVersion 2 = branches carry lat/lng, 3 = city resolved from a
+  // settlement code to a real name — bumping it forces a one-time re-ingest
+  // of anything cached under an older schema, without permanently
+  // re-fetching chains whose feed just doesn't have that data at all.
+  await db.collection('vendorBranches').doc(vendor).set({ branches, updatedAt: Date.now(), schemaVersion: 3 });
   return branches;
 }
 
@@ -907,6 +936,19 @@ exports.refreshActiveVendorCatalogs = onSchedule(
   }
 );
 
+// Branch/store lists had no refresh at all before this — once ingested for
+// a vendor they were cached forever (barring a schemaVersion bump), so a
+// newly opened physical branch would just never appear. Store lists are
+// small and store openings are rare, so weekly for every vendor (not just
+// ones someone's actively tracking) is cheap and keeps this from silently
+// going stale again.
+exports.refreshVendorBranches = onSchedule(
+  { schedule: 'every 168 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
+  async () => {
+    await Promise.all(VENDOR_IDS.map(v => ingestVendorBranches(v).catch(() => {})));
+  }
+);
+
 // Tiers are spaced 100+ apart on purpose — fuzzyMatchCatalogs adds a small
 // (+20 max) bonus for a barcode priced at every searched vendor, and that
 // bonus must never be able to push a weaker match above a stronger one
@@ -1021,7 +1063,7 @@ exports.getVendorBranches = onCall(
     const snap = await db.collection('vendorBranches').doc(vendor).get();
     const cached = snap.data() || {};
     let branches = cached.branches;
-    if (!branches || Object.keys(branches).length === 0 || cached.schemaVersion !== 2) {
+    if (!branches || Object.keys(branches).length === 0 || cached.schemaVersion !== 3) {
       console.log('getVendorBranches: no cache or stale schema, ingesting', vendor);
       branches = await ingestVendorBranches(vendor);
     }
