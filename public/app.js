@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.60";
+const VERSION = "v1.61";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1748,13 +1748,97 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
   );
 }
 
+// Vendors whose price-feed platform (laibcatalog.co.il) times out from our
+// server specifically — a plain request to the same URL succeeds instantly
+// from a normal network, so this looks like the feed blocking cloud-server
+// traffic rather than anything wrong with our fetch code. Shown in the
+// vendor picker (not hidden) so it's clear these exist and aren't just
+// missing, but disabled until that's resolved.
+const UNSUPPORTED_VENDORS = new Set(["victory", "mahsaniAshuk"]);
+
+// Self-contained "pick a vendor, then a branch, then add it" flow — used
+// both in Settings and from a list's own vendor screen, so adding a branch
+// never requires a separate trip to Settings first.
+function AddBranchWidget({ uid, existingProfiles, showToast, onAdded }) {
+  const [branchCache, setBranchCache] = useState({});
+  const [addingVendor, setAddingVendor] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [pickerMode, setPickerMode] = useState("text");
+
+  function loadBranches(vendorId) {
+    setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
+    fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
+      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: res.data.branches || {} }));
+    }).catch(() => {
+      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
+      showToast("שגיאה בטעינת סניפים");
+    });
+  }
+  function pickVendor(vendorId) {
+    setAddingVendor(vendorId);
+    setBranchId("");
+    setPickerMode("text");
+    if (vendorId && !branchCache[vendorId]) loadBranches(vendorId);
+  }
+  function addProfile() {
+    if (!addingVendor || !branchId) return;
+    const already = (existingProfiles || []).some(p => p.vendor === addingVendor && String(p.branchId) === String(branchId));
+    if (already) { showToast("הסניף כבר ברשימה שלך"); return; }
+    db.collection("users").doc(uid).collection("vendorProfiles").add({
+      vendor: addingVendor, branchId, active: true, mode: "instore", addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    fns.httpsCallable("prewarmVendorCatalog")({ vendor: addingVendor, branchId }).catch(() => {});
+    setAddingVendor("");
+    setBranchId("");
+    if (onAdded) onAdded();
+  }
+
+  const addingBranches = addingVendor ? branchCache[addingVendor] : null;
+
+  return (
+    <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+      <div className="text-xs font-semibold text-[#8A7F66]">הוספת סניף להשוואה</div>
+      <select value={addingVendor} onChange={e => pickVendor(e.target.value)}
+        className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
+        <option value="">בחירת רשת...</option>
+        {VENDOR_LIST.map(v => (
+          <option key={v.id} value={v.id} disabled={UNSUPPORTED_VENDORS.has(v.id)}>
+            {v.label}{UNSUPPORTED_VENDORS.has(v.id) ? " (לא זמין כרגע)" : ""}
+          </option>
+        ))}
+      </select>
+      {addingVendor && (
+        <React.Fragment>
+          <div className="flex bg-[#F7F2E4] rounded-full p-0.5 w-fit">
+            <button type="button" onClick={() => setPickerMode("text")}
+              className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "text" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
+              חיפוש טקסט
+            </button>
+            <button type="button" onClick={() => setPickerMode("nearby")}
+              className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "nearby" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
+              📍 סניפים קרובים
+            </button>
+          </div>
+          {pickerMode === "text" ? (
+            <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
+          ) : (
+            <NearbyBranchPicker vendorId={addingVendor} branches={addingBranches} branchId={branchId} onPick={setBranchId}
+              onBranchesUpdated={updated => setBranchCache(prev => Object.assign({}, prev, { [addingVendor]: updated }))} />
+          )}
+        </React.Fragment>
+      )}
+      <button onClick={addProfile} disabled={!addingVendor || !branchId}
+        className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+        + הוספת סניף
+      </button>
+    </div>
+  );
+}
+
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 function SettingsScreen({ uid, onBack }) {
   const [profiles, setProfiles] = useState(null);
   const [branchCache, setBranchCache] = useState({}); // { vendorId: { branchId: {name,address,city} } | "loading" }
-  const [addingVendor, setAddingVendor] = useState("");
-  const [branchId, setBranchId] = useState("");
-  const [pickerMode, setPickerMode] = useState("text"); // "text" | "nearby"
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [aiProvider, setAiProvider] = useState("anthropic");
   const [openaiKey, setOpenaiKey] = useState("");
@@ -2069,27 +2153,6 @@ function SettingsScreen({ uid, onBack }) {
     // eslint-disable-next-line
   }, [profiles]);
 
-  function pickVendor(vendorId) {
-    setAddingVendor(vendorId);
-    setBranchId("");
-    setPickerMode("text");
-    if (vendorId && !branchCache[vendorId]) loadBranches(vendorId);
-  }
-
-  function addProfile() {
-    if (!addingVendor || !branchId) return;
-    const already = (profiles || []).some(p => p.vendor === addingVendor && String(p.branchId) === String(branchId));
-    if (already) { setToast("הסניף כבר ברשימה שלך"); return; }
-    db.collection("users").doc(uid).collection("vendorProfiles").add({
-      vendor: addingVendor, branchId, active: true, mode: "instore", addedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-    // Fire-and-forget: starts warming this branch's catalog in the
-    // background right away, so the first real price search against it
-    // doesn't have to pay for a cold FTP ingest.
-    fns.httpsCallable("prewarmVendorCatalog")({ vendor: addingVendor, branchId }).catch(() => {});
-    setAddingVendor("");
-    setBranchId("");
-  }
   function toggleProfile(p) {
     db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).update({ active: !p.active });
   }
@@ -2216,7 +2279,6 @@ function SettingsScreen({ uid, onBack }) {
     return info.name + (info.address ? " — " + info.address : "");
   }
 
-  const addingBranches = addingVendor ? branchCache[addingVendor] : null;
   const instoreProfiles = (profiles || []).filter(p => (p.mode || "instore") === "instore");
   const onlineProfiles = (profiles || []).filter(p => p.mode === "online");
   const activeCount = instoreProfiles.filter(p => p.active).length;
@@ -2318,38 +2380,7 @@ function SettingsScreen({ uid, onBack }) {
             </div>
           )}
 
-          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-            <div className="text-xs font-semibold text-[#8A7F66]">הוספת סניף להשוואה</div>
-            <select value={addingVendor} onChange={e => pickVendor(e.target.value)}
-              className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
-              <option value="">בחירת רשת...</option>
-              {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
-            </select>
-            {addingVendor && (
-              <React.Fragment>
-                <div className="flex bg-[#F7F2E4] rounded-full p-0.5 w-fit">
-                  <button type="button" onClick={() => setPickerMode("text")}
-                    className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "text" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
-                    חיפוש טקסט
-                  </button>
-                  <button type="button" onClick={() => setPickerMode("nearby")}
-                    className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "nearby" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
-                    📍 סניפים קרובים
-                  </button>
-                </div>
-                {pickerMode === "text" ? (
-                  <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
-                ) : (
-                  <NearbyBranchPicker vendorId={addingVendor} branches={addingBranches} branchId={branchId} onPick={setBranchId}
-                    onBranchesUpdated={updated => setBranchCache(prev => Object.assign({}, prev, { [addingVendor]: updated }))} />
-                )}
-              </React.Fragment>
-            )}
-            <button onClick={addProfile} disabled={!addingVendor || !branchId}
-              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
-              + הוספת סניף
-            </button>
-          </div>
+          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} />
         </div>
 
         <div>
@@ -3163,7 +3194,7 @@ function CheckPriceModal({ uid, categories, onClose, showToast }) {
 // Per-list display filter: hiding a vendor here only affects what THIS list
 // shows — matching/pricing keeps running for it in the background so
 // un-hiding it later doesn't need a fresh search.
-function VendorVisibilityModal({ activeProfiles, hiddenVendorIds, onToggle, onClose }) {
+function VendorVisibilityModal({ uid, listMode, activeProfiles, hiddenVendorIds, onToggle, onClose, showToast }) {
   const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
 
   useEffect(() => {
@@ -3198,6 +3229,11 @@ function VendorVisibilityModal({ activeProfiles, hiddenVendorIds, onToggle, onCl
           );
         })}
       </div>
+      {listMode !== "online" && (
+        <div className="mt-4 pt-4 border-t border-[#E5D8B5]">
+          <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} />
+        </div>
+      )}
       <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
     </Modal>
   );
@@ -3896,8 +3932,8 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
           onClose={() => setConfirmDeleteItem(null)} />
       )}
       {showVendorVisibility && (
-        <VendorVisibilityModal activeProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
-          onToggle={toggleVendorVisibility} onClose={() => setShowVendorVisibility(false)} />
+        <VendorVisibilityModal uid={uid} listMode={listMode} activeProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
+          onToggle={toggleVendorVisibility} onClose={() => setShowVendorVisibility(false)} showToast={setToast} />
       )}
       {showCopyItems && (
         <CopyItemsModal uid={uid} sourceListId={listId} sourceMode={listMode} items={items || []} categories={categories}
