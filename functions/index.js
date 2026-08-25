@@ -415,7 +415,16 @@ const LAIBCATALOG_BASE_URL = 'https://laibcatalog.co.il';
 const HAZI_HINAM_BASE_URL = 'https://shop.hazi-hinam.co.il';
 const WOLT_BASE_URL = 'https://wm-gateway.wolt.com/isr-prices/public/v1';
 const CATALOG_STALENESS_MS = 18 * 60 * 60 * 1000; // 18h — matches the feed's own refresh cadence
-const DEFAULT_MAX_ACTIVE_VENDORS = 8;
+// This is a single budget shared across EVERY active profile a user has —
+// instore branches and auto-provisioned online vendors together, across
+// all of their lists, not per-list. At 8 it was silently dropping the
+// newest profile once instore + online combined crossed the cap (found via
+// a real report: a second physical branch someone had just added never
+// got prices, because 3 auto-provisioned online profiles plus 6 existing
+// instore ones already filled the budget — no error, it just vanished from
+// every price lookup). Raised well above the real ceiling (15 vendors,
+// even doubled for a couple of same-vendor branches) so this can't recur.
+const DEFAULT_MAX_ACTIVE_VENDORS = 30;
 
 function asArray(x) { return x === undefined || x === null ? [] : Array.isArray(x) ? x : [x]; }
 function docKey(vendor, branchId) { return `${vendor}__${branchId}`; }
