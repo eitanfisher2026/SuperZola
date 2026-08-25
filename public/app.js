@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.61";
+const VERSION = "v1.62";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1571,6 +1571,13 @@ function BranchPicker({ branches, branchId, onPick }) {
     return () => window.removeEventListener("click", onClickAway);
   }, [open]);
 
+  // Once the branch list finishes loading, show it right away rather than
+  // making the user tap the (now-enabled) input a second time to see it.
+  useEffect(() => {
+    if (!loading && branches && Object.keys(branches).length > 0) setOpen(true);
+    // eslint-disable-next-line
+  }, [loading]);
+
   const q = query.trim().toLowerCase();
   const entries = (branches && !loading)
     ? Object.entries(branches)
@@ -1595,8 +1602,10 @@ function BranchPicker({ branches, branchId, onPick }) {
           disabled={loading}
           className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm disabled:bg-[#F7F2E4]"
         />
-        {loading && <span className="absolute left-3 top-1/2 -translate-y-1/2"><Spinner /></span>}
       </div>
+      {loading && (
+        <div className="mt-2"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>
+      )}
       {open && !loading && (
         <div className="absolute z-10 mt-1 w-full bg-white border border-[#DECBA1] rounded-xl shadow-lg max-h-56 overflow-y-auto">
           {entries.length === 0 ? (
@@ -1724,7 +1733,7 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
           </div>
         </div>
       )}
-      {loading && <div className="flex justify-center py-4"><Spinner2 /></div>}
+      {loading && <div className="py-2"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>}
       {origin && !loading && withCoords.length === 0 && !needsWarmup && (
         <p className="text-xs text-[#A79A7C] text-center py-3">לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט</p>
       )}
