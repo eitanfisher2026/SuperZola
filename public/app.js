@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.59";
+const VERSION = "v1.60";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1580,7 +1580,6 @@ function BranchPicker({ branches, branchId, onPick }) {
           return hay.indexOf(q) !== -1;
         })
         .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || "", "he"))
-        .slice(0, 60)
     : [];
   const selected = (branches && !loading) ? branches[branchId] : null;
   const displayValue = open ? query : (selected ? selected.name + (selected.city ? " · " + selected.city : "") : query);
