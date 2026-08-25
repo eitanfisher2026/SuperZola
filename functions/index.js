@@ -1250,24 +1250,52 @@ exports.browseCategoryItems = onCall(
       perVendorItems[vendor] = await readCatalogItemsBatch(docKey(vendor, p.branchId), barcodes);
     }));
 
-    const results = [];
+    // The government price-transparency feeds hard-cap item names (commonly
+    // right at 20 characters), and some vendors reuse one generic truncated
+    // name across real flavor/size variants of the same product line —
+    // gather every vendor's name for each barcode rather than picking one
+    // right away, so a collision can be fixed after the fact.
+    const candidatesByBarcode = {};
     for (const bc of barcodes) {
-      let name = null, unit = '', manufacturer = '';
+      const cands = [];
       const prices = {};
       for (const vendor of Object.keys(repProfileByVendor)) {
         const item = perVendorItems[vendor][bc];
         if (!item) continue;
         prices[vendor] = item.price;
-        // The government price-transparency feeds hard-cap item names
-        // (commonly right at 20 characters) and some vendors reuse one
-        // generic truncated name across real flavor/size variants of the
-        // same product line — the longest name available across vendors is
-        // the one least likely to have lost the distinguishing part.
-        if (item.name && (!name || item.name.length > name.length)) {
-          name = item.name; unit = item.unit || unit; manufacturer = item.manufacturer || manufacturer;
-        }
+        if (item.name) cands.push({ name: item.name, unit: item.unit || '', manufacturer: item.manufacturer || '' });
       }
-      if (name) results.push({ barcode: bc, name, unit, manufacturer, prices });
+      if (cands.length === 0) continue;
+      cands.sort((a, b) => b.name.length - a.name.length);
+      candidatesByBarcode[bc] = { cands, prices };
+    }
+
+    // Default pick: longest available name — usually the least truncated.
+    const picked = {};
+    for (const [bc, { cands }] of Object.entries(candidatesByBarcode)) picked[bc] = cands[0];
+
+    // Two different barcodes can still land on the exact same name when the
+    // vendor with the longest string used one generic name for both real,
+    // different products (verified this actually happens — a chain's own
+    // feed had an identical name for two distinct SKUs). For every barcode
+    // but the first in such a collision, try another vendor's name for it
+    // instead, so at least one of them stops looking like a duplicate.
+    const nameGroups = {};
+    for (const [bc, c] of Object.entries(picked)) (nameGroups[c.name] = nameGroups[c.name] || []).push(bc);
+    for (const group of Object.values(nameGroups)) {
+      if (group.length < 2) continue;
+      const sharedName = picked[group[0]].name;
+      for (const bc of group.slice(1)) {
+        const alt = candidatesByBarcode[bc].cands.find(c => c.name !== sharedName);
+        if (alt) picked[bc] = alt;
+      }
+    }
+
+    const results = [];
+    for (const bc of barcodes) {
+      if (!picked[bc]) continue;
+      const { name, unit, manufacturer } = picked[bc];
+      results.push({ barcode: bc, name, unit, manufacturer, prices: candidatesByBarcode[bc].prices });
     }
     results.sort((a, b) => a.name.localeCompare(b.name, 'he'));
     return { items: results, truncated: snap.size === LIMIT };
