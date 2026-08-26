@@ -1237,7 +1237,7 @@ exports.browseCategoryItems = onCall(
   { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
-    const { category, subcategory, profileIds } = request.data || {};
+    const { category, subcategory, profileIds, nameFilter } = request.data || {};
     if (!category) throw new HttpsError('invalid-argument', 'category required');
     const allActiveProfiles = await getUserActiveProfiles(request.auth.uid);
     const activeProfiles = Array.isArray(profileIds) && profileIds.length > 0
@@ -1247,7 +1247,15 @@ exports.browseCategoryItems = onCall(
     const repProfileByVendor = {};
     activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
 
-    const LIMIT = 200;
+    // productCategories docs are tiny (barcode -> category/subcategory only),
+    // so reading far more of them is cheap — a plain browse still caps at
+    // 200 to bound the per-vendor catalog hydration below, but a real text
+    // search inside a category needs to scan much further than that or it
+    // silently misses matches sitting past the first 200 (found via a real
+    // report: "עוף טוב" existed in the category but wasn't in the first 200
+    // barcodes read, so the in-browser filter over that partial list found
+    // nothing even though a plain name search elsewhere found it fine).
+    const LIMIT = nameFilter ? 3000 : 200;
     let q = db.collection('productCategories').where('category', '==', category);
     if (subcategory) q = q.where('subcategory', '==', subcategory);
     const snap = await q.limit(LIMIT).get();
@@ -1300,11 +1308,15 @@ exports.browseCategoryItems = onCall(
       }
     }
 
-    const results = [];
+    let results = [];
     for (const bc of barcodes) {
       if (!picked[bc]) continue;
       const { name, unit, manufacturer } = picked[bc];
       results.push({ barcode: bc, name, unit, manufacturer, prices: candidatesByBarcode[bc].prices });
+    }
+    if (nameFilter) {
+      const nf = normalizeItemName(nameFilter);
+      results = results.filter(r => normalizeItemName(r.name).includes(nf));
     }
     results.sort((a, b) => a.name.localeCompare(b.name, 'he'));
     return { items: results, truncated: snap.size === LIMIT };

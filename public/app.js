@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.63";
+const VERSION = "v1.64";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2861,12 +2861,21 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   const subs = (selectedCat && selectedCat.subcategories) || [];
   const stage = !selectedCat ? "categories" : (selectedSub === null && subs.length > 0) ? "subcategories" : "results";
 
-  function load(cat, subLabel, seedQuery) {
+  // Debounced so every keystroke doesn't fire its own call — the search
+  // scans the whole category/subcategory server-side (not just whatever's
+  // already loaded), since limiting a text search to the first 200 loaded
+  // barcodes silently missed real matches sitting past that cutoff in a
+  // large category (found via a real report — "עוף טוב" existed but wasn't
+  // in that initial batch, so filtering it client-side found nothing even
+  // though it's a completely real product).
+  const searchDebounceRef = useRef(null);
+  useEffect(() => () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); }, []);
+
+  function load(cat, subLabel, nameFilter) {
     setLoading(true);
     setItems(null);
-    setResultsQuery(seedQuery || "");
     const profileIds = (activeProfiles || []).map(p => p.id);
-    fns.httpsCallable("browseCategoryItems", { timeout: 30000 })({ category: cat.label, subcategory: subLabel, profileIds }).then(res => {
+    fns.httpsCallable("browseCategoryItems", { timeout: 30000 })({ category: cat.label, subcategory: subLabel, profileIds, nameFilter: nameFilter || undefined }).then(res => {
       setItems(res.data.items || []);
       setTruncated(!!res.data.truncated);
       setLoading(false);
@@ -2877,21 +2886,31 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     setSelectedSub(null);
     setItems(null);
     setSubStageQuery("");
+    setResultsQuery("");
     if ((cat.subcategories || []).length === 0) load(cat, null);
   }
   function pickSub(sub) {
     setSelectedSub(sub);
+    setResultsQuery("");
     load(selectedCat, sub === "ALL" ? null : sub.label);
   }
   // Not sure which subcategory a product falls under (e.g. "מילקי" — dairy?
   // yogurt?) — searching here loads the whole category (same as "כל
-  // הקטגוריה") and pre-fills the results filter with what was typed, so it
-  // reads as one search instead of two separate steps.
+  // הקטגוריה") pre-filtered by what was typed, so it reads as one search
+  // instead of two separate steps.
   function searchWholeCategory() {
     const q = subStageQuery.trim();
     if (!q) return;
     setSelectedSub("ALL");
+    setResultsQuery(q);
     load(selectedCat, null, q);
+  }
+  function onResultsQueryChange(v) {
+    setResultsQuery(v);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      load(selectedCat, selectedSub === "ALL" ? null : (selectedSub && selectedSub.label), v.trim());
+    }, 450);
   }
   function back() {
     if (stage === "results") {
@@ -2986,21 +3005,13 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
       )}
 
       {stage === "results" && (
-        loading ? (
-          <div className="py-8 px-4"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>
-        ) : (() => {
-          // Filters the results already fetched for this category/subcategory
-          // (no extra call) — the query is a plain point-read by barcode, not
-          // full-text search, so this is the way to narrow "which of these
-          // 80 items is the one I want" down by typing.
-          const q = resultsQuery.trim().toLowerCase();
-          const filteredItems = q ? items.filter(it => it.name.toLowerCase().includes(q)) : items;
-          return (
-          <div className="space-y-2">
-            {items.length > 0 && (
-              <input value={resultsQuery} onChange={e => setResultsQuery(e.target.value)} placeholder="סינון לפי שם..."
-                className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-2 text-sm outline-none" />
-            )}
+        <div className="space-y-2">
+          <input value={resultsQuery} onChange={e => onResultsQueryChange(e.target.value)} placeholder="חיפוש לפי שם..."
+            className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-2 text-sm outline-none" />
+          {loading ? (
+            <div className="py-8 px-4"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>
+          ) : (
+          <React.Fragment>
             {truncated && (
               <p className="text-[11px] text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-lg px-2.5 py-1.5">
                 מוצגות עד 200 תוצאות — לרשימה מלאה יותר נסו לבחור תת-קטגוריה
@@ -3008,10 +3019,12 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
             )}
             <div className="space-y-2 max-h-[52vh] overflow-y-auto">
             {items.length === 0 ? (
-              <p className="text-center text-[#A79A7C] text-sm py-6">עדיין אין פריטים מסווגים בקטגוריה הזו מהרשתות הפעילות שלכם</p>
-            ) : filteredItems.length === 0 ? (
-              <p className="text-center text-[#A79A7C] text-sm py-6">{`אין תוצאות ל"${resultsQuery}"`}</p>
-            ) : filteredItems.map(it => {
+              resultsQuery.trim() ? (
+                <p className="text-center text-[#A79A7C] text-sm py-6">{`אין תוצאות ל"${resultsQuery}"`}</p>
+              ) : (
+                <p className="text-center text-[#A79A7C] text-sm py-6">עדיין אין פריטים מסווגים בקטגוריה הזו מהרשתות הפעילות שלכם</p>
+              )
+            ) : items.map(it => {
               const vendorIds = (activeProfiles || []).map(p => p.vendor);
               const added = !!addedBarcodes[it.barcode];
               const isChecked = !!selections[it.barcode];
@@ -3048,9 +3061,9 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
               );
             })}
             </div>
-          </div>
-          );
-        })()
+          </React.Fragment>
+          )}
+        </div>
       )}
     </Modal>
   );
