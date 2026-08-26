@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.64";
+const VERSION = "v1.65";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -987,7 +987,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
         )}
       </div>
       {hasSearched && !isResolving && candidates && (
-        <p className="text-xs text-[#A79A7C] mb-2">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
+        <React.Fragment>
+          <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
+          {candidates.list.length > 0 && (candidates.vendors || []).length > 1 && (
+            <p className="text-[11px] text-[#8A7F66] mb-2">סמנו התאמה מכל רשת בנפרד — הכל יתמזג לפריט אחד; רשת שכבר נבחרה תיחסם מבחירות אחרות.</p>
+          )}
+        </React.Fragment>
       )}
 
       {isResolving && (
@@ -2850,11 +2855,12 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   const [loading, setLoading] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [addedBarcodes, setAddedBarcodes] = useState({});
-  // Pending picks not yet committed to the list — { barcode: { name, unit, vendors: [...] } }.
-  // Lets several different products be checked (each with its own vendor
-  // subset) before adding them all in one action, same as checking several
-  // boxes in a form before submitting.
-  const [selections, setSelections] = useState({});
+  // One item being assembled across vendors — same model as the name-search
+  // step: checking a result claims it for every vendor it's sold at: once a
+  // vendor is claimed, any other result also sold there is blocked, but a
+  // vendor not yet covered stays open for a different result (a different
+  // barcode at another vendor for "the same" product).
+  const [draftItem, setDraftItem] = useState({ name: null, unit: null, barcodes: {}, matchedNames: {} });
   const [resultsQuery, setResultsQuery] = useState("");
   const [subStageQuery, setSubStageQuery] = useState("");
 
@@ -2923,35 +2929,45 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   // One checkbox per item, not per vendor — same as the name-search flow,
   // where checking a candidate picks it for every vendor that carries it at
   // once, rather than choosing vendors individually.
+  function vendorsCoveredByResult(it) {
+    return Object.keys(it.prices || {}).filter(v => it.prices[v] != null);
+  }
   function toggleItem(it) {
-    const vendors = Object.keys(it.prices || {}).filter(v => it.prices[v] != null);
-    if (vendors.length === 0) return;
-    setSelections(prev => {
-      const next = Object.assign({}, prev);
-      if (next[it.barcode]) delete next[it.barcode];
-      else next[it.barcode] = { name: it.name, unit: it.unit, vendors };
-      return next;
+    const vendorsForIt = vendorsCoveredByResult(it);
+    if (vendorsForIt.length === 0) return;
+    const isChecked = vendorsForIt.every(v => draftItem.barcodes[v] === it.barcode);
+    setDraftItem(prev => {
+      const nb = Object.assign({}, prev.barcodes);
+      const nn = Object.assign({}, prev.matchedNames);
+      if (isChecked) {
+        vendorsForIt.forEach(v => { if (nb[v] === it.barcode) { delete nb[v]; delete nn[v]; } });
+      } else {
+        vendorsForIt.forEach(v => { nb[v] = it.barcode; nn[v] = it.name; });
+      }
+      const hasAny = Object.keys(nb).length > 0;
+      return { name: hasAny ? (prev.name || it.name) : null, unit: hasAny ? (prev.unit || it.unit) : null, barcodes: nb, matchedNames: nn };
     });
   }
-  const selectedCount = Object.keys(selections).length;
-  function addSelected() {
-    const entries = Object.entries(selections);
-    entries.forEach(([barcode, sel]) => {
-      const payload = {
-        name: sel.name, category: selectedCat.label, categoryEmoji: selectedCat.emoji,
-        quantity: 1, unit: sel.unit || "יחידות", note: "", barcodes: {}, matchedNames: {},
-      };
-      sel.vendors.forEach(v => { payload.barcodes[v] = barcode; payload.matchedNames[v] = sel.name; });
-      onInsert(payload, () => {});
-      fns.httpsCallable("confirmItemBarcode")({ name: sel.name, barcode, matchedName: sel.name, vendors: sel.vendors }).catch(() => {});
+  const draftVendorCount = Object.keys(draftItem.barcodes).length;
+  function commitDraftItem() {
+    const payload = {
+      name: draftItem.name, category: selectedCat.label, categoryEmoji: selectedCat.emoji,
+      quantity: 1, unit: draftItem.unit || "יחידות", note: "", barcodes: draftItem.barcodes, matchedNames: draftItem.matchedNames,
+    };
+    onInsert(payload, () => {});
+    const uniqueBarcodes = [...new Set(Object.values(draftItem.barcodes))];
+    uniqueBarcodes.forEach(bc => {
+      const vendorsForBc = Object.keys(draftItem.barcodes).filter(v => draftItem.barcodes[v] === bc);
+      const matchedName = draftItem.matchedNames[vendorsForBc[0]] || draftItem.name;
+      fns.httpsCallable("confirmItemBarcode")({ name: matchedName, barcode: bc, matchedName, vendors: vendorsForBc }).catch(() => {});
     });
     setAddedBarcodes(prev => {
       const next = Object.assign({}, prev);
-      entries.forEach(([barcode]) => { next[barcode] = true; });
+      uniqueBarcodes.forEach(bc => { next[bc] = true; });
       return next;
     });
-    showToast(entries.length === 1 ? `${entries[0][1].name} נוסף לרשימה` : `${entries.length} פריטים נוספו לרשימה`);
-    setSelections({});
+    showToast(`${draftItem.name} נוסף לרשימה`);
+    setDraftItem({ name: null, unit: null, barcodes: {}, matchedNames: {} });
   }
 
   const title = stage === "categories" ? "עיון לפי קטגוריה"
@@ -2959,9 +2975,9 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     : `${selectedCat.emoji} ${selectedCat.label}` + (selectedSub && selectedSub !== "ALL" ? ` · ${selectedSub.label}` : "");
 
   return (
-    <Modal onClose={onClose} footer={selectedCount > 0 && (
-      <button onClick={addSelected} className="w-full bg-[#2E4A3B] text-white py-3 rounded-xl font-semibold text-sm">
-        הוספת {selectedCount} פריטים לרשימה
+    <Modal onClose={onClose} footer={draftVendorCount > 0 && (
+      <button onClick={commitDraftItem} className="w-full bg-[#2E4A3B] text-white py-3 rounded-xl font-semibold text-sm">
+        הוספה לרשימה ({draftVendorCount}/{(activeProfiles || []).length} רשתות)
       </button>
     )}>
       <div className="flex items-center gap-2 mb-4">
@@ -3008,6 +3024,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
         <div className="space-y-2">
           <input value={resultsQuery} onChange={e => onResultsQueryChange(e.target.value)} placeholder="חיפוש לפי שם..."
             className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-2 text-sm outline-none" />
+          <p className="text-[11px] text-[#8A7F66]">סמנו התאמה מכל רשת בנפרד — הכל יתמזג לפריט אחד; רשת שכבר נבחרה תיחסם מבחירות אחרות.</p>
           {loading ? (
             <div className="py-8 px-4"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>
           ) : (
@@ -3027,11 +3044,13 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
             ) : items.map(it => {
               const vendorIds = (activeProfiles || []).map(p => p.vendor);
               const added = !!addedBarcodes[it.barcode];
-              const isChecked = !!selections[it.barcode];
+              const vendorsForIt = vendorsCoveredByResult(it);
+              const isChecked = vendorsForIt.length > 0 && vendorsForIt.every(v => draftItem.barcodes[v] === it.barcode);
+              const blocked = !added && !isChecked && vendorsForIt.some(v => draftItem.barcodes[v] && draftItem.barcodes[v] !== it.barcode);
               return (
-                <div key={it.barcode} onClick={() => !added && toggleItem(it)}
+                <div key={it.barcode} onClick={() => !added && !blocked && toggleItem(it)}
                   className={"rounded-xl px-3 py-2.5 border " +
-                    (added ? "bg-white border-[#B9D9B0] opacity-60" : isChecked ? "bg-[#EEF5EC] border-[#B9D9B0] cursor-pointer" : "bg-white border-[#E5D8B5] cursor-pointer")}>
+                    (added ? "bg-white border-[#B9D9B0] opacity-60" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45 cursor-default" : isChecked ? "bg-[#EEF5EC] border-[#B9D9B0] cursor-pointer" : "bg-white border-[#E5D8B5] cursor-pointer")}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418]">{it.name}</div>
@@ -3041,6 +3060,8 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
                     </div>
                     {added ? (
                       <span className="text-xs font-bold text-[#2E7D4F] flex-shrink-0">✓ נוסף</span>
+                    ) : blocked ? (
+                      <span className="text-[10px] text-[#A79A7C] flex-shrink-0">כבר נבחר</span>
                     ) : (
                       <span className={"w-5 h-5 rounded-[5px] border-2 flex-shrink-0 flex items-center justify-center text-[11px] font-bold leading-none " +
                         (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
