@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.65";
+const VERSION = "v1.66";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1890,6 +1890,7 @@ function SettingsScreen({ uid, onBack }) {
   const [canInstall, setCanInstall] = useState(!isInstalled);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const [allUsers, setAllUsers] = useState(null);
+  const [userStats, setUserStats] = useState({}); // { [uid]: { costThisMonth, callsToday } }
   const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
@@ -1987,6 +1988,32 @@ function SettingsScreen({ uid, onBack }) {
       rows.sort((a, b) => (b.lastLoginAt?.toMillis?.() || 0) - (a.lastLoginAt?.toMillis?.() || 0));
       setAllUsers(rows);
     });
+  }, [role]);
+
+  // Per-user AI cost (this month) and call volume (today) — the safety-net
+  // view for keeping sign-up open to anyone without flying blind on who's
+  // actually costing money, and the basis for deciding a future paid tier.
+  useEffect(() => {
+    if (role !== "admin") return;
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    const today = new Date().toISOString().slice(0, 10);
+    Promise.all([
+      fns.httpsCallable("getCosts")({ scope: "all" }),
+      fns.httpsCallable("getUsageStats")({}),
+    ]).then(([costsRes, usageRes]) => {
+      const stats = {};
+      (costsRes.data.users || []).forEach(u => {
+        const monthEntry = u.months.find(m => m.month === thisMonth);
+        const costThisMonth = monthEntry ? Object.keys(monthEntry).filter(k => k !== "month").reduce((s, k) => s + (monthEntry[k] || 0), 0) : 0;
+        stats[u.uid] = Object.assign({}, stats[u.uid], { costThisMonth });
+      });
+      (usageRes.data.users || []).forEach(u => {
+        const dayEntry = u.days.find(d => d.day === today);
+        const callsToday = dayEntry ? Object.keys(dayEntry).filter(k => k !== "day").reduce((s, k) => s + (dayEntry[k] || 0), 0) : 0;
+        stats[u.uid] = Object.assign({}, stats[u.uid], { callsToday });
+      });
+      setUserStats(stats);
+    }).catch(() => {});
   }, [role]);
 
   function changeUserRole(userId, newRole) {
@@ -2760,6 +2787,11 @@ function SettingsScreen({ uid, onBack }) {
                   <div className="text-[11px] text-[#A79A7C] mt-1">
                     התחברות אחרונה: {formatRelativeUpdatedAt(u.lastLoginAt?.toMillis?.(), "מעולם לא התחבר")}
                   </div>
+                  {(userStats[u.id]?.costThisMonth > 0 || userStats[u.id]?.callsToday > 0) && (
+                    <div className="text-[11px] text-[#8A5A15] mt-0.5">
+                      עלות AI החודש: ${(userStats[u.id]?.costThisMonth || 0).toFixed(4)} · קריאות היום: {userStats[u.id]?.callsToday || 0}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

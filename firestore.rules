@@ -136,5 +136,19 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // Per-user daily call counts for the non-AI functions with a usage cap
+    // (open sign-up, no allowlist, so this plus costLedger is what keeps a
+    // runaway or abusive caller from being free/invisible). Same read/write
+    // trust model as costLedger — a user sees their own, admin sees all,
+    // nobody writes it directly (Cloud Functions only, via a transaction).
+    match /usageLedger/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if false;
+      match /days/{day} {
+        allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+        allow write: if false;
+      }
+    }
   }
 }

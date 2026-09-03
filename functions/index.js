@@ -60,6 +60,48 @@ async function recordCost(request, ai, inputTokens, outputTokens) {
   return costUsd;
 }
 
+// Sign-up stays open to any Google account (no allowlist/invite) — this is
+// the safety net for that choice: a hard per-user monthly ceiling on the
+// one feature that actually costs real money (AI categorization), checked
+// BEFORE spending anything. $1/month is enormous headroom for genuine use
+// (a family adds maybe a few hundred items a month, each call costs a
+// small fraction of a cent on the flash-lite/mini tier models) — this only
+// ever bites a runaway loop or deliberate abuse, and fails soft: the caller
+// already treats "no category returned" as a normal case (falls back to
+// "other"), so hitting the cap degrades a feature, it doesn't break the app.
+const FREE_TIER_MONTHLY_AI_CAP_USD = 1.0;
+async function monthlyCostSoFar(uid) {
+  const month = new Date().toISOString().slice(0, 7);
+  const snap = await db.collection('costLedger').doc(uid).collection('months').doc(month).get();
+  if (!snap.exists) return 0;
+  return Object.values(snap.data()).reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0);
+}
+
+// Same open-signup safety net for the functions that don't cost AI money but
+// still cost real Firestore/compute — a per-user, per-day call cap, cheap
+// to check (one tiny document per user per day) and set well above any
+// plausible genuine usage, so it only ever stops a scripted/abusive caller.
+const DAILY_CALL_CAPS = {
+  categorizeItemName: 300,
+  resolveItemBarcodes: 500,
+  getBasketPrices: 800,
+  browseCategoryItems: 300,
+  prewarmVendorCatalog: 50,
+};
+async function enforceDailyCap(uid, fnName) {
+  const cap = DAILY_CALL_CAPS[fnName];
+  const day = new Date().toISOString().slice(0, 10);
+  const ref = db.collection('usageLedger').doc(uid).collection('days').doc(day);
+  const allowed = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const count = ((snap.data() || {})[fnName] || 0) + 1;
+    if (count > cap) return false;
+    tx.set(ref, { [fnName]: count }, { merge: true });
+    return true;
+  });
+  if (!allowed) throw new HttpsError('resource-exhausted', 'חריגה ממכסת השימוש היומית — נסו שוב מחר');
+}
+
 // ─── AI pricing ($ per million tokens) ───────────────────────────────────────
 const PRICING = {
   anthropic: {
@@ -284,10 +326,12 @@ exports.categorizeItemName = onCall(
   { timeoutSeconds: 20, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'categorizeItemName');
     const { name, categories } = request.data || {};
     if (!name || typeof name !== 'string' || !name.trim()) throw new HttpsError('invalid-argument', 'name required');
     const cats = Array.isArray(categories) && categories.length > 0 ? categories : [];
     if (cats.length === 0) return { category: null };
+    if ((await monthlyCostSoFar(request.auth.uid)) >= FREE_TIER_MONTHLY_AI_CAP_USD) return { category: null };
     const config = await getAppAiConfig();
     if (!config) return { category: null };
     let ai;
@@ -373,6 +417,23 @@ exports.getCosts = onCall(
     const costs = {};
     snap.forEach(doc => { costs[doc.id] = doc.data(); });
     return { costs };
+  }
+);
+
+// Non-AI call counts (the daily-cap ledger doubles as a usage view) — admin
+// only, same shape as getCosts' scope:'all' so the client can merge them by
+// uid into one "how much is this person actually using it" picture.
+exports.getUsageStats = onCall(
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
+  async (request) => {
+    await requireAdmin(request);
+    const snap = await db.collectionGroup('days').get();
+    const byUid = {};
+    snap.forEach(doc => {
+      const uid = doc.ref.parent.parent.id;
+      (byUid[uid] = byUid[uid] || []).push({ day: doc.id, ...doc.data() });
+    });
+    return { users: Object.entries(byUid).map(([uid, days]) => ({ uid, days })) };
   }
 );
 
@@ -1135,6 +1196,7 @@ exports.prewarmVendorCatalog = onCall(
   { timeoutSeconds: 120, memory: '512MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'prewarmVendorCatalog');
     const { vendor, branchId, force } = request.data || {};
     if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
     // A forced refresh is a real, synchronous re-scrape of the vendor's
@@ -1151,6 +1213,7 @@ exports.resolveItemBarcodes = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'resolveItemBarcodes');
     const { items, force, vendors, profileIds } = request.data || {};
     console.log('resolveItemBarcodes: start', { uid: request.auth.uid, items, force, vendors, profileIds });
     if (!Array.isArray(items) || items.length === 0) throw new HttpsError('invalid-argument', 'items array required');
@@ -1233,6 +1296,7 @@ exports.browseCategoryItems = onCall(
   { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'browseCategoryItems');
     const { category, subcategory, profileIds, nameFilter } = request.data || {};
     if (!category) throw new HttpsError('invalid-argument', 'category required');
     const allActiveProfiles = await getUserActiveProfiles(request.auth.uid);
@@ -1356,6 +1420,7 @@ exports.getBasketPrices = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: REGION },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'getBasketPrices');
     const { barcodesByVendor, force } = request.data || {};
     if (!barcodesByVendor || typeof barcodesByVendor !== 'object') throw new HttpsError('invalid-argument', 'barcodesByVendor required');
 
