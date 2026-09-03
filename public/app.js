@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.66";
+const VERSION = "v1.67";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -14,6 +14,17 @@ const FIREBASE_CONFIG = {
 
 // ── FIREBASE ──────────────────────────────────────────────────────────────────
 firebase.initializeApp(FIREBASE_CONFIG);
+// App Check — attaches a verification token to every Firestore/Functions
+// request so a script hitting the API directly (not through this real page)
+// can be told apart from genuine app traffic. Currently in monitor-only
+// mode (nothing is rejected yet) while real usage is confirmed clean before
+// any enforcement is turned on.
+try {
+  firebase.appCheck().activate(
+    new firebase.appCheck.ReCaptchaEnterpriseProvider('6LcZvaYtAAAAALdAYGCtYJj3FCq3zMCLbdNCw7Zy'),
+    true
+  );
+} catch (e) { /* never block app boot over App Check failing to init */ }
 const auth = firebase.auth();
 const db   = firebase.firestore();
 const fns  = firebase.app().functions("europe-west1"); // must match functions region in functions/index.js
