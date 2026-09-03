@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.67";
+const VERSION = "v1.68";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -21,7 +21,7 @@ firebase.initializeApp(FIREBASE_CONFIG);
 // any enforcement is turned on.
 try {
   firebase.appCheck().activate(
-    new firebase.appCheck.ReCaptchaEnterpriseProvider('6LcZvaYtAAAAALdAYGCtYJj3FCq3zMCLbdNCw7Zy'),
+    new firebase.appCheck.ReCaptchaEnterpriseProvider('6LcsnKYtAAAAAGaGX3PZJg8lPc2vKWrw675onAjz'),
     true
   );
 } catch (e) { /* never block app boot over App Check failing to init */ }
