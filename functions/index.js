@@ -930,20 +930,16 @@ async function ensureFreshCatalog(vendor, branchId, force) {
   return ingestVendorCatalog(vendor, branchId);
 }
 
-// Runs independently of any user request so a real person's "match item" or
-// list-open action is never the thing waiting on a 30-50s re-ingest.
-exports.refreshActiveVendorCatalogs = onSchedule(
-  { schedule: 'every 12 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
-  async () => {
-    const snap = await db.collectionGroup('vendorProfiles').get();
-    const pairs = {};
-    snap.forEach(doc => {
-      const p = doc.data();
-      if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) pairs[`${p.vendor}:${p.branchId}`] = p;
-    });
-    await Promise.all(Object.values(pairs).map(p => ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {})));
-  }
-);
+// Disabled while there are effectively no real daily users — this used to
+// run unconditionally every 12 hours, doing a full catalog re-fetch and
+// rewrite (thousands of Firestore writes) for every tracked vendor/branch
+// whether or not anyone actually used it that day. ensureFreshCatalog's own
+// 18h staleness check already covers "keep it fresh for real usage" on
+// demand, at zero cost for branches nobody queries. The tradeoff: the first
+// search of the day against a given branch now pays a live ~30-50s
+// re-ingest instead of hitting a pre-warmed cache — worth re-enabling this
+// (or a lighter, usage-aware version of it) once real daily traffic makes
+// that latency worth paying to avoid.
 
 // Branch/store lists had no refresh at all before this — once ingested for
 // a vendor they were cached forever (barring a schemaVersion bump), so a
