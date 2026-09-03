@@ -323,7 +323,7 @@ exports.categorizeCatalogBatch = onCall(
 );
 
 exports.categorizeItemName = onCall(
-  { timeoutSeconds: 20, memory: '256MiB', region: REGION },
+  { timeoutSeconds: 20, memory: '256MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'categorizeItemName');
@@ -1193,7 +1193,7 @@ exports.geocodeVendorBranchesBatch = onCall(
 // to pay for a cold catalog ingest — by the time someone opens an item
 // dialog and searches, the branch's catalog is very likely already cached.
 exports.prewarmVendorCatalog = onCall(
-  { timeoutSeconds: 120, memory: '512MiB', region: REGION },
+  { timeoutSeconds: 120, memory: '512MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'prewarmVendorCatalog');
@@ -1210,7 +1210,7 @@ exports.prewarmVendorCatalog = onCall(
 );
 
 exports.resolveItemBarcodes = onCall(
-  { timeoutSeconds: 300, memory: '1GiB', region: REGION },
+  { timeoutSeconds: 300, memory: '1GiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'resolveItemBarcodes');
@@ -1293,7 +1293,7 @@ exports.resolveItemBarcodes = onCall(
 // unbounded read — the `truncated` flag tells the client to suggest
 // picking a subcategory instead.
 exports.browseCategoryItems = onCall(
-  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'browseCategoryItems');
@@ -1417,7 +1417,7 @@ exports.getActiveCatalogTimestamps = onCall(
 );
 
 exports.getBasketPrices = onCall(
-  { timeoutSeconds: 300, memory: '1GiB', region: REGION },
+  { timeoutSeconds: 300, memory: '1GiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'getBasketPrices');
