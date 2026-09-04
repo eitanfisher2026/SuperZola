@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.71";
+const VERSION = "v1.72";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -38,6 +38,20 @@ function signOut() {
 
 function formatPrice(n) {
   return "₪" + n.toFixed(2);
+}
+// Lets an admin preview the app as a regular user sees it, without actually
+// changing their role in Firestore (so it's purely a client-side UI
+// simulation — Firestore rules still enforce the real role server-side
+// regardless of this flag). Per-device via localStorage, not per-account,
+// since it's just a personal testing toggle.
+function isViewingAsUser() {
+  try { return localStorage.getItem("sz_viewAsUser") === "1"; } catch (e) { return false; }
+}
+function setViewingAsUser(v) {
+  try { if (v) localStorage.setItem("sz_viewAsUser", "1"); else localStorage.removeItem("sz_viewAsUser"); } catch (e) {}
+}
+function effectiveRole(realRole) {
+  return isViewingAsUser() ? "user" : realRole;
 }
 function formatRelativeUpdatedAt(ms, neverText) {
   if (!ms) return neverText || "מעולם לא רוענן";
@@ -1404,7 +1418,7 @@ function ListCard({ list, onOpen }) {
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, onOpenHelp, onOpenProfile, onSignOut }) {
+function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp, onOpenProfile, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
@@ -1412,6 +1426,11 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
   const [showFeedback, setShowFeedback] = useState(false);
   const [toast, setToast] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  // Deliberately the REAL admin status, never overridden by the simulation
+  // below — otherwise the toggle that turns the simulation off would hide
+  // itself the moment it's turned on.
+  const [viewAsUser, setViewAsUser] = useState(isViewingAsUser());
+  const simulatedIsAdmin = isAdmin && !viewAsUser;
   const categories = useCategories();
   const { profiles: activeProfiles, loaded: profilesLoaded } = useActiveVendorProfilesState(uid);
   // Online vendors are admin-configured and the same for everyone — a user
@@ -1482,7 +1501,7 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
         <div className="relative">
           <button onClick={e => { e.stopPropagation(); setShowUserMenu(v => !v); }}
             className="w-8 h-8 rounded-full overflow-hidden border border-[#DECBA1] bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0">
-            {photoURL ? <img src={photoURL} alt="" className="w-full h-full object-cover" /> : (displayName ? displayName[0] : "👤")}
+            ⚙️
           </button>
           {showUserMenu && (
             <div onClick={e => e.stopPropagation()}
@@ -1497,8 +1516,14 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
               </button>
               <button onClick={() => { setShowUserMenu(false); setShowFeedback(true); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
-                <span>💬</span><span>{isAdmin ? "ניהול משובים" : "שליחת משוב"}</span>
+                <span>💬</span><span>{simulatedIsAdmin ? "ניהול משובים" : "שליחת משוב"}</span>
               </button>
+              {isAdmin && (
+                <button onClick={() => { const next = !viewAsUser; setViewingAsUser(next); setViewAsUser(next); setShowUserMenu(false); }}
+                  className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                  <span>👁️</span><span>{viewAsUser ? "חזרה לתצוגת מנהל" : "תצוגה כמשתמש רגיל"}</span>
+                </button>
+              )}
               <button onClick={() => { setShowUserMenu(false); onSignOut(); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#B8462F] hover:bg-[#FBEAE5] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>🚪</span><span>התנתקות</span>
@@ -1507,6 +1532,14 @@ function Home({ uid, photoURL, displayName, email, onOpenList, onOpenSettings, o
           )}
         </div>
       </div>
+
+      {viewAsUser && (
+        <div className="mx-4 mb-3 bg-[#E3A939]/20 border border-[#E3A939] rounded-xl px-3 py-2 flex items-center justify-between gap-2">
+          <span className="text-xs text-[#8A5A15]">👁️ מציג את האפליקציה כמשתמש רגיל</span>
+          <button onClick={() => { setViewingAsUser(false); setViewAsUser(false); }}
+            className="text-xs font-bold text-[#2E4A3B] underline flex-shrink-0">חזרה למנהל</button>
+        </div>
+      )}
 
       <div className="px-4 pb-4">
         <h1 className="text-2xl" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הרשימות שלי</h1>
@@ -2081,7 +2114,7 @@ function SettingsScreen({ uid, onBack }) {
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     const data = snap.data() || {};
-    setRole(data.role || null);
+    setRole(effectiveRole(data.role || null));
   }), [uid]);
 
   // Only reachable for an admin (see the Firestore rule) — a non-admin
@@ -4111,7 +4144,7 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
   const [sending, setSending] = useState(false);
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
-    setIsAdmin((snap.data() || {}).role === "admin");
+    setIsAdmin(effectiveRole((snap.data() || {}).role) === "admin");
   }), [uid]);
 
   function loadThreads(admin) {
@@ -4460,7 +4493,7 @@ function HelpScreen({ onBack }) {
               <b>חדשים באפליקציה?</b> שני הצעדים הראשונים (התקנה + הוספת רשתות) הם חד-פעמיים — אחריהם כל רשימה חדשה כבר משווה מחירים אוטומטית.
             </div>
             <HelpCard icon="📲" title="1. התקנה למסך הבית">
-              תמונת הפרופיל בפינת מסך הבית ← הגדרות ← "התקנת אפליקציה". כך סופר זולה נפתחת כמו אפליקציה רגילה, בלי לחפש אותה בדפדפן בכל פעם.
+              כפתור גלגל השיניים ⚙️ בפינת מסך הבית ← הגדרות ← "התקנת אפליקציה". כך סופר זולה נפתחת כמו אפליקציה רגילה, בלי לחפש אותה בדפדפן בכל פעם.
             </HelpCard>
             <HelpCard icon="🏪" title="2. הוספת רשתות וסניפים לקנייה רגילה">
               באותו מסך הגדרות, הוסיפו את הסניפים שבהם אתם קונים בפועל — חיפוש לפי שם או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
@@ -4481,7 +4514,7 @@ function HelpScreen({ onBack }) {
               בכל רשימה יש שני מצבי תצוגה, מתחלפים מכפתור בראש המסך: 📋 רשימה — פריט אחר פריט עם המחירים לצדו. 📊 טבלה — כל הפריטים והרשתות יחד כמו גיליון, כולל שורת סיכום.
             </HelpCard>
             <HelpCard icon="👤" title="8. פרופיל וכתובות">
-              תמונת הפרופיל ← פרופיל — שומרים כתובות משלוח (עם וידוא כתובת אמיתית בישראל), ומסמנים אחת כברירת מחדל. אפשר לשמור כמה כתובות ולהחליף בין הבתים המוגדרים.
+              כפתור גלגל השיניים ⚙️ ← פרופיל — שומרים כתובות משלוח (עם וידוא כתובת אמיתית בישראל), ומסמנים אחת כברירת מחדל. אפשר לשמור כמה כתובות ולהחליף בין הבתים המוגדרים.
             </HelpCard>
           </React.Fragment>
         ) : (
@@ -4502,7 +4535,7 @@ function HelpScreen({ onBack }) {
               תג כתום ליד מחיר מציין מבצע שתלוי בכמות, למשל "2 ב-₪10" — המחיר יתעדכן אוטומטית כשתגיעו לכמות הנדרשת.
             </HelpCard>
             <HelpCard icon="💬" title="משוב">
-              תמונת הפרופיל ← "שליחת משוב" — דיווח על באג, רעיון או פנייה כללית. התשובות מגיעות לאותה שיחה, עם סימון הודעות שלא נקראו.
+              כפתור גלגל השיניים ⚙️ ← "שליחת משוב" — דיווח על באג, רעיון או פנייה כללית. התשובות מגיעות לאותה שיחה, עם סימון הודעות שלא נקראו.
             </HelpCard>
           </React.Fragment>
         )}
@@ -4552,7 +4585,6 @@ function App() {
     content = (
       <Home
         uid={user.uid}
-        photoURL={user.photoURL}
         displayName={user.displayName}
         email={user.email}
         onOpenList={(id, name, justCreatedOnline) => setScreen({ view: "list", id, name, justCreatedOnline })}
