@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.68";
+const VERSION = "v1.69";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -597,6 +597,7 @@ function SignInScreen() {
       >
         התחברות עם Google
       </button>
+      <a href="/privacy.html" className="text-xs text-[#A79A7C] underline">מדיניות פרטיות</a>
     </div>
   );
 }
@@ -2475,6 +2476,9 @@ function SettingsScreen({ uid, onBack }) {
             <button onClick={shareApp} className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
               <span className="text-lg w-6 text-center">🔗</span><span>שיתוף אפליקציה</span>
             </button>
+            <a href="/privacy.html" className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
+              <span className="text-lg w-6 text-center">🔒</span><span>מדיניות פרטיות</span>
+            </a>
           </div>
         </div>
 
