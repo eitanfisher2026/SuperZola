@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.75";
+const VERSION = "v1.76";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -255,14 +255,6 @@ function categoryOrder(label, categories) {
   const i = categories.findIndex(c => c.label === label);
   return i === -1 ? categories.length : i;
 }
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 function groupByCategory(items, categories) {
   const map = {};
   items.forEach(item => {
@@ -3888,31 +3880,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
     onBack();
   }
 
-  function exportList() {
-    const sorted = groupByCategory(items || [], categories).flatMap(g => g.items);
-    const vendorCols = visibleProfiles;
-    const headers = ["שם", "קטגוריה", "כמות", "יחידה", "הערה"].concat(vendorCols.map(p => profileLabel(p, vendorCols)));
-    const rows = sorted.map(item => {
-      const priced = vendorCols.length > 0 ? itemProfilePrices(item, vendorCols, priceMap, promoMap) : [];
-      const byProfile = {};
-      priced.forEach(e => { byProfile[e.profile.id] = e; });
-      const base = [itemDisplayName(item), item.category || "", item.quantity != null ? item.quantity : "", item.unit || "", item.note || ""];
-      const vendorVals = vendorCols.map(p => {
-        const e = byProfile[p.id];
-        if (!e || e.price == null) return "";
-        const effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
-        return effective.toFixed(2);
-      });
-      return base.concat(vendorVals);
-    });
-    const safeName = (list.name || "רשימה").replace(/[\\/:*?"<>|]/g, "_");
-    const csvLines = [headers].concat(rows).map(r => r.map(v => {
-      const s = String(v == null ? "" : v);
-      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    }).join(","));
-    downloadBlob(new Blob(["﻿" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" }), safeName + ".csv");
-  }
-
   const groups = groupByCategory(items || [], categories);
 
   return (
@@ -4041,10 +4008,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
             <button onClick={() => { setShowMenu(false); window.print(); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">🖨️</span><span className="text-sm font-medium text-[#2B2418]">הדפס / ייצוא ל-PDF</span>
-            </button>
-            <button onClick={() => { setShowMenu(false); exportList(); }}
-              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-              <span className="text-lg">📄</span><span className="text-sm font-medium text-[#2B2418]">ייצוא רשימה (CSV)</span>
             </button>
           </div>
 
