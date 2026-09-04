@@ -541,7 +541,6 @@ const CARREFOUR_BASE_URL = 'https://prices.carrefour.co.il';
 const LAIBCATALOG_BASE_URL = 'https://laibcatalog.co.il';
 const HAZI_HINAM_BASE_URL = 'https://shop.hazi-hinam.co.il';
 const WOLT_BASE_URL = 'https://wm-gateway.wolt.com/isr-prices/public/v1';
-const CATALOG_STALENESS_MS = 18 * 60 * 60 * 1000; // 18h — matches the feed's own refresh cadence
 // This is a single budget shared across EVERY active profile a user has —
 // instore branches and auto-provisioned online vendors together, across
 // all of their lists, not per-list. At 8 it was silently dropping the
@@ -1045,28 +1044,45 @@ async function ingestVendorPromotions(vendor, branchId) {
 
 async function ensureFreshCatalog(vendor, branchId, force) {
   const key = docKey(vendor, branchId);
+  if (force) return ingestVendorCatalog(vendor, branchId);
   const indexSnap = await db.collection('vendorCatalogIndex').doc(key).get();
-  const updatedAt = indexSnap.exists ? indexSnap.data().updatedAt : null;
-  if (!force && updatedAt) {
-    const items = await readAllCatalogItems(key);
-    if (Date.now() - updatedAt >= CATALOG_STALENESS_MS) {
-      ingestVendorCatalog(vendor, branchId).catch(() => {});
-    }
-    return items;
-  }
-  return ingestVendorCatalog(vendor, branchId);
+  if (!indexSnap.exists) return ingestVendorCatalog(vendor, branchId);
+  // Just serves whatever's cached, stale or not — this used to also kick
+  // off a "refresh in the background" call when stale, but that's not
+  // reliable here: Cloud Functions can freeze a container's CPU the moment
+  // a response is sent, so that fire-and-forget promise was never
+  // guaranteed to actually finish. With several vendors stale at once
+  // (e.g. after the scheduled refresh was off for a day), a single search
+  // could quietly kick off several of these unfinishable background jobs
+  // at once, competing for resources and stalling the very request they
+  // were meant to not block. Freshness is handled by the scheduled
+  // refresh instead — this function only ever reads.
+  return readAllCatalogItems(key);
 }
 
-// Disabled while there are effectively no real daily users — this used to
-// run unconditionally every 12 hours, doing a full catalog re-fetch and
-// rewrite (thousands of Firestore writes) for every tracked vendor/branch
-// whether or not anyone actually used it that day. ensureFreshCatalog's own
-// 18h staleness check already covers "keep it fresh for real usage" on
-// demand, at zero cost for branches nobody queries. The tradeoff: the first
-// search of the day against a given branch now pays a live ~30-50s
-// re-ingest instead of hitting a pre-warmed cache — worth re-enabling this
-// (or a lighter, usage-aware version of it) once real daily traffic makes
-// that latency worth paying to avoid.
+// Re-enabled after finding a real regression: with this off, ensureFreshCatalog
+// tried to refresh a stale catalog "in the background" on whatever search
+// happened to hit it first — but Cloud Functions can freeze a container's
+// CPU right after sending a response, so that background promise wasn't
+// reliable, and with several vendors going stale together (a day of no
+// traffic is all it takes) a single search could kick off several
+// unfinishable background jobs at once and visibly stall. ensureFreshCatalog
+// no longer tries to refresh on demand at all — this scheduled job is now
+// the ONLY thing that keeps catalogs fresh. Once/day instead of the
+// original twice/day, to keep the Firestore-write cost down while there
+// are still few real users.
+exports.refreshActiveVendorCatalogs = onSchedule(
+  { schedule: 'every 24 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
+  async () => {
+    const snap = await db.collectionGroup('vendorProfiles').get();
+    const pairs = {};
+    snap.forEach(doc => {
+      const p = doc.data();
+      if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) pairs[`${p.vendor}:${p.branchId}`] = p;
+    });
+    await Promise.all(Object.values(pairs).map(p => ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {})));
+  }
+);
 
 // Branch/store lists had no refresh at all before this — once ingested for
 // a vendor they were cached forever (barring a schemaVersion bump), so a
