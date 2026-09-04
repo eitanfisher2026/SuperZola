@@ -43,9 +43,17 @@ service cloud.firestore {
 
     // A list and its items belong to exactly one owner. No sharedWith.
     match /lists/{listId} {
-      allow read, update, delete: if signedIn()
-                                   && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow read, delete: if signedIn()
+                           && (resource.data.ownerId == request.auth.uid || isAdmin());
       allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      // ownerId is immutable on update — without this, an owner could
+      // rewrite their own list's ownerId to a stranger's uid and plant it
+      // into that person's account (spam/harassment), since the old rule
+      // only checked who owns it BEFORE the write, never that it stays the
+      // same after.
+      allow update: if signedIn()
+                    && (resource.data.ownerId == request.auth.uid || isAdmin())
+                    && request.resource.data.ownerId == resource.data.ownerId;
 
       match /items/{itemId} {
         allow read, write: if signedIn()
@@ -112,8 +120,13 @@ service cloud.firestore {
     // that's the whole point of an admin inbox. Creating a thread always
     // ties it to your own uid.
     match /feedbackThreads/{threadId} {
-      allow read, update: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      // Same ownerId-immutability fix as lists — userId can't change on
+      // update, so a thread can't be reassigned to someone else's account.
+      allow update: if signedIn()
+                    && (resource.data.userId == request.auth.uid || isAdmin())
+                    && request.resource.data.userId == resource.data.userId;
       allow delete: if isAdmin();
     }
 
