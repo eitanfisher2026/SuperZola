@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.76";
+const VERSION = "v1.77";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3740,6 +3740,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [confirmDeleteList, setConfirmDeleteList] = useState(false);
   const [confirmDeleteItem, setConfirmDeleteItem] = useState(null);
   const [priceMap, setPriceMap] = useState({});
@@ -3853,10 +3854,10 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   }
 
   function renameList(name) { db.collection("lists").doc(listId).update({ name }); }
-  async function duplicateList() {
+  async function duplicateList(name) {
     const itemsSnap = await db.collection("lists").doc(listId).collection("items").get();
     const newRef = await db.collection("lists").add({
-      name: list.name + " (עותק)",
+      name,
       ownerId: uid,
       mode: listMode,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -3868,7 +3869,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       batch.set(itemRef, Object.assign({}, data, { addedAt: firebase.firestore.FieldValue.serverTimestamp() }));
     });
     await batch.commit();
-    setShowMenu(false);
     setToast("הרשימה שוכפלה");
   }
   async function deleteList() {
@@ -3997,7 +3997,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">✏️</span><span className="text-sm font-medium text-[#2B2418]">שינוי שם</span>
             </button>
-            <button onClick={duplicateList}
+            <button onClick={() => { setShowMenu(false); setDuplicating(true); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">📋</span><span className="text-sm font-medium text-[#2B2418]">שכפול רשימה</span>
             </button>
@@ -4041,6 +4041,9 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       )}
       {renaming && (
         <RenameDialog title="שינוי שם הרשימה" initialValue={list.name} onSave={renameList} onClose={() => setRenaming(false)} />
+      )}
+      {duplicating && (
+        <RenameDialog title="שם הרשימה המשוכפלת" initialValue={list.name + " (עותק)"} onSave={duplicateList} onClose={() => setDuplicating(false)} />
       )}
       {confirmDeleteList && (
         <ConfirmDialog message={`למחוק את הרשימה "${list.name}"?`} onConfirm={deleteList} onClose={() => setConfirmDeleteList(false)} />
@@ -4487,7 +4490,7 @@ function HelpScreen({ onBack }) {
               בתפריט הרשימה (☰) — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית.
             </HelpCard>
             <HelpCard icon="🏪" title="רשתות מוצגות">
-              מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם.
+              מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם. מאותו מסך אפשר גם להוסיף סניף חדש (לא רק לנהל את הקיימים).
             </HelpCard>
             <HelpCard icon="📤" title="העתק פריטים לרשימה אחרת">
               בתפריט הרשימה (☰) — בוחרים פריטים מהרשימה הנוכחית ומעתיקים אותם לרשימה קיימת או חדשה, מאותו סוג (רגילה או אונליין) כמו הרשימה המקורית.
