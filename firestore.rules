@@ -106,27 +106,26 @@ service cloud.firestore {
       allow read, write: if isEditor();
     }
     // A regular user's own edit of their item's category is the signal —
-    // logged automatically, not something they have to "report." Anyone
-    // signed in can create one (tied to their own uid), but only an editor
-    // can read the queue or clear an entry once it's been reviewed.
+    // logged automatically, not something they have to "report." Writes go
+    // through submitCategoryCorrection (Cloud Function) now, not a direct
+    // client write — that's what makes the daily-cap rate limit possible,
+    // since a plain create rule has no way to throttle. Only an editor can
+    // read the queue or clear an entry once it's been reviewed.
     match /categoryCorrections/{id} {
-      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow create: if false;
       allow read, delete: if isEditor();
       allow update: if false;
     }
 
-    // Feedback conversation threads — a regular user can only see/reply to
-    // their own threads; an admin can see and reply to everyone's, since
-    // that's the whole point of an admin inbox. Creating a thread always
-    // ties it to your own uid.
+    // Feedback conversation threads — a regular user can only see their own
+    // threads; an admin can see everyone's, since that's the whole point of
+    // an admin inbox. Both new threads and replies go through
+    // submitFeedbackMessage (Cloud Function) now, same reasoning as
+    // categoryCorrections above — rate-limiting needs a server-side check.
     match /feedbackThreads/{threadId} {
       allow read: if signedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      // Same ownerId-immutability fix as lists — userId can't change on
-      // update, so a thread can't be reassigned to someone else's account.
-      allow update: if signedIn()
-                    && (resource.data.userId == request.auth.uid || isAdmin())
-                    && request.resource.data.userId == resource.data.userId;
+      allow create: if false;
+      allow update: if false;
       allow delete: if isAdmin();
     }
 

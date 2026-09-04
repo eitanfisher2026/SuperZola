@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.69";
+const VERSION = "v1.70";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1225,10 +1225,9 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
       if (item && item.category !== draft.category) {
         const barcodes = [...new Set(Object.values(draft.barcodes || {}))];
         barcodes.forEach(barcode => {
-          db.collection("categoryCorrections").add({
+          fns.httpsCallable("submitCategoryCorrection")({
             barcode, itemName: draft.name.trim(),
             oldCategory: item.category || null, newCategory: draft.category,
-            uid, createdAt: firebase.firestore.FieldValue.serverTimestamp(),
           }).catch(() => {});
         });
       }
@@ -4124,13 +4123,9 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
   function handleCreate() {
     if (!text.trim()) return;
     setSubmitting(true);
-    db.collection("feedbackThreads").add({
-      userId: uid, senderName: displayName || "", senderEmail: email || "",
-      category, subject: subject.trim(), currentView: "home",
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
-      lastFrom: "user", unreadByUser: false, unreadByAdmin: true,
-      messages: [{ from: "user", text: text.trim(), timestamp: Date.now() }],
+    fns.httpsCallable("submitFeedbackMessage")({
+      text: text.trim(), category, subject: subject.trim(),
+      senderName: displayName || "", senderEmail: email || "",
     }).then(() => {
       setSubject(""); setText(""); setCategory("general"); setView("list");
       loadThreads(isAdmin);
@@ -4142,11 +4137,7 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
     setSending(true);
     const from = isAdmin ? "admin" : "user";
     const message = { from, text: replyText.trim(), timestamp: Date.now() };
-    db.collection("feedbackThreads").doc(activeThread.id).update({
-      messages: firebase.firestore.FieldValue.arrayUnion(message),
-      lastActivityAt: firebase.firestore.FieldValue.serverTimestamp(),
-      lastFrom: from, unreadByUser: from === "admin", unreadByAdmin: from === "user",
-    }).then(() => {
+    fns.httpsCallable("submitFeedbackMessage")({ threadId: activeThread.id, text: replyText.trim() }).then(() => {
       setActiveThread(prev => Object.assign({}, prev, { messages: prev.messages.concat([message]) }));
       setReplyText("");
     }).finally(() => setSending(false));

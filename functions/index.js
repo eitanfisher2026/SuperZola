@@ -87,6 +87,8 @@ const DAILY_CALL_CAPS = {
   getBasketPrices: 800,
   browseCategoryItems: 300,
   prewarmVendorCatalog: 50,
+  submitCategoryCorrection: 50,
+  submitFeedbackMessage: 50,
 };
 async function enforceDailyCap(uid, fnName) {
   const cap = DAILY_CALL_CAPS[fnName];
@@ -434,6 +436,70 @@ exports.getUsageStats = onCall(
       (byUid[uid] = byUid[uid] || []).push({ day: doc.id, ...doc.data() });
     });
     return { users: Object.entries(byUid).map(([uid, days]) => ({ uid, days })) };
+  }
+);
+
+// Moved off a direct client-side Firestore write so it goes through the same
+// daily-cap machinery as everything else — a create-only Firestore rule has
+// no way to rate-limit, so a signed-in user could otherwise flood this
+// collection with garbage documents at no cost to them (cheap Firestore
+// writes, but real noise in the editor review queue). uid is set server-side
+// too, closing off the (already narrow) option of forging someone else's.
+exports.submitCategoryCorrection = onCall(
+  { timeoutSeconds: 20, memory: '256MiB', region: REGION, enforceAppCheck: true },
+  async (request) => {
+    requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'submitCategoryCorrection');
+    const { barcode, itemName, oldCategory, newCategory } = request.data || {};
+    if (!barcode || !newCategory) throw new HttpsError('invalid-argument', 'barcode and newCategory required');
+    await db.collection('categoryCorrections').add({
+      barcode: String(barcode), itemName: String(itemName || '').trim(),
+      oldCategory: oldCategory || null, newCategory: String(newCategory),
+      uid: request.auth.uid, createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return { ok: true };
+  }
+);
+
+// Same reasoning as submitCategoryCorrection — new threads AND replies now
+// go through here instead of a direct client write, so both are covered by
+// the daily cap. Handles both cases: no threadId creates a new thread,
+// otherwise it appends to an existing one (the caller must own that thread,
+// unless they're admin replying to someone else's).
+exports.submitFeedbackMessage = onCall(
+  { timeoutSeconds: 20, memory: '256MiB', region: REGION, enforceAppCheck: true },
+  async (request) => {
+    requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'submitFeedbackMessage');
+    const { threadId, text, category, subject, senderName, senderEmail } = request.data || {};
+    if (!text || typeof text !== 'string' || !text.trim()) throw new HttpsError('invalid-argument', 'text required');
+    const uid = request.auth.uid;
+    const userSnap = await db.collection('users').doc(uid).get();
+    const isAdmin = (userSnap.data() || {}).role === 'admin';
+    const message = { from: isAdmin ? 'admin' : 'user', text: text.trim(), timestamp: Date.now() };
+
+    if (threadId) {
+      const threadRef = db.collection('feedbackThreads').doc(String(threadId));
+      const threadSnap = await threadRef.get();
+      if (!threadSnap.exists) throw new HttpsError('not-found', 'thread not found');
+      if (threadSnap.data().userId !== uid && !isAdmin) throw new HttpsError('permission-denied', 'not your thread');
+      await threadRef.update({
+        messages: admin.firestore.FieldValue.arrayUnion(message),
+        lastActivityAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastFrom: message.from, unreadByUser: message.from === 'admin', unreadByAdmin: message.from === 'user',
+      });
+      return { ok: true, threadId };
+    }
+
+    const ref = await db.collection('feedbackThreads').add({
+      userId: uid, senderName: String(senderName || ''), senderEmail: String(senderEmail || ''),
+      category: category || 'general', subject: String(subject || '').trim(), currentView: 'home',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastActivityAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastFrom: 'user', unreadByUser: false, unreadByAdmin: true,
+      messages: [message],
+    });
+    return { ok: true, threadId: ref.id };
   }
 );
 
