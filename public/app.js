@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.72";
+const VERSION = "v1.73";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1492,27 +1492,32 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
         <AppIcon size={30} />
         <div className="text-[17px]" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>סופר זולה</div>
         <div className="flex-1" />
-        <button onClick={onOpenHelp} className="relative text-[#8A7F66] text-lg w-8 h-8 flex items-center justify-center">
-          ⓘ
-          {isNewUser && (
-            <span className="absolute top-0.5 left-0.5 w-2 h-2 rounded-full bg-[#E3A939]" />
-          )}
-        </button>
         <div className="relative">
           <button onClick={e => { e.stopPropagation(); setShowUserMenu(v => !v); }}
-            className="w-8 h-8 rounded-full overflow-hidden border border-[#DECBA1] bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0">
+            className="relative w-8 h-8 rounded-full overflow-hidden border border-[#DECBA1] bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0">
             ⚙️
+            {isNewUser && (
+              <span className="absolute top-0 left-0 w-2 h-2 rounded-full bg-[#E3A939]" />
+            )}
           </button>
           {showUserMenu && (
+            // Every top-level destination lives in this one menu — most-used
+            // first — instead of being split between this and a separate
+            // info button, so there's exactly one place to look.
             <div onClick={e => e.stopPropagation()}
               className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-40 overflow-hidden">
-              <button onClick={() => { setShowUserMenu(false); onOpenProfile(); }}
-                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
-                <span>👤</span><span>פרופיל</span>
-              </button>
               <button onClick={() => { setShowUserMenu(false); onOpenSettings(); }}
-                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
                 <span>⚙️</span><span>הגדרות</span>
+              </button>
+              <button onClick={() => { setShowUserMenu(false); onOpenHelp(); }}
+                className="relative w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                <span>ⓘ</span><span>עזרה</span>
+                {isNewUser && <span className="absolute top-2.5 right-3 w-2 h-2 rounded-full bg-[#E3A939]" />}
+              </button>
+              <button onClick={() => { setShowUserMenu(false); onOpenProfile(); }}
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                <span>👤</span><span>פרופיל</span>
               </button>
               <button onClick={() => { setShowUserMenu(false); setShowFeedback(true); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
