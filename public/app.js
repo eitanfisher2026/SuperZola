@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.73";
+const VERSION = "v1.75";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -129,7 +129,7 @@ const DEFAULT_CATEGORIES = [
 const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופסה", "חבילה", "צרור"];
 
 // One shared AI provider for the whole app, configured once by an admin
-// (SettingsScreen) — every user gets AI features (bulk add, auto-category)
+// (AdminOptionsScreen) — every user gets AI features (bulk add, auto-category)
 // through it, nobody brings their own key.
 const AI_PROVIDERS = {
   anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
@@ -1418,7 +1418,7 @@ function ListCard({ list, onOpen }) {
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp, onOpenProfile, onSignOut }) {
+function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminOptions, onOpenHelp, onOpenProfile, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
@@ -1426,6 +1426,10 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
   const [showFeedback, setShowFeedback] = useState(false);
   const [toast, setToast] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
+  const [canInstall, setCanInstall] = useState(!isInstalled);
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
   // Deliberately the REAL admin status, never overridden by the simulation
   // below — otherwise the toggle that turns the simulation off would hide
   // itself the moment it's turned on.
@@ -1460,6 +1464,37 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
     const close = () => setShowUserMenu(false);
     if (showUserMenu) { window.addEventListener("click", close); return () => window.removeEventListener("click", close); }
   }, [showUserMenu]);
+
+  useEffect(() => {
+    function onReady() { setCanInstall(true); }
+    function onDone() { setCanInstall(false); }
+    window.addEventListener("pwa_install_ready", onReady);
+    window.addEventListener("pwa_installed", onDone);
+    return () => {
+      window.removeEventListener("pwa_install_ready", onReady);
+      window.removeEventListener("pwa_installed", onDone);
+    };
+  }, []);
+
+  function installApp() {
+    if (window.__installPrompt) {
+      window.__installPrompt.prompt();
+      window.__installPrompt.userChoice.then(r => {
+        if (r.outcome === "accepted") { setCanInstall(false); window.__installPrompt = null; }
+      });
+    } else {
+      setShowInstallGuide(true);
+    }
+  }
+
+  function shareApp() {
+    const url = "https://superzola.web.app";
+    if (navigator.share) {
+      navigator.share({ title: "סופר זולה", text: "נסו את סופר זולה — השוואת מחירים חכמה לרשימות קניות 🛒", url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).then(() => setToast("הקישור הועתק! 🔗"), () => setToast(url));
+    }
+  }
 
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
@@ -1506,9 +1541,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
             // info button, so there's exactly one place to look.
             <div onClick={e => e.stopPropagation()}
               className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-40 overflow-hidden">
-              <button onClick={() => { setShowUserMenu(false); onOpenSettings(); }}
+              <button onClick={() => { setShowUserMenu(false); onOpenVendors(); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
-                <span>⚙️</span><span>הגדרות</span>
+                <span>🏪</span><span>רשתות להשוואת מחירים</span>
               </button>
               <button onClick={() => { setShowUserMenu(false); onOpenHelp(); }}
                 className="relative w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
@@ -1523,6 +1558,26 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>💬</span><span>{simulatedIsAdmin ? "ניהול משובים" : "שליחת משוב"}</span>
               </button>
+              {canInstall && (
+                <button onClick={() => { setShowUserMenu(false); installApp(); }}
+                  className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                  <span>📲</span><span>התקנת אפליקציה</span>
+                </button>
+              )}
+              <button onClick={() => { setShowUserMenu(false); shareApp(); }}
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                <span>🔗</span><span>שיתוף אפליקציה</span>
+              </button>
+              <a href="/privacy.html" onClick={() => setShowUserMenu(false)}
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                <span>🔒</span><span>מדיניות פרטיות</span>
+              </a>
+              {simulatedIsAdmin && (
+                <button onClick={() => { setShowUserMenu(false); onOpenAdminOptions(); }}
+                  className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                  <span>🛠️</span><span>אפשרויות מנהל</span>
+                </button>
+              )}
               {isAdmin && (
                 <button onClick={() => { const next = !viewAsUser; setViewingAsUser(next); setViewAsUser(next); setShowUserMenu(false); }}
                   className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
@@ -1561,7 +1616,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
               כדי שהאפליקציה תשווה מחירים, קודם צריך להוסיף את הסניפים שבהם אתם קונים — זה לוקח דקה, וזה השלב היחיד שחוזר על עצמו.
             </p>
             <div className="flex gap-2">
-              <button onClick={onOpenSettings}
+              <button onClick={onOpenVendors}
                 className="flex-1 bg-[#2E4A3B] text-white rounded-xl py-2.5 text-sm font-semibold">
                 ➕ הוספת סניפים
               </button>
@@ -1620,6 +1675,31 @@ function Home({ uid, displayName, email, onOpenList, onOpenSettings, onOpenHelp,
       )}
       {showFeedback && (
         <FeedbackDialog uid={uid} displayName={displayName} email={email} onClose={() => setShowFeedback(false)} />
+      )}
+      {/* Fallback for browsers that never fired (or don't support) the
+          native install prompt — iOS Safari gets exact steps since it has
+          no install prompt at all, every other browser gets a generic
+          pointer so the option isn't a dead end. */}
+      {showInstallGuide && (
+        <Modal onClose={() => setShowInstallGuide(false)}>
+          <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוסיפו למסך הבית 📲</h3>
+          <p className="text-xs text-[#8A7F66] text-center mb-4">{isIOS ? "בצעו את הצעדים הבאים בספארי" : "בצעו את הצעדים הבאים בדפדפן"}</p>
+          <div className="space-y-2 mb-5">
+            {(isIOS
+              ? [["לחצו על כפתור השיתוף", "הסמל ↑ בתחתית המסך"], ["גללו ובחרו", '"הוסף למסך הבית"'], ["לחצו \"הוסף\"", "האפליקציה תופיע במסך הבית"]]
+              : [["פתחו את תפריט הדפדפן", "שלוש הנקודות ⋮ למעלה, או תפריט ההגדרות"], ["חפשו", '"התקן אפליקציה" או "הוסף למסך הבית"'], ["אשרו את ההתקנה", "האפליקציה תופיע במסך הבית"]]
+            ).map((step, i) => (
+              <div key={i} className="flex items-center gap-3 bg-[#F7F2E4] rounded-xl px-3 py-2.5">
+                <span className="text-lg w-6 text-center flex-shrink-0 font-bold text-[#2E4A3B]">{i + 1}</span>
+                <div>
+                  <p className="text-sm font-medium text-[#2B2418]">{step[0]}</p>
+                  <p className="text-[11px] text-[#A79A7C]">{step[1]}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => setShowInstallGuide(false)} className="w-full bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm">הבנתי</button>
+        </Modal>
       )}
       {toast && <Toast msg={toast} />}
     </div>
@@ -1917,10 +1997,180 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded }) {
   );
 }
 
-// ── SETTINGS ──────────────────────────────────────────────────────────────────
-function SettingsScreen({ uid, onBack }) {
+// ── VENDORS (branches to compare, online vendors) ─────────────────────────────
+function VendorsScreen({ uid, onBack }) {
   const [profiles, setProfiles] = useState(null);
-  const [branchCache, setBranchCache] = useState({}); // { vendorId: { branchId: {name,address,city} } | "loading" }
+  const [branchCache, setBranchCache] = useState({});
+  const [role, setRole] = useState(null);
+  const [catalogTimestamps, setCatalogTimestamps] = useState({});
+  const [confirmRefresh, setConfirmRefresh] = useState(null);
+  const [refreshingId, setRefreshingId] = useState(null);
+  const [toast, setToast] = useState(null);
+  const onlineVendors = useOnlineVendors();
+  const isEditorOrAdmin = role === "editor" || role === "admin";
+
+  useEffect(() => {
+    if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
+  }, [toast]);
+
+  useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
+    .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
+
+  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
+    const data = snap.data() || {};
+    setRole(effectiveRole(data.role || null));
+  }), [uid]);
+
+  useEffect(() => {
+    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
+    // eslint-disable-next-line
+  }, [profiles, JSON.stringify(onlineVendors)]);
+
+  function loadCatalogTimestamps() {
+    fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
+      const map = {};
+      (res.data.timestamps || []).forEach(t => { map[t.id] = t.updatedAt; });
+      setCatalogTimestamps(map);
+    }).catch(() => {});
+  }
+  useEffect(() => {
+    if (profiles && profiles.length > 0) loadCatalogTimestamps();
+    // eslint-disable-next-line
+  }, [profiles && profiles.length]);
+
+  function refreshCatalog(p) {
+    setRefreshingId(p.id);
+    fns.httpsCallable("prewarmVendorCatalog", { timeout: 120000 })({ vendor: p.vendor, branchId: p.branchId, force: true }).then(res => {
+      setRefreshingId(null);
+      setCatalogTimestamps(prev => Object.assign({}, prev, { [p.id]: res.data.updatedAt || Date.now() }));
+      setToast("הקטלוג עודכן");
+    }, () => { setRefreshingId(null); setToast("שגיאה ברענון הקטלוג"); });
+  }
+
+  function loadBranches(vendorId) {
+    setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
+    fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
+      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: res.data.branches || {} }));
+    }).catch(() => {
+      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
+      setToast("שגיאה בטעינת סניפים");
+    });
+  }
+  useEffect(() => {
+    (profiles || []).forEach(p => {
+      if (!branchCache[p.vendor]) loadBranches(p.vendor);
+    });
+    // eslint-disable-next-line
+  }, [profiles]);
+
+  function toggleProfile(p) {
+    db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).update({ active: !p.active });
+  }
+  function removeProfile(p) {
+    db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).delete();
+  }
+  function branchLabel(vendorId, id) {
+    const b = branchCache[vendorId];
+    const info = b && b !== "loading" ? b[id] : null;
+    if (!info) return "סניף " + parseInt(id, 10);
+    return info.name + (info.address ? " — " + info.address : "");
+  }
+
+  const instoreProfiles = (profiles || []).filter(p => (p.mode || "instore") === "instore");
+  const onlineProfiles = (profiles || []).filter(p => p.mode === "online");
+  const activeCount = instoreProfiles.filter(p => p.active).length;
+
+  return (
+    <div className="min-h-dvh bg-[#FBF4E7]">
+      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
+        <BackButton onClick={onBack} />
+        <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשתות להשוואת מחירים</h1>
+      </div>
+
+      <div className="p-4 space-y-6">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סניפים פיזיים</h2>
+            {profiles && instoreProfiles.length > 0 && (
+              <span className="text-xs text-[#8A7F66]">פעילים להשוואה: {activeCount} מתוך {instoreProfiles.length}</span>
+            )}
+          </div>
+          <p className="text-xs text-[#8A7F66] mb-3">הוסיפו את הסניפים שאתם קונים בהם — מחירים אמיתיים יופיעו על הפריטים ברשימות.</p>
+
+          <div className="flex flex-col gap-2 mb-3">
+            {profiles === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
+            {profiles && instoreProfiles.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו סניפים עדיין</div>}
+            {profiles && instoreProfiles.map(p => (
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 border " +
+                (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0">
+                    <span className="font-semibold">{vendorLabel(p.vendor)}</span>
+                    <span className="text-[#8A7F66]"> — {branchLabel(p.vendor, p.branchId)}</span>
+                  </span>
+                  <button onClick={() => toggleProfile(p)}
+                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                    {p.active ? "פעיל" : "כבוי"}
+                  </button>
+                  <button onClick={() => removeProfile(p)} className="text-[#B8462F] text-sm px-1 flex-shrink-0">✕</button>
+                </div>
+                <div className="flex items-center justify-between gap-2 mt-1.5">
+                  <span className="text-[11px] text-[#A79A7C]">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</span>
+                  {isEditorOrAdmin && (
+                    <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
+                      className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40 flex-shrink-0">
+                      {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} />
+        </div>
+
+        <div>
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות לקנייה אונליין</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">רשימת כל הרשתות עם אפשרות קנייה אונליין — אפשר לכבות כל רשת שלא רוצים.</p>
+          <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2.5 mb-3">
+            <p className="text-xs text-[#8A5A15]">
+              הזמינות בפועל תלויה בעיר המשלוח שלכם — הרשימה כאן לא בודקת את זה. מומלץ לוודא באתר הרשת לפני ההזמנה.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            {onlineProfiles.length === 0 && (
+              <div className="text-[#8A7F66] text-sm">אין עדיין רשתות לקנייה אונליין</div>
+            )}
+            {onlineProfiles.map(p => (
+              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
+                (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
+                <button onClick={() => toggleProfile(p)}
+                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
+                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
+                  {p.active ? "פעיל" : "כבוי"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {confirmRefresh && (
+        <ConfirmDialog
+          message={`לרענן את קטלוג ${vendorLabel(confirmRefresh.vendor)} — ${branchLabel(confirmRefresh.vendor, confirmRefresh.branchId)}? זו פנייה חיה לרשת ועשויה לקחת עד דקה.`}
+          confirmLabel="רענון" onConfirm={() => refreshCatalog(confirmRefresh)} onClose={() => setConfirmRefresh(null)} />
+      )}
+
+      {toast && <Toast msg={toast} />}
+    </div>
+  );
+}
+
+// ── ADMIN OPTIONS (AI config, categories, corrections, store order, online vendor delivery config, users) ──
+function AdminOptionsScreen({ uid, onBack }) {
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [aiProvider, setAiProvider] = useState("anthropic");
   const [openaiKey, setOpenaiKey] = useState("");
@@ -1933,9 +2183,6 @@ function SettingsScreen({ uid, onBack }) {
   const [savingAi, setSavingAi] = useState(false);
   const [toast, setToast] = useState(null);
   const [role, setRole] = useState(null);
-  const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
-  const [confirmRefresh, setConfirmRefresh] = useState(null); // profile or null
-  const [refreshingId, setRefreshingId] = useState(null);
   const [runningVendor, setRunningVendor] = useState(null); // vendor id currently being categorized, or null
   const [runProgress, setRunProgress] = useState({ done: 0, total: null });
   const [runningAll, setRunningAll] = useState(false);
@@ -1951,10 +2198,6 @@ function SettingsScreen({ uid, onBack }) {
   // like nothing happened while that's in progress.
   const [stopRequested, setStopRequested] = useState(false);
   const isEditorOrAdmin = role === "editor" || role === "admin";
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-  const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
-  const [canInstall, setCanInstall] = useState(!isInstalled);
-  const [showInstallGuide, setShowInstallGuide] = useState(false);
   const [allUsers, setAllUsers] = useState(null);
   const [userStats, setUserStats] = useState({}); // { [uid]: { costThisMonth, callsToday } }
   const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
@@ -2014,37 +2257,6 @@ function SettingsScreen({ uid, onBack }) {
     const batch = db.batch();
     group.entries.forEach(e => batch.delete(db.collection("categoryCorrections").doc(e.id)));
     batch.commit().then(() => setToast("סומן כטופל"));
-  }
-
-  useEffect(() => {
-    function onReady() { setCanInstall(true); }
-    function onDone() { setCanInstall(false); }
-    window.addEventListener("pwa_install_ready", onReady);
-    window.addEventListener("pwa_installed", onDone);
-    return () => {
-      window.removeEventListener("pwa_install_ready", onReady);
-      window.removeEventListener("pwa_installed", onDone);
-    };
-  }, []);
-
-  function installApp() {
-    if (window.__installPrompt) {
-      window.__installPrompt.prompt();
-      window.__installPrompt.userChoice.then(r => {
-        if (r.outcome === "accepted") { setCanInstall(false); window.__installPrompt = null; }
-      });
-    } else {
-      setShowInstallGuide(true);
-    }
-  }
-
-  function shareApp() {
-    const url = "https://superzola.web.app";
-    if (navigator.share) {
-      navigator.share({ title: "סופר זולה", text: "נסו את סופר זולה — השוואת מחירים חכמה לרשימות קניות 🛒", url }).catch(() => {});
-    } else {
-      navigator.clipboard.writeText(url).then(() => setToast("הקישור הועתק! 🔗"), () => setToast(url));
-    }
   }
 
   useEffect(() => {
@@ -2136,32 +2348,6 @@ function SettingsScreen({ uid, onBack }) {
     setAiModel((p === "openai" ? data.openaiModel : p === "gemini" ? data.geminiModel : data.anthropicModel) || AI_PROVIDERS[p].defaultModel);
   }, () => {}), [uid]);
 
-  useEffect(() => {
-    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
-    // eslint-disable-next-line
-  }, [profiles, JSON.stringify(onlineVendors)]);
-
-  function loadCatalogTimestamps() {
-    fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
-      const map = {};
-      (res.data.timestamps || []).forEach(t => { map[t.id] = t.updatedAt; });
-      setCatalogTimestamps(map);
-    }).catch(() => {});
-  }
-  useEffect(() => {
-    if (profiles && profiles.length > 0) loadCatalogTimestamps();
-    // eslint-disable-next-line
-  }, [profiles && profiles.length]);
-
-  function refreshCatalog(p) {
-    setRefreshingId(p.id);
-    fns.httpsCallable("prewarmVendorCatalog", { timeout: 120000 })({ vendor: p.vendor, branchId: p.branchId, force: true }).then(res => {
-      setRefreshingId(null);
-      setCatalogTimestamps(prev => Object.assign({}, prev, { [p.id]: res.data.updatedAt || Date.now() }));
-      setToast("הקטלוג עודכן");
-    }, () => { setRefreshingId(null); setToast("שגיאה ברענון הקטלוג"); });
-  }
-
   // Calls the batch backfill repeatedly (same "keep calling until done"
   // shape as branch geocoding) until nothing's left uncategorized for this
   // vendor, or until stopRequestedRef is set — the server picks any one
@@ -2240,33 +2426,6 @@ function SettingsScreen({ uid, onBack }) {
     setToast(stopRequestedRef.current
       ? `נעצר — סווגו ${totalDone} פריטים בסך הכול`
       : `הושלם לכל הרשתות — סווגו ${totalDone} פריטים בסך הכול`);
-  }
-
-  function loadBranches(vendorId) {
-    setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
-    fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
-      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: res.data.branches || {} }));
-    }).catch(() => {
-      setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
-      setToast("שגיאה בטעינת סניפים");
-    });
-  }
-
-  // Fetch branch names/addresses for every vendor already in the user's
-  // profile list, purely so those rows can show a real place name instead
-  // of a bare branch number.
-  useEffect(() => {
-    (profiles || []).forEach(p => {
-      if (!branchCache[p.vendor]) loadBranches(p.vendor);
-    });
-    // eslint-disable-next-line
-  }, [profiles]);
-
-  function toggleProfile(p) {
-    db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).update({ active: !p.active });
-  }
-  function removeProfile(p) {
-    db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).delete();
   }
 
   const currentAiProviderKey = () => (aiProvider === "openai" ? openaiKey : aiProvider === "gemini" ? geminiKey : anthropicKey);
@@ -2381,67 +2540,15 @@ function SettingsScreen({ uid, onBack }) {
     db.collection("vendorCategoryOrder").doc(editStoreOrder.vendor).update({ categoryOrder: order });
   }
 
-  function branchLabel(vendorId, id) {
-    const b = branchCache[vendorId];
-    const info = b && b !== "loading" ? b[id] : null;
-    if (!info) return "סניף " + parseInt(id, 10);
-    return info.name + (info.address ? " — " + info.address : "");
-  }
-
-  const instoreProfiles = (profiles || []).filter(p => (p.mode || "instore") === "instore");
-  const onlineProfiles = (profiles || []).filter(p => p.mode === "online");
-  const activeCount = instoreProfiles.filter(p => p.active).length;
-
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
         <BackButton onClick={onBack} />
-        <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>הגדרות</h1>
+        <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>אפשרויות מנהל</h1>
       </div>
 
       <div className="p-4 space-y-6">
-        <div className="text-[11px] font-bold text-[#A79A7C] uppercase tracking-wide -mb-2">🏪 הרשתות שלי</div>
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות להשוואת מחירים</h2>
-            {profiles && instoreProfiles.length > 0 && (
-              <span className="text-xs text-[#8A7F66]">פעילים להשוואה: {activeCount} מתוך {instoreProfiles.length}</span>
-            )}
-          </div>
-          <p className="text-xs text-[#8A7F66] mb-3">הוסיפו את הסניפים שאתם קונים בהם — מחירים אמיתיים יופיעו על הפריטים ברשימות.</p>
-
-          <div className="flex flex-col gap-2 mb-3">
-            {profiles === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
-            {profiles && instoreProfiles.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו סניפים עדיין</div>}
-            {profiles && instoreProfiles.map(p => (
-              <div key={p.id} className={"rounded-xl px-3 py-2.5 border " +
-                (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <div className="flex items-center gap-2">
-                  <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0">
-                    <span className="font-semibold">{vendorLabel(p.vendor)}</span>
-                    <span className="text-[#8A7F66]"> — {branchLabel(p.vendor, p.branchId)}</span>
-                  </span>
-                  <button onClick={() => toggleProfile(p)}
-                    className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
-                      (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
-                    {p.active ? "פעיל" : "כבוי"}
-                  </button>
-                  <button onClick={() => removeProfile(p)} className="text-[#B8462F] text-sm px-1 flex-shrink-0">✕</button>
-                </div>
-                <div className="flex items-center justify-between gap-2 mt-1.5">
-                  <span className="text-[11px] text-[#A79A7C]">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</span>
-                  {isEditorOrAdmin && (
-                    <button onClick={() => setConfirmRefresh(p)} disabled={refreshingId === p.id}
-                      className="text-[11px] font-bold text-[#2E4A3B] underline disabled:opacity-40 flex-shrink-0">
-                      {refreshingId === p.id ? "מרענן..." : "🔄 רענון קטלוג"}
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {isEditorOrAdmin && (
+        {isEditorOrAdmin && (
             <div className="mb-3">
               <button onClick={() => setShowCategorizeSection(v => !v)}
                 className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showCategorizeSection ? "bg-white border-[#E9D8A6]" : "bg-[#FBF0D9] border-transparent")}>
@@ -2488,53 +2595,6 @@ function SettingsScreen({ uid, onBack }) {
               )}
             </div>
           )}
-
-          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} />
-        </div>
-
-        <div>
-          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות לקנייה אונליין</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">רשימת כל הרשתות עם אפשרות קנייה אונליין — אפשר לכבות כל רשת שלא רוצים.</p>
-          <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2.5 mb-3">
-            <p className="text-xs text-[#8A5A15]">
-              הזמינות בפועל תלויה בעיר המשלוח שלכם — הרשימה כאן לא בודקת את זה. מומלץ לוודא באתר הרשת לפני ההזמנה.
-            </p>
-          </div>
-          <div className="flex flex-col gap-2">
-            {onlineProfiles.length === 0 && (
-              <div className="text-[#8A7F66] text-sm">אין עדיין רשתות לקנייה אונליין</div>
-            )}
-            {onlineProfiles.map(p => (
-              <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
-                (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
-                <button onClick={() => toggleProfile(p)}
-                  className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
-                    (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
-                  {p.active ? "פעיל" : "כבוי"}
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="text-[11px] font-bold text-[#A79A7C] uppercase tracking-wide -mb-2">⚙️ כללי</div>
-        <div>
-          <h2 className="text-lg mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>האפליקציה</h2>
-          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-            {canInstall && (
-              <button onClick={installApp} className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
-                <span className="text-lg w-6 text-center">📲</span><span>התקנת אפליקציה</span>
-              </button>
-            )}
-            <button onClick={shareApp} className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
-              <span className="text-lg w-6 text-center">🔗</span><span>שיתוף אפליקציה</span>
-            </button>
-            <a href="/privacy.html" className="w-full text-right px-1 py-2 text-sm text-[#2B2418] flex items-center gap-3">
-              <span className="text-lg w-6 text-center">🔒</span><span>מדיניות פרטיות</span>
-            </a>
-          </div>
-        </div>
 
         {isEditorOrAdmin && (
           <div className="pt-2 border-t-2 border-[#C7B78E] flex items-center gap-2">
@@ -2897,39 +2957,9 @@ function SettingsScreen({ uid, onBack }) {
         <ConfirmDialog message={`למחוק את הקטגוריה "${confirmDeleteCat.label}"?`}
           onConfirm={() => deleteCategory(confirmDeleteCat)} onClose={() => setConfirmDeleteCat(null)} />
       )}
-      {confirmRefresh && (
-        <ConfirmDialog
-          message={`לרענן את קטלוג ${vendorLabel(confirmRefresh.vendor)} — ${branchLabel(confirmRefresh.vendor, confirmRefresh.branchId)}? זו פנייה חיה לרשת ועשויה לקחת עד דקה.`}
-          confirmLabel="רענון" onConfirm={() => refreshCatalog(confirmRefresh)} onClose={() => setConfirmRefresh(null)} />
-      )}
       {confirmDeleteOnlineVendor && (
         <ConfirmDialog message={`להסיר את ${vendorLabel(confirmDeleteOnlineVendor)} מרשתות הקנייה האונליין?`}
           onConfirm={() => deleteOnlineVendor(confirmDeleteOnlineVendor)} onClose={() => setConfirmDeleteOnlineVendor(null)} />
-      )}
-      {/* Fallback for browsers that never fired (or don't support) the
-          native install prompt — iOS Safari gets exact steps since it has
-          no install prompt at all, every other browser gets a generic
-          pointer so the option isn't a dead end. */}
-      {showInstallGuide && (
-        <Modal onClose={() => setShowInstallGuide(false)}>
-          <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוסיפו למסך הבית 📲</h3>
-          <p className="text-xs text-[#8A7F66] text-center mb-4">{isIOS ? "בצעו את הצעדים הבאים בספארי" : "בצעו את הצעדים הבאים בדפדפן"}</p>
-          <div className="space-y-2 mb-5">
-            {(isIOS
-              ? [["לחצו על כפתור השיתוף", "הסמל ↑ בתחתית המסך"], ["גללו ובחרו", '"הוסף למסך הבית"'], ["לחצו \"הוסף\"", "האפליקציה תופיע במסך הבית"]]
-              : [["פתחו את תפריט הדפדפן", "שלוש הנקודות ⋮ למעלה, או תפריט ההגדרות"], ["חפשו", '"התקן אפליקציה" או "הוסף למסך הבית"'], ["אשרו את ההתקנה", "האפליקציה תופיע במסך הבית"]]
-            ).map((step, i) => (
-              <div key={i} className="flex items-center gap-3 bg-[#F7F2E4] rounded-xl px-3 py-2.5">
-                <span className="text-lg w-6 text-center flex-shrink-0 font-bold text-[#2E4A3B]">{i + 1}</span>
-                <div>
-                  <p className="text-sm font-medium text-[#2B2418]">{step[0]}</p>
-                  <p className="text-[11px] text-[#A79A7C]">{step[1]}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <button onClick={() => setShowInstallGuide(false)} className="w-full bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm">הבנתי</button>
-        </Modal>
       )}
 
       {toast && <Toast msg={toast} />}
@@ -3728,7 +3758,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
   const [showCopyItems, setShowCopyItems] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
-  const [showExportChoice, setShowExportChoice] = useState(false);
   const [profiles, setProfiles] = useState(null); // every vendorProfiles doc, active or not — needed to avoid re-provisioning a vendor the user turned off
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
@@ -3859,12 +3888,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
     onBack();
   }
 
-  // "Excel" here is an HTML table saved with an .xls extension, not a real
-  // binary xlsx — Excel opens that natively, it renders Hebrew and column
-  // alignment correctly (unlike a raw CSV, which needs a BOM and still
-  // mangles anything with a comma), and it needs no new library.
-  function exportList(format) {
-    setShowExportChoice(false);
+  function exportList() {
     const sorted = groupByCategory(items || [], categories).flatMap(g => g.items);
     const vendorCols = visibleProfiles;
     const headers = ["שם", "קטגוריה", "כמות", "יחידה", "הערה"].concat(vendorCols.map(p => profileLabel(p, vendorCols)));
@@ -3882,21 +3906,11 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       return base.concat(vendorVals);
     });
     const safeName = (list.name || "רשימה").replace(/[\\/:*?"<>|]/g, "_");
-    if (format === "csv") {
-      const csvLines = [headers].concat(rows).map(r => r.map(v => {
-        const s = String(v == null ? "" : v);
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-      }).join(","));
-      downloadBlob(new Blob(["﻿" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" }), safeName + ".csv");
-    } else {
-      const esc = v => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const html = '<html><head><meta charset="UTF-8"></head><body dir="rtl">' +
-        '<table border="1" style="border-collapse:collapse;font-family:Arial;direction:rtl;">' +
-        '<tr>' + headers.map(h => '<th style="background:#eee;padding:4px 8px;">' + esc(h) + '</th>').join("") + '</tr>' +
-        rows.map(r => '<tr>' + r.map(v => '<td style="padding:4px 8px;">' + esc(v) + '</td>').join("") + '</tr>').join("") +
-        '</table></body></html>';
-      downloadBlob(new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" }), safeName + ".xls");
-    }
+    const csvLines = [headers].concat(rows).map(r => r.map(v => {
+      const s = String(v == null ? "" : v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(","));
+    downloadBlob(new Blob(["﻿" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" }), safeName + ".csv");
   }
 
   const groups = groupByCategory(items || [], categories);
@@ -4020,13 +4034,17 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">📋</span><span className="text-sm font-medium text-[#2B2418]">שכפול רשימה</span>
             </button>
+            <button onClick={() => { setShowMenu(false); setShowCopyItems(true); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+              <span className="text-lg">📤</span><span className="text-sm font-medium text-[#2B2418]">העתק פריטים לרשימה אחרת</span>
+            </button>
             <button onClick={() => { setShowMenu(false); window.print(); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
               <span className="text-lg">🖨️</span><span className="text-sm font-medium text-[#2B2418]">הדפס / ייצוא ל-PDF</span>
             </button>
-            <button onClick={() => { setShowMenu(false); setShowExportChoice(true); }}
+            <button onClick={() => { setShowMenu(false); exportList(); }}
               className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-              <span className="text-lg">📤</span><span className="text-sm font-medium text-[#2B2418]">ייצוא רשימה</span>
+              <span className="text-lg">📄</span><span className="text-sm font-medium text-[#2B2418]">ייצוא רשימה (CSV)</span>
             </button>
           </div>
 
@@ -4049,14 +4067,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
               </div>
             </React.Fragment>
           )}
-
-          <div className="text-[10px] font-semibold text-[#A79A7C] uppercase tracking-wide px-2 pb-1">פריטים</div>
-          <div className="space-y-1 mb-3">
-            <button onClick={() => { setShowMenu(false); setShowCopyItems(true); }}
-              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-              <span className="text-lg">📤</span><span className="text-sm font-medium text-[#2B2418]">העתק פריטים לרשימה אחרת</span>
-            </button>
-          </div>
 
           <div className="pt-2 border-t border-[#E5D8B5]">
             <button onClick={() => { setShowMenu(false); setConfirmDeleteList(true); }}
@@ -4088,23 +4098,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       {showOptimizer && (
         <OptimizerModal uid={uid} list={list} items={items || []} visibleProfiles={visibleProfiles} activeProfiles={activeProfiles}
           onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
-      )}
-      {showExportChoice && (
-        <Modal onClose={() => setShowExportChoice(false)}>
-          <h3 className="text-lg text-center mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ייצוא רשימה</h3>
-          <p className="text-center text-[#8A7F66] text-sm mb-5">באיזה פורמט?</p>
-          <div className="space-y-2">
-            <button onClick={() => exportList("csv")}
-              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-[#F7F2E4] hover:bg-[#F0E9D4]">
-              <span className="text-lg">📄</span><span className="text-sm font-medium text-[#2B2418]">CSV</span>
-            </button>
-            <button onClick={() => exportList("excel")}
-              className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-[#F7F2E4] hover:bg-[#F0E9D4]">
-              <span className="text-lg">📊</span><span className="text-sm font-medium text-[#2B2418]">Excel</span>
-            </button>
-          </div>
-          <button onClick={() => setShowExportChoice(false)} className="w-full mt-3 py-2.5 text-[#8A7F66] text-sm">ביטול</button>
-        </Modal>
       )}
       {toast && <Toast msg={toast} />}
     </div>
@@ -4498,10 +4491,10 @@ function HelpScreen({ onBack }) {
               <b>חדשים באפליקציה?</b> שני הצעדים הראשונים (התקנה + הוספת רשתות) הם חד-פעמיים — אחריהם כל רשימה חדשה כבר משווה מחירים אוטומטית.
             </div>
             <HelpCard icon="📲" title="1. התקנה למסך הבית">
-              כפתור גלגל השיניים ⚙️ בפינת מסך הבית ← הגדרות ← "התקנת אפליקציה". כך סופר זולה נפתחת כמו אפליקציה רגילה, בלי לחפש אותה בדפדפן בכל פעם.
+              כפתור גלגל השיניים ⚙️ בפינת מסך הבית ← "התקנת אפליקציה". כך סופר זולה נפתחת כמו אפליקציה רגילה, בלי לחפש אותה בדפדפן בכל פעם.
             </HelpCard>
             <HelpCard icon="🏪" title="2. הוספת רשתות וסניפים לקנייה רגילה">
-              באותו מסך הגדרות, הוסיפו את הסניפים שבהם אתם קונים בפועל — חיפוש לפי שם או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
+              כפתור גלגל השיניים ⚙️ ← "רשתות להשוואת מחירים" — הוסיפו את הסניפים שבהם אתם קונים בפועל — חיפוש לפי שם או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
             </HelpCard>
             <HelpCard icon="🛒" title="3. קונים גם אונליין?">
               אין צורך להוסיף כלום ידנית. כשפותחים רשימה מסוג "קנייה אונליין" האפליקציה בונה אוטומטית רשימת רשתות שתומכות במשלוח, ואפשר לכבות מהן את מה שלא רלוונטי. הזמינות בפועל תלויה בעיר המשלוח שלכם — האפליקציה לא בודקת זאת אוטומטית, כדאי לוודא באתר הרשת לפני ההזמנה.
@@ -4510,7 +4503,7 @@ function HelpScreen({ onBack }) {
               במסך הבית: "+ קניה בסניף" לקנייה רגילה, או "+ קנייה אונליין" לרשימה שמושווית מול הרשתות האונליין. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
-              בתוך רשימה, לחצו "+ הוספת פריט" ותנו לו שם, כמות וקטגוריה.
+              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, או 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק. אחר כך נותנים כמות וקטגוריה.
             </HelpCard>
             <HelpCard icon="🔍" title="6. התאמת מחיר לפריט">
               האפליקציה מחפשת את הפריט בכל רשת פעילה. לפעמים לרשתות שונות יש ברקוד שונה לאותו מוצר — כשהחיפוש מכסה כמה רשתות אפשר לסמן (☑) כמה התאמות בבת אחת, אחת לכל רשת, ולשמור הכול יחד.
@@ -4580,8 +4573,10 @@ function App() {
         onBack={() => setScreen({ view: "home" })}
       />
     );
-  } else if (screen.view === "settings") {
-    content = <SettingsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
+  } else if (screen.view === "vendors") {
+    content = <VendorsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
+  } else if (screen.view === "adminOptions") {
+    content = <AdminOptionsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
   } else if (screen.view === "help") {
     content = <HelpScreen onBack={() => setScreen({ view: "home" })} />;
   } else if (screen.view === "profile") {
@@ -4593,7 +4588,8 @@ function App() {
         displayName={user.displayName}
         email={user.email}
         onOpenList={(id, name, justCreatedOnline) => setScreen({ view: "list", id, name, justCreatedOnline })}
-        onOpenSettings={() => setScreen({ view: "settings" })}
+        onOpenVendors={() => setScreen({ view: "vendors" })}
+        onOpenAdminOptions={() => setScreen({ view: "adminOptions" })}
         onOpenHelp={() => setScreen({ view: "help" })}
         onOpenProfile={() => setScreen({ view: "profile" })}
         onSignOut={signOut}
