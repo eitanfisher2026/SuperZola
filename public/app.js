@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.70";
+const VERSION = "v1.71";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -492,7 +492,7 @@ function Toast({ msg }) {
 // Bottom sheet used for every dialog in the app — drag the handle down (or
 // tap the scrim) to dismiss, matching the native "sheet" feel instead of a
 // centered popup box.
-function Modal({ onClose, children, disableClose, footer }) {
+function Modal({ onClose, children, disableClose, footer, closeLabel }) {
   const [dragY, setDragY] = useState(0);
   const startYRef = useRef(null);
   const handleRef = useRef(null);
@@ -519,7 +519,7 @@ function Modal({ onClose, children, disableClose, footer }) {
         style={{ transform: `translateY(${dragY}px)`, transition: dragY === 0 ? "transform 0.2s ease" : "none", maxHeight: "88dvh" }}
         onClick={e => e.stopPropagation()}
       >
-        <div className="relative flex-shrink-0 px-6 pt-4">
+        <div className={"relative flex-shrink-0 px-6 pt-4" + (closeLabel ? " pb-2" : "")}>
           <div
             ref={handleRef}
             onPointerDown={onPointerDown}
@@ -531,7 +531,13 @@ function Modal({ onClose, children, disableClose, footer }) {
               (the add-item wizard) — those are only disabled to prevent
               *accidental* loss while filling a form, not to remove the
               ability to close it at all. */}
-          <button onClick={onClose} className="absolute top-3 left-4 text-[#8A7F66] hover:text-[#2B2418] text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+          {closeLabel ? (
+            <button onClick={onClose} className="absolute top-2 left-4 flex items-center gap-1 bg-[#2E4A3B] text-[#FBF4E7] text-xs font-bold px-3 py-2 rounded-full hover:bg-[#243D30]">
+              <span className="text-base leading-none">×</span> {closeLabel}
+            </button>
+          ) : (
+            <button onClick={onClose} className="absolute top-3 left-4 text-[#8A7F66] hover:text-[#2B2418] text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+          )}
         </div>
         <div className={"overflow-y-auto px-6 min-h-0 flex-1 " + (footer ? "pb-4" : "pb-8")}>
           {children}
@@ -1234,7 +1240,18 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
       onSave(toPayload(draft));
       return;
     }
-    onInsert(toPayload(draft), () => { setSaving(false); onClose(); });
+    onInsert(toPayload(draft), () => {
+      // Stays open instead of closing — matches the category-browse add
+      // flow, where adding one item is expected to be followed by adding
+      // more, not a trip back to the list after every single item.
+      showToast(`${draft.name.trim()} נוסף לרשימה`);
+      setDraft(blankDraft());
+      setStep(1);
+      setShowNote(false);
+      setPriceMap({});
+      setPromoMap({});
+      setSaving(false);
+    });
   }
 
   const matchedVendorIds = Object.keys(draft.barcodes || {});
@@ -1245,7 +1262,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   });
 
   return (
-    <Modal onClose={onClose} disableClose={!isEdit} footer={
+    <Modal onClose={onClose} disableClose={!isEdit} closeLabel={!isEdit ? "סיום וחזרה לרשימה" : undefined} footer={
       step === 1 ? (
         isEdit ? (
           <button onClick={finish} disabled={!draft.name.trim() || saving}
@@ -3021,7 +3038,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     : `${selectedCat.emoji} ${selectedCat.label}` + (selectedSub && selectedSub !== "ALL" ? ` · ${selectedSub.label}` : "");
 
   return (
-    <Modal onClose={onClose} footer={draftVendorCount > 0 && (
+    <Modal onClose={onClose} closeLabel="סיום וחזרה לרשימה" footer={draftVendorCount > 0 && (
       <button onClick={commitDraftItem} className="w-full bg-[#2E4A3B] text-white py-3 rounded-xl font-semibold text-sm">
         הוספה לרשימה ({draftVendorCount}/{(activeProfiles || []).length} רשתות)
       </button>
