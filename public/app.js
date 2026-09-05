@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.84";
+const VERSION = "v1.85";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1169,7 +1169,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   );
 }
 
-function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast }) {
+function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast, initialDraft, initialPriceMap, initialPromoMap }) {
   const isEdit = mode === "edit";
   const [step, setStep] = useState(1);
   const blankDraft = () => {
@@ -1177,7 +1177,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
     return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
   };
   const [draft, setDraft] = useState(() => {
-    if (!isEdit || !item) return blankDraft();
+    if (!isEdit || !item) return Object.assign({}, blankDraft(), initialDraft || {});
     return Object.assign({}, blankDraft(), item, {
       barcodes: Object.assign({}, item.barcodes || {}),
       matchedNames: Object.assign({}, item.matchedNames || {}),
@@ -1185,8 +1185,11 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   });
   const [showNote, setShowNote] = useState(isEdit && !!(item && item.note));
   const [saving, setSaving] = useState(false);
-  const [priceMap, setPriceMap] = useState({});
-  const [promoMap, setPromoMap] = useState({});
+  // Pre-filled when opened straight from a barcode scan, which already
+  // resolved prices server-side — otherwise the normal empty start that
+  // gets filled in once the user actually searches on step 2.
+  const [priceMap, setPriceMap] = useState(() => initialPriceMap || {});
+  const [promoMap, setPromoMap] = useState(() => initialPromoMap || {});
   const pricingEnabled = (activeProfiles || []).length > 0;
 
   // Editing an already-matched item: seed real prices once on open so the
@@ -3225,6 +3228,125 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
   );
 }
 
+// ── BARCODE SCAN (camera search mode) ─────────────────────────────────────────
+// Wraps html5-qrcode's camera reader (loaded via a plain <script> tag in
+// index.html, exposed as window.Html5Qrcode — there's no bundler here, so
+// no npm import). Scoped to retail 1D formats only (EAN-13/EAN-8/UPC-A/
+// UPC-E cover virtually every Israeli grocery barcode) so it locks onto a
+// real barcode fast instead of also hunting for QR codes.
+function BarcodeScanModal({ onDetected, onClose }) {
+  const [error, setError] = useState(null);
+  const activeRef = useRef(false); // true once .start() resolved and not yet stopped
+  const detectedRef = useRef(false);
+
+  useEffect(() => {
+    if (!window.Html5Qrcode) {
+      setError("סריקת ברקוד לא נטענה — בדקו את החיבור לאינטרנט ונסו שוב");
+      return;
+    }
+    const config = { verbose: false };
+    if (window.Html5QrcodeSupportedFormats) {
+      config.formatsToSupport = [
+        window.Html5QrcodeSupportedFormats.EAN_13,
+        window.Html5QrcodeSupportedFormats.EAN_8,
+        window.Html5QrcodeSupportedFormats.UPC_A,
+        window.Html5QrcodeSupportedFormats.UPC_E,
+      ];
+    }
+    const reader = new window.Html5Qrcode("barcode-scan-region", config);
+    reader.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 260, height: 160 } },
+      decodedText => {
+        if (detectedRef.current) return; // a second frame can decode before stop() finishes
+        detectedRef.current = true;
+        activeRef.current = false;
+        reader.stop().then(() => onDetected(decodedText), () => onDetected(decodedText));
+      },
+      () => {} // per-frame "nothing found in this frame" — expected continuously, not an error
+    ).then(() => { activeRef.current = true; }, () => {
+      setError("לא ניתן לגשת למצלמה — ודאו שניתנה הרשאה למצלמה בדפדפן");
+    });
+    return () => {
+      if (activeRef.current) { activeRef.current = false; reader.stop().catch(() => {}); }
+    };
+    // eslint-disable-next-line
+  }, []);
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סריקת ברקוד</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">כוונו את המצלמה לברקוד שעל המוצר</p>
+      {error ? (
+        <p className="text-center text-[#B8462F] text-sm py-6">{error}</p>
+      ) : (
+        <div id="barcode-scan-region" className="rounded-xl overflow-hidden bg-black" style={{ minHeight: 240 }} />
+      )}
+      <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl border border-[#DECBA1] text-[#5B5749] font-medium text-sm">ביטול</button>
+    </Modal>
+  );
+}
+
+// Orchestrates the whole "by barcode" mode: camera scan → server lookup (a
+// plain point-read per active vendor's catalog, see lookupItemByBarcode in
+// functions/index.js — a scanned GS1/EAN barcode is universal across
+// retailers, so there's no fuzzy name matching to do at all) → straight
+// into the exact same ItemWizard every other add path uses, pre-filled
+// with whatever match it already found.
+function BarcodeAddFlow({ activeProfiles, categories, onInsert, onClose, showToast }) {
+  const [stage, setStage] = useState("scan"); // "scan" | "looking" | "notFound" | "found"
+  const [result, setResult] = useState(null); // { initialDraft, initialPriceMap, initialPromoMap } | null
+
+  function handleDetected(barcode) {
+    setStage("looking");
+    fns.httpsCallable("lookupItemByBarcode")({ barcode, profileIds: (activeProfiles || []).map(p => p.id) }).then(res => {
+      if (!res.data || !res.data.found) { setStage("notFound"); return; }
+      const { name, barcode: bc, prices, promoPrices } = res.data;
+      const barcodes = {};
+      const matchedNames = {};
+      const priceMap = {};
+      const promoMap = {};
+      (activeProfiles || []).forEach(p => {
+        if (!(p.vendor in prices)) return;
+        barcodes[p.vendor] = bc;
+        matchedNames[p.vendor] = name;
+        priceMap[p.id] = { [bc]: prices[p.vendor] };
+        if (promoPrices && promoPrices[p.vendor]) promoMap[p.id] = { [bc]: promoPrices[p.vendor] };
+      });
+      setResult({ initialDraft: { name, barcodes, matchedNames }, initialPriceMap: priceMap, initialPromoMap: promoMap });
+      setStage("found");
+    }, () => { showToast("שגיאה בחיפוש ברקוד"); setStage("notFound"); });
+  }
+
+  if (stage === "found" && result) {
+    return <ItemWizard mode="add" categories={categories} activeProfiles={activeProfiles}
+      initialDraft={result.initialDraft} initialPriceMap={result.initialPriceMap} initialPromoMap={result.initialPromoMap}
+      onInsert={onInsert} onClose={onClose} showToast={showToast} />;
+  }
+  if (stage === "scan") {
+    return <BarcodeScanModal onDetected={handleDetected} onClose={onClose} />;
+  }
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סריקת ברקוד</h3>
+      {stage === "looking" ? (
+        <div className="flex flex-col items-center py-8 gap-3">
+          <Spinner2 />
+          <p className="text-xs text-[#8A7F66]">מחפשים את הברקוד ברשתות הפעילות...</p>
+        </div>
+      ) : (
+        <div className="text-center py-6">
+          <p className="text-sm text-[#2B2418] mb-4">לא נמצא מוצר עם הברקוד הזה באף רשת פעילה.</p>
+          <button onClick={() => setStage("scan")} className="w-full bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm mb-2">
+            סריקה חוזרת
+          </button>
+          <button onClick={onClose} className="w-full py-2.5 text-[#8A7F66] text-sm">ביטול</button>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // ── FIND ITEM (search by name/category, no list open yet) ────────────────────
 // The same "add item" mechanism used inside an open list — ItemWizard and
 // CategoryBrowseModal are reused here completely unchanged. Searching only
@@ -3380,6 +3502,13 @@ function FindItemModal({ uid, categories, onClose, showToast }) {
       {listPickerOverlay}
     </React.Fragment>;
   }
+  if (method === "byBarcode") {
+    return <React.Fragment>
+      <BarcodeAddFlow categories={categories} activeProfiles={activeProfiles}
+        onInsert={handleInsert} onClose={() => setMethod(null)} showToast={showToast} />
+      {listPickerOverlay}
+    </React.Fragment>;
+  }
 
   return (
     <Modal onClose={onClose}>
@@ -3416,6 +3545,14 @@ function FindItemModal({ uid, categories, onClose, showToast }) {
             <span>
               <div className="text-sm font-semibold text-[#2B2418]">עיון לפי קטגוריה</div>
               <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
+            </span>
+          </button>
+          <button onClick={() => setMethod("byBarcode")}
+            className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+            <span className="text-xl">📷</span>
+            <span>
+              <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
+              <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
             </span>
           </button>
         </div>
@@ -3883,6 +4020,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showBrowse, setShowBrowse] = useState(false);
+  const [showBarcodeAdd, setShowBarcodeAdd] = useState(false);
   const [showAddChoice, setShowAddChoice] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
@@ -4129,6 +4267,14 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
                 <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
               </span>
             </button>
+            <button onClick={() => { setShowAddChoice(false); setShowBarcodeAdd(true); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+              <span className="text-xl">📷</span>
+              <span>
+                <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
+                <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
+              </span>
+            </button>
           </div>
         </Modal>
       )}
@@ -4137,6 +4283,9 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       )}
       {showBrowse && (
         <CategoryBrowseModal categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowBrowse(false)} showToast={setToast} />
+      )}
+      {showBarcodeAdd && (
+        <BarcodeAddFlow categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowBarcodeAdd(false)} showToast={setToast} />
       )}
       {editItem && (
         <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
@@ -4455,7 +4604,7 @@ function HelpScreen({ onBack }) {
               במסך הבית: "+ קניה בסניף" לקנייה רגילה, או "+ קנייה אונליין" לרשימה שמושווית מול הרשתות האונליין. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
-              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, או 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט, לא לפני החיפוש.
+              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק, או 📷 סריקת ברקוד — מצלמים את הברקוד שעל המוצר והאפליקציה מוצאת אותו אוטומטית בכל רשת פעילה. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט, לא לפני החיפוש.
             </HelpCard>
             <HelpCard icon="🔍" title="6. התאמת מחיר לפריט">
               האפליקציה מחפשת את הפריט בכל רשת פעילה. לפעמים לרשתות שונות יש ברקוד שונה לאותו מוצר — כשהחיפוש מכסה כמה רשתות אפשר לסמן (☑) כמה התאמות בבת אחת, אחת לכל רשת, ולשמור הכול יחד.
@@ -4467,7 +4616,7 @@ function HelpScreen({ onBack }) {
         ) : (
           <React.Fragment>
             <HelpCard icon="🔍" title="חיפוש והוספת פריט">
-              במסך הבית — בוחרים מתג רגיל/אונליין (כדי לדעת מול אילו רשתות להשוות) ואז מחפשים פריט לפי שם או קטגוריה, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
+              במסך הבית — בוחרים מתג רגיל/אונליין (כדי לדעת מול אילו רשתות להשוות) ואז מחפשים פריט לפי שם, קטגוריה או סריקת ברקוד, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
               כפתור קטן ליד "+ הוספת פריט" ("🧮 אופטימיזציה וסיום" ברשימה רגילה, "🛒 סיום ומעבר להזמנה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.

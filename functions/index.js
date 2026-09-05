@@ -86,6 +86,7 @@ const DAILY_CALL_CAPS = {
   resolveItemBarcodes: 500,
   getBasketPrices: 800,
   browseCategoryItems: 300,
+  lookupItemByBarcode: 300,
   prewarmVendorCatalog: 50,
   submitCategoryCorrection: 50,
   submitFeedbackMessage: 50,
@@ -1439,6 +1440,55 @@ exports.browseCategoryItems = onCall(
     }
     results.sort((a, b) => a.name.localeCompare(b.name, 'he'));
     return { items: results, truncated: snap.size === LIMIT };
+  }
+);
+
+// Camera barcode-scan search mode: the scanned code is a standard GS1/
+// EAN-13 barcode, printed on the physical product and identical across
+// every retailer that stocks it — unlike the name-search flow, there's no
+// fuzzy matching or per-vendor naming to reconcile, just a direct point
+// read of that exact barcode in each active vendor's own catalog (the same
+// cheap per-barcode read browseCategoryItems already uses).
+exports.lookupItemByBarcode = onCall(
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION, enforceAppCheck: true },
+  async (request) => {
+    requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'lookupItemByBarcode');
+    const { barcode, profileIds } = request.data || {};
+    const bc = String(barcode || '').trim();
+    if (!bc) throw new HttpsError('invalid-argument', 'barcode required');
+    const allActiveProfiles = await getUserActiveProfiles(request.auth.uid);
+    const activeProfiles = Array.isArray(profileIds) && profileIds.length > 0
+      ? allActiveProfiles.filter(p => profileIds.includes(p.id))
+      : allActiveProfiles;
+    if (activeProfiles.length === 0) throw new HttpsError('invalid-argument', 'no active vendors');
+    const repProfileByVendor = {};
+    activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
+
+    const prices = {};
+    const promoPrices = {};
+    const names = [];
+    let unit = '';
+    await Promise.all(Object.entries(repProfileByVendor).map(async ([vendor, p]) => {
+      const key = docKey(vendor, p.branchId);
+      const [item, promoSnap] = await Promise.all([
+        readCatalogItemsBatch(key, [bc]).then(r => r[bc]),
+        db.collection('vendorPromoPrices').doc(key).get(),
+      ]);
+      if (!item) return;
+      prices[vendor] = item.price;
+      if (item.name) names.push(item.name);
+      if (item.unit && !unit) unit = item.unit;
+      const promo = (promoSnap.data() || {})[bc];
+      const info = effectivePromoInfo(promo, item.price);
+      if (info) promoPrices[vendor] = info;
+    }));
+    if (Object.keys(prices).length === 0) return { found: false };
+    // Longest available name is usually the least truncated — same
+    // heuristic browseCategoryItems uses for the same government-feed
+    // truncation issue.
+    names.sort((a, b) => b.length - a.length);
+    return { found: true, barcode: bc, name: names[0] || bc, unit, prices, promoPrices };
   }
 );
 

@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Suez+One&family=Heebo:wght@400;500;700;800&display=swap">
-  <link rel="stylesheet" href="styles.css?v=1.84">
+  <link rel="stylesheet" href="styles.css?v=1.85">
   <script>
     // Capture the native install prompt before React loads — the event
     // fires early and only once, so waiting for the app to mount first
@@ -111,9 +111,15 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js" onerror="window.__szBootFailed()"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-check-compat.js" onerror="window.__szBootFailed()"></script>
   <script src="https://cdn.tailwindcss.com" onerror="window.__szBootFailed()"></script>
+  <!-- Camera barcode scanning (add-item search mode) — loaded without the
+       boot-failure handler on purpose: it's a supplementary feature, not
+       core to the app, so a failed/slow load here shouldn't ever block the
+       rest of the app from starting. app.js checks window.Html5Qrcode
+       exists before using it. -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
-  <script src="app.compiled.js?v=1.84" onerror="window.__szBootFailed()"></script>
+  <script src="app.compiled.js?v=1.85" onerror="window.__szBootFailed()"></script>
 </body>
 </html>
