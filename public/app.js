@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.79";
+const VERSION = "v1.80";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3549,15 +3549,26 @@ function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onCl
 // displayed), so plain enumeration of every combo is exact and fast — no
 // real optimizer needed. Never touches the original list; only writes
 // anything if the user picks a plan and asks to create lists from it.
-function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onlineVendors, priceMap, promoMap, onClose, onHome, showToast }) {
+function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onlineVendors, priceMap, promoMap, pricesLoading, onClose, onHome, showToast }) {
   const [plans, setPlans] = useState(null);
   const [selectedK, setSelectedK] = useState(null);
   const [creating, setCreating] = useState(false);
   const [createdCount, setCreatedCount] = useState(null);
   const [orderVendor, setOrderVendor] = useState(null); // { vendor, entries } | null
   const isOnline = list.mode === "online";
+  // A ref, not state — opening this modal before prices have finished
+  // loading must NOT get stuck showing an all-₪0 result computed from an
+  // empty priceMap; recomputing once real prices arrive is the fix. The
+  // ref (not a dependency-driven re-select) keeps the auto-pick from
+  // fighting a plan the user already chose by hand if prices refresh again
+  // later while the modal is still open.
+  const autoSelectedRef = useRef(false);
 
   useEffect(() => {
+    // Prices load asynchronously after the list screen mounts — computing
+    // a plan against a still-empty priceMap marked every item "missing"
+    // and every total ₪0.00. Wait for the real fetch to finish instead.
+    if (pricesLoading) return;
     const pool = visibleProfiles;
     const maxK = Math.min(3, pool.length);
     const computed = [];
@@ -3612,15 +3623,18 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
     // Auto-expand the recommended plan (fewest missing items, then
     // cheapest) so its per-vendor breakdown — and, for an online list, the
     // "מעבר להזמנה" hand-off — is visible immediately instead of requiring
-    // an extra tap to open a plan card first.
-    if (computed.length > 0) {
+    // an extra tap to open a plan card first. Only the first time: if
+    // prices refresh again later while the modal is open, this must not
+    // yank a plan the user already picked by hand back to the "best" one.
+    if (!autoSelectedRef.current && computed.length > 0) {
       const recommended = computed.reduce((acc, p) =>
         (!acc || p.missingItems.length < acc.missingItems.length ||
           (p.missingItems.length === acc.missingItems.length && p.totalCost < acc.totalCost)) ? p : acc, null);
       setSelectedK(recommended.k);
+      autoSelectedRef.current = true;
     }
     // eslint-disable-next-line
-  }, []);
+  }, [pricesLoading, items, visibleProfiles, onlineVendors, isOnline, JSON.stringify(priceMap), JSON.stringify(promoMap)]);
 
   function createListsFromPlan(plan) {
     setCreating(true);
@@ -4018,12 +4032,12 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       </div>
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
-        {listMode === "online" && visibleProfiles.length > 0 && (items || []).length > 0 && (
+        {visibleProfiles.length > 0 && (items || []).length > 0 && (
           <button
             onClick={() => setShowOptimizer(true)}
-            className="bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] px-4 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5 whitespace-nowrap"
+            className="bg-white border border-[#C7B78E] text-[#5B5749] px-3 py-2 rounded-xl shadow-md text-xs font-medium flex items-center gap-1 whitespace-nowrap"
           >
-            🛒 סיום ומעבר להזמנה
+            {listMode === "online" ? "🛒 סיום ומעבר להזמנה" : "🧮 סיום והשוואת מחירים"}
           </button>
         )}
         <button
@@ -4143,7 +4157,8 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       )}
       {showOptimizer && (
         <OptimizerModal uid={uid} list={list} items={items || []} visibleProfiles={visibleProfiles} activeProfiles={activeProfiles}
-          onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
+          onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} pricesLoading={pricesLoading}
+          onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
       )}
       {toast && <Toast msg={toast} />}
     </div>
@@ -4402,10 +4417,10 @@ function HelpScreen({ onBack }) {
               במסך הבית — בודקים מחיר של מוצר מול הרשתות, בלי להוסיף אותו לאף רשימה. מתג "רגיל / אונליין" למעלה קובע איזה סוג רשתות נבדקות, והבחירה נשמרת לפעם הבאה.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
-              משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
+              כפתור קטן ליד "+ הוספת פריט" ("🧮 סיום והשוואת מחירים" ברשימה רגילה, "🛒 סיום ומעבר להזמנה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
             </HelpCard>
-            <HelpCard icon="🛒" title="סיום ומעבר להזמנה (רשימת אונליין)">
-              בתוך רשימת קנייה אונליין מופיע כפתור "🛒 סיום ומעבר להזמנה" ליד "+ הוספת פריט" — פותח את אופטימיזציית הקניות, ובתכנית שנבחרה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
+            <HelpCard icon="🛒" title="מעבר להזמנה (רשימת אונליין)">
+              בתכנית שנבחרה באופטימיזציה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
             </HelpCard>
             <HelpCard icon="🏪" title="רשתות מוצגות">
               מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם. מאותו מסך אפשר גם להוסיף סניף חדש (לא רק לנהל את הקיימים).
