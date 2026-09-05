@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.78";
+const VERSION = "v1.79";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -269,22 +269,41 @@ function vendorLabel(id) {
   const v = VENDOR_LIST.find(x => x.id === id);
   return v ? v.label : id;
 }
-// Deep links into a vendor's own site, used to hand an online-buy plan off
-// to the vendor for the actual order. No vendor exposes an add-to-cart-via-
-// URL or address-prefill mechanism (confirmed by hand against the real
-// sites) — a plain link can only open the vendor's own item search already
-// filled in, never build a cart. Login, cart, address and payment all stay
-// on the vendor's own site and never touch SuperZola. Only Shufersal's
-// exact search query param is confirmed live; the others fall back to the
-// vendor's own search/home page until someone confirms their real URL.
+// Hand-off point into a vendor's own site for the "מעבר להזמנה" flow. No
+// vendor exposes an add-to-cart-via-URL or address-prefill mechanism
+// (confirmed by hand against the real sites) — a plain link can't build a
+// cart, so this only opens the vendor's own search/home page once; the
+// user copies each item name in from SuperZola and pastes it in there.
+// Login, cart, address and payment all stay on the vendor's own site and
+// never touch SuperZola. A single shared page per vendor (rather than a
+// per-item deep link) also sidesteps opening-many-tabs reliability issues
+// on mobile, especially inside an installed PWA.
 const VENDOR_ORDER_URL = {
-  shufersal: name => "https://www.shufersal.co.il/online/he/search?text=" + encodeURIComponent(name),
-  ramiLevy: () => "https://www.rami-levy.co.il/he/online/search",
-  carrefour: () => "https://www.carrefour.co.il/",
+  shufersal: "https://www.shufersal.co.il/online/he/search",
+  ramiLevy: "https://www.rami-levy.co.il/he/online/search",
+  carrefour: "https://www.carrefour.co.il/",
 };
-function vendorOrderUrl(vendorId, itemName) {
-  const fn = VENDOR_ORDER_URL[vendorId];
-  return fn ? fn(itemName) : null;
+// Clipboard API needs a secure context, which a plain string copy from an
+// older in-app browser or WebView sometimes lacks — this falls back to the
+// classic hidden-textarea + execCommand trick so "העתקה" still works there.
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      resolve();
+    } catch (e) { reject(e); }
+  });
 }
 function itemVendorBarcode(item, vendorId) {
   return (item.barcodes && item.barcodes[vendorId]) || null;
@@ -3590,6 +3609,16 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
       if (best) computed.push(best);
     }
     setPlans(computed);
+    // Auto-expand the recommended plan (fewest missing items, then
+    // cheapest) so its per-vendor breakdown — and, for an online list, the
+    // "מעבר להזמנה" hand-off — is visible immediately instead of requiring
+    // an extra tap to open a plan card first.
+    if (computed.length > 0) {
+      const recommended = computed.reduce((acc, p) =>
+        (!acc || p.missingItems.length < acc.missingItems.length ||
+          (p.missingItems.length === acc.missingItems.length && p.totalCost < acc.totalCost)) ? p : acc, null);
+      setSelectedK(recommended.k);
+    }
     // eslint-disable-next-line
   }, []);
 
@@ -3727,29 +3756,45 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
   );
 }
 
-// A one-tap way to hand an online plan's per-vendor sub-basket to the
-// vendor's own site: opens their item search already filled in (or their
-// search/home page, for a vendor whose exact search URL isn't confirmed
-// yet), one tab per item. Login, cart, address and payment happen entirely
-// on the vendor's own site — nothing about them can be automated here (see
-// VENDOR_ORDER_URL above for why).
+// Hands an online plan's per-vendor sub-basket off to the vendor's own
+// site: one button opens the vendor's site once (reliable everywhere,
+// including an installed PWA on mobile, unlike opening a tab per item),
+// and each item is a copy-to-clipboard row the user pastes into the
+// vendor's own search there. Login, cart, address and payment happen
+// entirely on the vendor's own site — nothing about them can be automated
+// here (see VENDOR_ORDER_URL above for why).
 function VendorOrderModal({ vendor, entries, onClose }) {
-  const hasConfirmedSearch = !!VENDOR_ORDER_URL[vendor] && vendor === "shufersal";
+  const [copiedId, setCopiedId] = useState(null);
+  const siteUrl = VENDOR_ORDER_URL[vendor];
+
+  function copyName(item) {
+    copyToClipboard(itemDisplayName(item)).then(() => {
+      setCopiedId(item.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    });
+  }
+
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>מעבר להזמנה ב{vendorLabel(vendor)}</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">
-        {hasConfirmedSearch
-          ? "כל פריט פותח חיפוש מוכן באתר הרשת בטאב חדש. הוספה לסל, הכתובת והתשלום מתבצעים שם."
-          : "לרשת הזו עדיין אין חיפוש מוכן לפי שם — כל פריט פותח את אתר הרשת בטאב חדש, וצריך להקליד את השם שם. הוספה לסל, הכתובת והתשלום מתבצעים שם."}
+        פתחו את אתר הרשת, ואז העתיקו כל שם פריט מכאן והדביקו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
       </p>
-      <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">
+      {siteUrl && (
+        <a href={siteUrl} target="_blank" rel="noopener noreferrer"
+          className="w-full flex items-center justify-center gap-2 bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm mb-4">
+          🔗 פתיחת אתר {vendorLabel(vendor)}
+        </a>
+      )}
+      <div className="space-y-1.5 max-h-[45vh] overflow-y-auto">
         {entries.map(item => (
-          <a key={item.id} href={vendorOrderUrl(vendor, itemDisplayName(item))} target="_blank" rel="noopener noreferrer"
-            className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 bg-[#F7F2E4] hover:bg-[#F0E9D4]">
+          <button key={item.id} onClick={() => copyName(item)}
+            className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 bg-[#F7F2E4] hover:bg-[#F0E9D4] text-right">
             <span className="text-sm text-[#2B2418]">{itemDisplayName(item)}</span>
-            <span className="text-[#2E4A3B] text-sm flex-shrink-0">🔗</span>
-          </a>
+            <span className={"text-xs font-bold flex-shrink-0 " + (copiedId === item.id ? "text-[#256A3F]" : "text-[#2E4A3B]")}>
+              {copiedId === item.id ? "✓ הועתק" : "📋 העתקה"}
+            </span>
+          </button>
         ))}
       </div>
       <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
@@ -3973,6 +4018,14 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       </div>
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
+        {listMode === "online" && visibleProfiles.length > 0 && (items || []).length > 0 && (
+          <button
+            onClick={() => setShowOptimizer(true)}
+            className="bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] px-4 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5 whitespace-nowrap"
+          >
+            🛒 סיום ומעבר להזמנה
+          </button>
+        )}
         <button
           onClick={() => setShowAddChoice(true)}
           className="bg-[#2E4A3B] text-[#FBF4E7] px-5 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5"
@@ -4349,7 +4402,10 @@ function HelpScreen({ onBack }) {
               במסך הבית — בודקים מחיר של מוצר מול הרשתות, בלי להוסיף אותו לאף רשימה. מתג "רגיל / אונליין" למעלה קובע איזה סוג רשתות נבדקות, והבחירה נשמרת לפעם הבאה.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
-              בתפריט הרשימה (☰) — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית. בתכנית שנבחרה יש גם כפתור "🛒 מעבר להזמנה" לכל רשת — פותח את אתר הרשת עם כל פריט מוכן לחיפוש, בטאב חדש. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים באתר הרשת עצמו.
+              משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
+            </HelpCard>
+            <HelpCard icon="🛒" title="סיום ומעבר להזמנה (רשימת אונליין)">
+              בתוך רשימת קנייה אונליין מופיע כפתור "🛒 סיום ומעבר להזמנה" ליד "+ הוספת פריט" — פותח את אופטימיזציית הקניות, ובתכנית שנבחרה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
             </HelpCard>
             <HelpCard icon="🏪" title="רשתות מוצגות">
               מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם. מאותו מסך אפשר גם להוסיף סניף חדש (לא רק לנהל את הקיימים).
