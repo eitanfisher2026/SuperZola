@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.82";
+const VERSION = "v1.83";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -235,6 +235,7 @@ function groupByCategory(items, categories) {
     if (!map[label]) map[label] = { label, emoji: item.categoryEmoji || "🛍️", items: [] };
     map[label].items.push(item);
   });
+  Object.values(map).forEach(g => g.items.sort((a, b) => itemDisplayName(a).localeCompare(itemDisplayName(b), "he")));
   return Object.values(map).sort((a, b) => categoryOrder(a.label, categories) - categoryOrder(b.label, categories));
 }
 // The "שונות" category's full label spells out examples in parentheses
@@ -3080,20 +3081,28 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
       name: draftItem.name, category: selectedCat.label, categoryEmoji: selectedCat.emoji,
       quantity: 1, unit: draftItem.unit || "יחידות", note: "", barcodes: draftItem.barcodes, matchedNames: draftItem.matchedNames,
     };
-    onInsert(payload, () => {});
-    const uniqueBarcodes = [...new Set(Object.values(draftItem.barcodes))];
-    uniqueBarcodes.forEach(bc => {
-      const vendorsForBc = Object.keys(draftItem.barcodes).filter(v => draftItem.barcodes[v] === bc);
-      const matchedName = draftItem.matchedNames[vendorsForBc[0]] || draftItem.name;
-      fns.httpsCallable("confirmItemBarcode")({ name: matchedName, barcode: bc, matchedName, vendors: vendorsForBc }).catch(() => {});
+    // Everything here — the "added" toast, marking these barcodes as
+    // committed, the category-confirmation calls — waits for the caller's
+    // done() rather than firing immediately: when this is opened from Home
+    // with no list chosen yet (FindItemModal), the actual write is deferred
+    // until the user picks a destination, so saying "added" any earlier
+    // would lie if they back out of that picker instead of completing it.
+    const committed = draftItem;
+    onInsert(payload, () => {
+      const uniqueBarcodes = [...new Set(Object.values(committed.barcodes))];
+      uniqueBarcodes.forEach(bc => {
+        const vendorsForBc = Object.keys(committed.barcodes).filter(v => committed.barcodes[v] === bc);
+        const matchedName = committed.matchedNames[vendorsForBc[0]] || committed.name;
+        fns.httpsCallable("confirmItemBarcode")({ name: matchedName, barcode: bc, matchedName, vendors: vendorsForBc }).catch(() => {});
+      });
+      setAddedBarcodes(prev => {
+        const next = Object.assign({}, prev);
+        uniqueBarcodes.forEach(bc => { next[bc] = true; });
+        return next;
+      });
+      showToast(`${committed.name} נוסף לרשימה`);
+      setDraftItem({ name: null, unit: null, barcodes: {}, matchedNames: {} });
     });
-    setAddedBarcodes(prev => {
-      const next = Object.assign({}, prev);
-      uniqueBarcodes.forEach(bc => { next[bc] = true; });
-      return next;
-    });
-    showToast(`${draftItem.name} נוסף לרשימה`);
-    setDraftItem({ name: null, unit: null, barcodes: {}, matchedNames: {} });
   }
 
   const title = stage === "categories" ? "עיון לפי קטגוריה"
