@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.83";
+const VERSION = "v1.84";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -4098,7 +4098,7 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
             onClick={() => setShowOptimizer(true)}
             className="bg-white border border-[#C7B78E] text-[#5B5749] px-3 py-2 rounded-xl shadow-md text-xs font-medium flex items-center gap-1 whitespace-nowrap"
           >
-            {listMode === "online" ? "🛒 סיום ומעבר להזמנה" : "🧮 סיום והשוואת מחירים"}
+            {listMode === "online" ? "🛒 סיום ומעבר להזמנה" : "🧮 אופטימיזציה וסיום"}
           </button>
         )}
         <button
@@ -4166,22 +4166,14 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
             </button>
           </div>
 
-          {(activeProfiles.length > 0 || visibleProfiles.length > 0) && (
+          {activeProfiles.length > 0 && (
             <React.Fragment>
               <div className="text-[10px] font-semibold text-[#A79A7C] uppercase tracking-wide px-2 pb-1">מחירים והשוואה</div>
               <div className="space-y-1 mb-3">
-                {activeProfiles.length > 0 && (
-                  <button onClick={() => { setShowMenu(false); setShowVendorVisibility(true); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-                    <span className="text-lg">🏪</span><span className="text-sm font-medium text-[#2B2418]">רשתות מוצגות</span>
-                  </button>
-                )}
-                {visibleProfiles.length > 0 && (
-                  <button onClick={() => { setShowMenu(false); setShowOptimizer(true); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
-                    <span className="text-lg">🧮</span><span className="text-sm font-medium text-[#2B2418]">אופטימיזציית קניות</span>
-                  </button>
-                )}
+                <button onClick={() => { setShowMenu(false); setShowVendorVisibility(true); }}
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[#F0E9D4]">
+                  <span className="text-lg">🏪</span><span className="text-sm font-medium text-[#2B2418]">רשתות מוצגות</span>
+                </button>
               </div>
             </React.Fragment>
           )}
@@ -4478,7 +4470,7 @@ function HelpScreen({ onBack }) {
               במסך הבית — בוחרים מתג רגיל/אונליין (כדי לדעת מול אילו רשתות להשוות) ואז מחפשים פריט לפי שם או קטגוריה, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
-              כפתור קטן ליד "+ הוספת פריט" ("🧮 סיום והשוואת מחירים" ברשימה רגילה, "🛒 סיום ומעבר להזמנה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
+              כפתור קטן ליד "+ הוספת פריט" ("🧮 אופטימיזציה וסיום" ברשימה רגילה, "🛒 סיום ומעבר להזמנה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
             </HelpCard>
             <HelpCard icon="🛒" title="מעבר להזמנה (רשימת אונליין)">
               בתכנית שנבחרה באופטימיזציה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
