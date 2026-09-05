@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.77";
+const VERSION = "v1.78";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -83,33 +83,6 @@ function geocodeAddress(query) {
     .then(results => (results && results.length > 0) ? { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) } : null)
     .catch(() => null);
 }
-// Structured (not free-text) search — city comes from the real government
-// locality list already, so scoping the street lookup to it is a genuine
-// "does this street exist in this city" check, not just "does this text
-// resolve to somewhere in Israel".
-function geocodeStructuredAddress(city, street, houseNumber) {
-  if (!city || !street) return Promise.resolve(null);
-  const params = new URLSearchParams({
-    format: "json", addressdetails: "1", limit: "1", country: "Israel",
-    city, street: (houseNumber ? houseNumber + " " : "") + street,
-  });
-  return fetch("https://nominatim.openstreetmap.org/search?" + params.toString())
-    .then(r => r.json())
-    .then(results => (results && results.length > 0)
-      ? { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) }
-      : null)
-    .catch(() => null);
-}
-// Israel's official government locality list (~1,270 real cities/
-// settlements) — so the city picker only ever offers real places.
-function useIsraeliCities() {
-  const [cities, setCities] = useState([]);
-  useEffect(() => {
-    fns.httpsCallable("getIsraeliCities")({}).then(res => setCities(res.data.cities || [])).catch(() => {});
-  }, []);
-  return cities;
-}
-
 // Seeded into Firestore (categories collection) the first time it's empty —
 // from then on this is only the emergency fallback if that read ever fails.
 const DEFAULT_CATEGORIES = [
@@ -295,6 +268,23 @@ const VENDOR_LIST = [
 function vendorLabel(id) {
   const v = VENDOR_LIST.find(x => x.id === id);
   return v ? v.label : id;
+}
+// Deep links into a vendor's own site, used to hand an online-buy plan off
+// to the vendor for the actual order. No vendor exposes an add-to-cart-via-
+// URL or address-prefill mechanism (confirmed by hand against the real
+// sites) — a plain link can only open the vendor's own item search already
+// filled in, never build a cart. Login, cart, address and payment all stay
+// on the vendor's own site and never touch SuperZola. Only Shufersal's
+// exact search query param is confirmed live; the others fall back to the
+// vendor's own search/home page until someone confirms their real URL.
+const VENDOR_ORDER_URL = {
+  shufersal: name => "https://www.shufersal.co.il/online/he/search?text=" + encodeURIComponent(name),
+  ramiLevy: () => "https://www.rami-levy.co.il/he/online/search",
+  carrefour: () => "https://www.carrefour.co.il/",
+};
+function vendorOrderUrl(vendorId, itemName) {
+  const fn = VENDOR_ORDER_URL[vendorId];
+  return fn ? fn(itemName) : null;
 }
 function itemVendorBarcode(item, vendorId) {
   return (item.barcodes && item.barcodes[vendorId]) || null;
@@ -1410,7 +1400,7 @@ function ListCard({ list, onOpen }) {
 }
 
 // ── HOME ──────────────────────────────────────────────────────────────────────
-function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminOptions, onOpenHelp, onOpenProfile, onSignOut }) {
+function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminOptions, onOpenHelp, onSignOut }) {
   const [lists, setLists] = useState(null);
   const [creating, setCreating] = useState(false);
   const [showCheckPrice, setShowCheckPrice] = useState(false);
@@ -1541,10 +1531,6 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
                 className="relative w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>ⓘ</span><span>עזרה</span>
                 {isNewUser && <span className="absolute top-2.5 right-3 w-2 h-2 rounded-full bg-[#E3A939]" />}
-              </button>
-              <button onClick={() => { setShowUserMenu(false); onOpenProfile(); }}
-                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
-                <span>👤</span><span>פרופיל</span>
               </button>
               <button onClick={() => { setShowUserMenu(false); setShowFeedback(true); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
@@ -3549,6 +3535,7 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
   const [selectedK, setSelectedK] = useState(null);
   const [creating, setCreating] = useState(false);
   const [createdCount, setCreatedCount] = useState(null);
+  const [orderVendor, setOrderVendor] = useState(null); // { vendor, entries } | null
   const isOnline = list.mode === "online";
 
   useEffect(() => {
@@ -3710,6 +3697,13 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
                                   </div>
                                 )}
                               </div>
+                              {isOnline && (
+                                <button
+                                  onClick={() => setOrderVendor({ vendor: p.vendor, entries: vendorItems.map(e => e.item) })}
+                                  className="w-full mt-2 bg-white border border-[#B9D9B0] text-[#256A3F] py-2 rounded-lg text-xs font-semibold">
+                                  🛒 מעבר להזמנה ב{vendorLabel(p.vendor)}
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -3726,6 +3720,39 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
           )}
         </React.Fragment>
       )}
+      {orderVendor && (
+        <VendorOrderModal vendor={orderVendor.vendor} entries={orderVendor.entries} onClose={() => setOrderVendor(null)} />
+      )}
+    </Modal>
+  );
+}
+
+// A one-tap way to hand an online plan's per-vendor sub-basket to the
+// vendor's own site: opens their item search already filled in (or their
+// search/home page, for a vendor whose exact search URL isn't confirmed
+// yet), one tab per item. Login, cart, address and payment happen entirely
+// on the vendor's own site — nothing about them can be automated here (see
+// VENDOR_ORDER_URL above for why).
+function VendorOrderModal({ vendor, entries, onClose }) {
+  const hasConfirmedSearch = !!VENDOR_ORDER_URL[vendor] && vendor === "shufersal";
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>מעבר להזמנה ב{vendorLabel(vendor)}</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">
+        {hasConfirmedSearch
+          ? "כל פריט פותח חיפוש מוכן באתר הרשת בטאב חדש. הוספה לסל, הכתובת והתשלום מתבצעים שם."
+          : "לרשת הזו עדיין אין חיפוש מוכן לפי שם — כל פריט פותח את אתר הרשת בטאב חדש, וצריך להקליד את השם שם. הוספה לסל, הכתובת והתשלום מתבצעים שם."}
+      </p>
+      <div className="space-y-1.5 max-h-[50vh] overflow-y-auto">
+        {entries.map(item => (
+          <a key={item.id} href={vendorOrderUrl(vendor, itemDisplayName(item))} target="_blank" rel="noopener noreferrer"
+            className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 bg-[#F7F2E4] hover:bg-[#F0E9D4]">
+            <span className="text-sm text-[#2B2418]">{itemDisplayName(item)}</span>
+            <span className="text-[#2E4A3B] text-sm flex-shrink-0">🔗</span>
+          </a>
+        ))}
+      </div>
+      <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
     </Modal>
   );
 }
@@ -4252,168 +4279,6 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
   );
 }
 
-// ── PROFILE ───────────────────────────────────────────────────────────────────
-// Where the user's own info lives — starts with delivery address (used to
-// decide which online vendors make sense to show, once that's built out
-// further); phone number is planned for later, alongside a real security
-// review of who can read this data (see memory: project_profile_page_future).
-function blankAddressDraft() {
-  return { city: "", street: "", houseNumber: "", label: "" };
-}
-
-function ProfileScreen({ uid, onBack }) {
-  const [addresses, setAddresses] = useState(null);
-  const [showForm, setShowForm] = useState(false);
-  const [editingId, setEditingId] = useState(null); // null = adding new
-  const [draft, setDraft] = useState(blankAddressDraft());
-  const [verifying, setVerifying] = useState(false);
-  const [verifyError, setVerifyError] = useState("");
-  const [confirmDeleteAddress, setConfirmDeleteAddress] = useState(null);
-  const [toast, setToast] = useState(null);
-  const cities = useIsraeliCities();
-
-  useEffect(() => {
-    if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
-  }, [toast]);
-
-  useEffect(() => db.collection("users").doc(uid).collection("addresses").orderBy("createdAt")
-    .onSnapshot(snap => setAddresses(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
-
-  function openAddForm() {
-    setEditingId(null);
-    setDraft(blankAddressDraft());
-    setVerifyError("");
-    setShowForm(true);
-  }
-  function openEditForm(a) {
-    setEditingId(a.id);
-    setDraft({ city: a.city, street: a.street, houseNumber: a.houseNumber || "", label: a.label || "" });
-    setVerifyError("");
-    setShowForm(true);
-  }
-
-  // Verifying against the real street network (scoped to a city that's
-  // itself from the government locality list) is what "known and valid in
-  // Israel" actually means here — not just "some text was typed".
-  function verifyAndSave() {
-    if (!draft.city || !draft.street.trim()) return;
-    setVerifying(true);
-    setVerifyError("");
-    geocodeStructuredAddress(draft.city, draft.street.trim(), draft.houseNumber.trim()).then(coords => {
-      setVerifying(false);
-      if (!coords) { setVerifyError("לא נמצאה כתובת כזו — בדקו את שם הרחוב"); return; }
-      const payload = {
-        city: draft.city, street: draft.street.trim(), houseNumber: draft.houseNumber.trim(),
-        label: draft.label.trim(), lat: coords.lat, lng: coords.lng,
-      };
-      const isFirst = (addresses || []).length === 0;
-      const col = db.collection("users").doc(uid).collection("addresses");
-      const save = editingId
-        ? col.doc(editingId).update(payload)
-        : col.add(Object.assign({}, payload, { isDefault: isFirst, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
-      save.then(() => {
-        setToast("הכתובת נשמרה");
-        setShowForm(false);
-      }, () => setVerifyError("שגיאה בשמירה"));
-    });
-  }
-
-  function makeDefault(addressId) {
-    const batch = db.batch();
-    const col = db.collection("users").doc(uid).collection("addresses");
-    (addresses || []).forEach(a => batch.update(col.doc(a.id), { isDefault: a.id === addressId }));
-    batch.commit();
-  }
-
-  function deleteAddress(a) {
-    const col = db.collection("users").doc(uid).collection("addresses");
-    col.doc(a.id).delete().then(() => {
-      if (!a.isDefault) return;
-      const remaining = (addresses || []).filter(x => x.id !== a.id);
-      if (remaining.length > 0) col.doc(remaining[0].id).update({ isDefault: true });
-    });
-  }
-
-  const addressLine = a => `${a.street}${a.houseNumber ? " " + a.houseNumber : ""}, ${a.city}`;
-
-  return (
-    <div className="min-h-dvh bg-[#FBF4E7]">
-      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
-        <BackButton onClick={onBack} />
-        <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>פרופיל</h1>
-      </div>
-
-      <div className="p-4 space-y-6">
-        <div>
-          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>כתובות משלוח</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">כל כתובת מאומתת מול רשת הרחובות בפועל. הכתובת המסומנת היא ברירת המחדל.</p>
-
-          <div className="flex flex-col gap-2 mb-3">
-            {addresses === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
-            {addresses && addresses.length === 0 && <div className="text-[#8A7F66] text-sm">לא נוספו עדיין כתובות</div>}
-            {addresses && addresses.map(a => (
-              <div key={a.id} className={"rounded-xl px-3 py-2.5 border flex items-start gap-2 " +
-                (a.isDefault ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <button onClick={() => makeDefault(a.id)} title="הפוך לברירת מחדל" className="flex-shrink-0 mt-0.5">
-                  <span className={"w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] " +
-                    (a.isDefault ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
-                </button>
-                <div className="flex-1 min-w-0">
-                  {a.label && <div className="text-xs font-semibold text-[#8A7F66]">{a.label}</div>}
-                  <div className="text-sm text-[#2B2418]">{addressLine(a)}</div>
-                </div>
-                <button onClick={() => openEditForm(a)} className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm flex-shrink-0">✏️</button>
-                <button onClick={() => setConfirmDeleteAddress(a)} className="w-7 h-7 flex items-center justify-center text-[#B8462F] text-base flex-shrink-0">🗑️</button>
-              </div>
-            ))}
-          </div>
-
-          {!showForm ? (
-            <button onClick={openAddForm}
-              className="w-full border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px]">
-              + הוספת כתובת
-            </button>
-          ) : (
-            <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-              <div className="text-xs font-semibold text-[#8A7F66]">{editingId ? "עריכת כתובת" : "כתובת חדשה"}</div>
-              <input value={draft.label} onChange={e => setDraft(prev => Object.assign({}, prev, { label: e.target.value }))}
-                placeholder="שם לכתובת (אופציונלי, למשל בית)"
-                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-              <select value={draft.city} onChange={e => setDraft(prev => Object.assign({}, prev, { city: e.target.value }))}
-                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm">
-                <option value="">בחירת עיר...</option>
-                {cities.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <div className="flex gap-2">
-                <input value={draft.street} onChange={e => setDraft(prev => Object.assign({}, prev, { street: e.target.value }))}
-                  placeholder="רחוב"
-                  className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-                <input value={draft.houseNumber} onChange={e => setDraft(prev => Object.assign({}, prev, { houseNumber: e.target.value }))}
-                  placeholder="מספר" type="text" inputMode="numeric"
-                  className="w-20 flex-shrink-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-center bg-white outline-none text-sm" />
-              </div>
-              {verifyError && <p className="text-xs text-[#B8462F]">{verifyError}</p>}
-              <div className="flex gap-2">
-                <button onClick={verifyAndSave} disabled={!draft.city || !draft.street.trim() || verifying}
-                  className="flex-1 bg-[#2E4A3B] text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
-                  {verifying ? <Spinner /> : "אימות ושמירה"}
-                </button>
-                <button onClick={() => setShowForm(false)} className="px-4 rounded-lg border border-[#DECBA1] text-[#8A7F66] text-sm">ביטול</button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {confirmDeleteAddress && (
-        <ConfirmDialog message={`למחוק את הכתובת "${addressLine(confirmDeleteAddress)}"?`}
-          onConfirm={() => deleteAddress(confirmDeleteAddress)} onClose={() => setConfirmDeleteAddress(null)} />
-      )}
-      {toast && <Toast msg={toast} />}
-    </div>
-  );
-}
-
 // ── HELP ──────────────────────────────────────────────────────────────────────
 function HelpCard({ icon, title, children }) {
   return (
@@ -4477,9 +4342,6 @@ function HelpScreen({ onBack }) {
             <HelpCard icon="📊" title="7. תצוגת רשימה מול טבלה">
               בכל רשימה יש שני מצבי תצוגה, מתחלפים מכפתור בראש המסך: 📋 רשימה — פריט אחר פריט עם המחירים לצדו. 📊 טבלה — כל הפריטים והרשתות יחד כמו גיליון, כולל שורת סיכום.
             </HelpCard>
-            <HelpCard icon="👤" title="8. פרופיל וכתובות">
-              כפתור גלגל השיניים ⚙️ ← פרופיל — שומרים כתובות משלוח (עם וידוא כתובת אמיתית בישראל), ומסמנים אחת כברירת מחדל. אפשר לשמור כמה כתובות ולהחליף בין הבתים המוגדרים.
-            </HelpCard>
           </React.Fragment>
         ) : (
           <React.Fragment>
@@ -4487,7 +4349,7 @@ function HelpScreen({ onBack }) {
               במסך הבית — בודקים מחיר של מוצר מול הרשתות, בלי להוסיף אותו לאף רשימה. מתג "רגיל / אונליין" למעלה קובע איזה סוג רשתות נבדקות, והבחירה נשמרת לפעם הבאה.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
-              בתפריט הרשימה (☰) — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית.
+              בתפריט הרשימה (☰) — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית. בתכנית שנבחרה יש גם כפתור "🛒 מעבר להזמנה" לכל רשת — פותח את אתר הרשת עם כל פריט מוכן לחיפוש, בטאב חדש. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים באתר הרשת עצמו.
             </HelpCard>
             <HelpCard icon="🏪" title="רשתות מוצגות">
               מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם. מאותו מסך אפשר גם להוסיף סניף חדש (לא רק לנהל את הקיימים).
@@ -4545,8 +4407,6 @@ function App() {
     content = <AdminOptionsScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
   } else if (screen.view === "help") {
     content = <HelpScreen onBack={() => setScreen({ view: "home" })} />;
-  } else if (screen.view === "profile") {
-    content = <ProfileScreen uid={user.uid} onBack={() => setScreen({ view: "home" })} />;
   } else {
     content = (
       <Home
@@ -4557,7 +4417,6 @@ function App() {
         onOpenVendors={() => setScreen({ view: "vendors" })}
         onOpenAdminOptions={() => setScreen({ view: "adminOptions" })}
         onOpenHelp={() => setScreen({ view: "help" })}
-        onOpenProfile={() => setScreen({ view: "profile" })}
         onSignOut={signOut}
       />
     );

@@ -760,8 +760,8 @@ async function woltDownloadXmlObject(fileEntry) {
   return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
 }
 
-// Israel's official settlement-code registry (same dataset getIsraeliCities
-// uses) — despite the schema calling it "City", most chains' real store
+// Israel's official settlement-code registry (data.gov.il) — despite the
+// schema calling it "City", most chains' real store
 // feeds put the numeric סמל ישוב (settlement code) in that field instead of
 // an actual city name (confirmed across every vendor checked: Carrefour,
 // Rami Levy, Shufersal, Yohananof were all 100% numeric). Left unresolved,
@@ -1175,29 +1175,6 @@ exports.getVendorList = onCall(
   async (request) => {
     requireSignedIn(request);
     return { vendors: VENDOR_IDS.map(id => ({ id, label: VENDOR_LABELS[id] || id })) };
-  }
-);
-
-// Israel's official government locality list (data.gov.il, ~1,270 real
-// cities/settlements) — used for the profile address city dropdown so it
-// only ever offers real places, not free text. Cached in Firestore and
-// refreshed at most weekly; this list changes extremely rarely.
-exports.getIsraeliCities = onCall(
-  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
-  async (request) => {
-    requireSignedIn(request);
-    const cacheRef = db.collection('staticData').doc('israeliCities');
-    const cached = await cacheRef.get();
-    const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-    if (cached.exists && Date.now() - (cached.data().updatedAt || 0) < ONE_WEEK_MS) {
-      return { cities: cached.data().cities };
-    }
-    const res = await fetch('https://data.gov.il/api/3/action/datastore_search?resource_id=d4901968-dad3-4845-a9b0-a57d027f11ab&limit=1500');
-    const json = await res.json();
-    const cities = [...new Set((json.result.records || []).map(r => (r['שם_ישוב'] || '').trim()).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b, 'he'));
-    await cacheRef.set({ cities, updatedAt: Date.now() });
-    return { cities };
   }
 );
 
