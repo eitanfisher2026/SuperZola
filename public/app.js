@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.81";
+const VERSION = "v1.82";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3218,36 +3218,50 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
 
 // ── FIND ITEM (search by name/category, no list open yet) ────────────────────
 // The same "add item" mechanism used inside an open list — ItemWizard and
-// CategoryBrowseModal are reused here completely unchanged — with exactly
-// one extra step first: since there's no list open yet, the user picks (or
-// creates) a destination before searching. Once picked, everything behaves
-// identically to opening that list directly and tapping "+ הוספת פריט",
-// including "add several, then close" and simply backing out without
-// adding (this replaces the old standalone "בדיקת מחיר" — searching and
-// seeing prices without committing is still possible, it's just not
-// tapping the final add button, rather than being a whole separate mode).
-// A barcode-photo search mode is planned as a third option alongside "לפי
-// שם"/"עיון לפי קטגוריה" below — not built yet, flagged here so it isn't
-// lost: Eitan asked to remember it for a later version (2026-09-05).
+// CategoryBrowseModal are reused here completely unchanged. Searching only
+// needs a mode (regular/online, to know which vendors to match against),
+// never a list — a list is only asked for at the moment of actually adding
+// something, exactly once per sitting (picked lazily, then reused for
+// every further add), so "just checking a price" never has to detour
+// through picking a list at all. This replaces the old standalone
+// "בדיקת מחיר": searching and seeing prices without committing still
+// works, it's simply not tapping the final add button, rather than being
+// a separate mode. A barcode-photo search mode is planned as a third
+// option alongside "לפי שם"/"עיון לפי קטגוריה" below — not built yet,
+// flagged here so it isn't lost: Eitan asked to remember it for a later
+// version (2026-09-05).
 function FindItemModal({ uid, categories, onClose, showToast }) {
   const allActiveProfiles = useActiveVendorProfiles(uid);
-  const [destList, setDestList] = useState(null); // { id, name, mode } | null
+  // Which vendors count depends on whether this search is for a regular
+  // (in-store) or online buy — remembered per account rather than asked
+  // every time, since most people mostly shop one way and rarely switch.
+  const [mode, setMode] = useState("instore");
+  const [modeLoaded, setModeLoaded] = useState(false);
   const [method, setMethod] = useState(null); // null | "byName" | "byCategory"
+  const [destList, setDestList] = useState(null); // { id, name } | null — resolved once, then reused for the rest of this sitting
+  const [pendingInsert, setPendingInsert] = useState(null); // { payload, done } while the list-picker overlay is open
   const [myLists, setMyLists] = useState(null);
   const [creatingNew, setCreatingNew] = useState(false);
   const [newListName, setNewListName] = useState("");
-  const [draftListMode, setDraftListMode] = useState("instore");
   const [savingNewList, setSavingNewList] = useState(false);
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
-    db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
-      setMyLists(rows);
-    });
+    db.collection("users").doc(uid).get().then(snap => {
+      if ((snap.data() || {}).checkPriceMode === "online") setMode("online");
+      setModeLoaded(true);
+    }, () => setModeLoaded(true));
+    // eslint-disable-next-line
   }, [uid]);
+
+  function switchMode(next) {
+    if (next === mode) return;
+    setMode(next);
+    setDestList(null); // a list picked under the old mode may not even be the right kind
+    setMyLists(null);
+    db.collection("users").doc(uid).update({ checkPriceMode: next }).catch(() => {});
+  }
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
@@ -3258,46 +3272,126 @@ function FindItemModal({ uid, categories, onClose, showToast }) {
   // same thing here so items can actually price-match right away instead
   // of showing zero active vendors until the list happens to be opened.
   useEffect(() => {
-    if (!destList || destList.mode !== "online") return;
+    if (mode !== "online") return;
     provisionOnlineVendorProfiles(uid, onlineVendors, allProfiles, showToast);
     // eslint-disable-next-line
-  }, [destList, allProfiles, JSON.stringify(onlineVendors)]);
+  }, [mode, allProfiles, JSON.stringify(onlineVendors)]);
 
-  function createListAndSelect() {
-    const name = newListName.trim();
-    if (!name || savingNewList) return;
-    setSavingNewList(true);
-    db.collection("lists").add({ name, ownerId: uid, mode: draftListMode, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
-      setSavingNewList(false);
-      setDestList({ id: ref.id, name, mode: draftListMode });
-    }, () => { setSavingNewList(false); showToast("שגיאה ביצירת הרשימה"); });
+  function openListPicker() {
+    if (myLists === null) {
+      db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => (l.mode || "instore") === mode);
+        rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+        setMyLists(rows);
+      });
+    }
   }
 
-  function insertItem(payload, done) {
-    db.collection("lists").doc(destList.id).collection("items").add(Object.assign({}, payload, {
+  function writeToList(listId, payload, done) {
+    db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
       addedBy: uid,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     })).then(() => done());
   }
 
-  const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === (destList ? destList.mode : "instore"));
-
-  if (destList && method === "byName") {
-    return <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles}
-      onInsert={insertItem} onClose={() => setMethod(null)} showToast={showToast} />;
-  }
-  if (destList && method === "byCategory") {
-    return <CategoryBrowseModal categories={categories} activeProfiles={activeProfiles}
-      onInsert={insertItem} onClose={() => setMethod(null)} showToast={showToast} />;
+  // The shared onInsert passed to ItemWizard/CategoryBrowseModal: already
+  // knows a list from an earlier add this sitting → write straight through;
+  // otherwise stash the pending write and surface the list-picker overlay.
+  function handleInsert(payload, done) {
+    if (destList) { writeToList(destList.id, payload, done); return; }
+    setPendingInsert({ payload, done });
+    openListPicker();
   }
 
-  if (destList) {
-    return (
-      <Modal onClose={onClose}>
-        <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספת פריט</h3>
-        <p className="text-xs text-[#8A7F66] text-center mb-4">
-          מוסיפים ל"{destList.name}" · <button onClick={() => setDestList(null)} className="underline font-semibold">שינוי רשימה</button>
-        </p>
+  function useListForPending(listId, listName) {
+    setDestList({ id: listId, name: listName });
+    setCreatingNew(false);
+    const p = pendingInsert;
+    setPendingInsert(null);
+    if (p) writeToList(listId, p.payload, p.done);
+  }
+
+  function createListAndUse() {
+    const name = newListName.trim();
+    if (!name || savingNewList) return;
+    setSavingNewList(true);
+    db.collection("lists").add({ name, ownerId: uid, mode, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+      setSavingNewList(false);
+      useListForPending(ref.id, name);
+    }, () => { setSavingNewList(false); showToast("שגיאה ביצירת הרשימה"); });
+  }
+
+  const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === mode);
+
+  const listPickerOverlay = pendingInsert && (
+    <Modal onClose={() => setPendingInsert(null)}>
+      <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספה לאיזו רשימה?</h3>
+      {creatingNew ? (
+        <div className="space-y-3">
+          <input autoFocus value={newListName} onChange={e => setNewListName(e.target.value)} placeholder="שם הרשימה החדשה"
+            className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
+          <button onClick={createListAndUse} disabled={!newListName.trim() || savingNewList}
+            className="w-full py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm disabled:opacity-40">
+            {savingNewList ? <Spinner /> : "צור והוסף"}
+          </button>
+          <button onClick={() => setCreatingNew(false)} className="w-full text-xs text-[#8A7F66] underline">ביטול</button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <button onClick={() => setCreatingNew(true)}
+            className="w-full text-right rounded-xl px-3 py-2.5 bg-[#EEF5EC] border border-[#B9D9B0] text-sm font-medium text-[#2E4A3B]">
+            + רשימה חדשה
+          </button>
+          {myLists === null ? (
+            <div className="flex justify-center py-6"><Spinner2 /></div>
+          ) : myLists.length === 0 ? (
+            <p className="text-center text-[#A79A7C] text-sm py-4">אין לך רשימות מסוג זה עדיין</p>
+          ) : myLists.map(l => (
+            <button key={l.id} onClick={() => useListForPending(l.id, l.name)}
+              className="w-full text-right rounded-xl px-3 py-2.5 bg-[#F7F2E4] text-sm">
+              {l.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+
+  if (method === "byName") {
+    return <React.Fragment>
+      <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles}
+        onInsert={handleInsert} onClose={() => setMethod(null)} showToast={showToast} />
+      {listPickerOverlay}
+    </React.Fragment>;
+  }
+  if (method === "byCategory") {
+    return <React.Fragment>
+      <CategoryBrowseModal categories={categories} activeProfiles={activeProfiles}
+        onInsert={handleInsert} onClose={() => setMethod(null)} showToast={showToast} />
+      {listPickerOverlay}
+    </React.Fragment>;
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>חיפוש והוספת פריט</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">
+        {destList ? <React.Fragment>מוסיפים ל"{destList.name}" · <button onClick={() => setDestList(null)} className="underline font-semibold">שינוי</button></React.Fragment>
+          : "רשימת היעד תיבחר כשתלחצו להוסיף"}
+      </p>
+      <div className="flex bg-[#F3ECD9] rounded-full p-0.5 mb-4">
+        <button onClick={() => switchMode("instore")}
+          className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (mode === "instore" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+          רגיל
+        </button>
+        <button onClick={() => switchMode("online")}
+          className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (mode === "online" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+          אונליין
+        </button>
+      </div>
+      {!modeLoaded ? (
+        <div className="flex justify-center py-6"><Spinner2 /></div>
+      ) : (
         <div className="space-y-2">
           <button onClick={() => setMethod("byName")}
             className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
@@ -3315,51 +3409,6 @@ function FindItemModal({ uid, categories, onClose, showToast }) {
               <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
             </span>
           </button>
-        </div>
-      </Modal>
-    );
-  }
-
-  return (
-    <Modal onClose={onClose}>
-      <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספה לאיזו רשימה?</h3>
-      {creatingNew ? (
-        <div className="space-y-3">
-          <input autoFocus value={newListName} onChange={e => setNewListName(e.target.value)} placeholder="שם הרשימה החדשה"
-            className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
-          <div className="flex bg-[#F3ECD9] rounded-full p-0.5">
-            <button onClick={() => setDraftListMode("instore")}
-              className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (draftListMode === "instore" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
-              קניה בסניף
-            </button>
-            <button onClick={() => setDraftListMode("online")}
-              className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (draftListMode === "online" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
-              קנייה אונליין
-            </button>
-          </div>
-          <button onClick={createListAndSelect} disabled={!newListName.trim() || savingNewList}
-            className="w-full py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm disabled:opacity-40">
-            {savingNewList ? <Spinner /> : "צור והמשך"}
-          </button>
-          <button onClick={() => setCreatingNew(false)} className="w-full text-xs text-[#8A7F66] underline">ביטול</button>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <button onClick={() => setCreatingNew(true)}
-            className="w-full text-right rounded-xl px-3 py-2.5 bg-[#EEF5EC] border border-[#B9D9B0] text-sm font-medium text-[#2E4A3B]">
-            + רשימה חדשה
-          </button>
-          {myLists === null ? (
-            <div className="flex justify-center py-6"><Spinner2 /></div>
-          ) : myLists.length === 0 ? (
-            <p className="text-center text-[#A79A7C] text-sm py-4">אין לך רשימות עדיין</p>
-          ) : myLists.map(l => (
-            <button key={l.id} onClick={() => setDestList({ id: l.id, name: l.name, mode: l.mode || "instore" })}
-              className="w-full text-right flex items-center gap-2 rounded-xl px-3 py-2.5 bg-[#F7F2E4] text-sm">
-              {l.mode === "online" && <span className="flex-shrink-0">🛒</span>}
-              <span className="flex-1 min-w-0 truncate">{l.name}</span>
-            </button>
-          ))}
         </div>
       )}
     </Modal>
@@ -4405,7 +4454,7 @@ function HelpScreen({ onBack }) {
               במסך הבית: "+ קניה בסניף" לקנייה רגילה, או "+ קנייה אונליין" לרשימה שמושווית מול הרשתות האונליין. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
-              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, או 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם רק נשאלים קודם לאיזו רשימה להוסיף.
+              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, או 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט, לא לפני החיפוש.
             </HelpCard>
             <HelpCard icon="🔍" title="6. התאמת מחיר לפריט">
               האפליקציה מחפשת את הפריט בכל רשת פעילה. לפעמים לרשתות שונות יש ברקוד שונה לאותו מוצר — כשהחיפוש מכסה כמה רשתות אפשר לסמן (☑) כמה התאמות בבת אחת, אחת לכל רשת, ולשמור הכול יחד.
@@ -4417,7 +4466,7 @@ function HelpScreen({ onBack }) {
         ) : (
           <React.Fragment>
             <HelpCard icon="🔍" title="חיפוש והוספת פריט">
-              במסך הבית — בוחרים לאיזו רשימה מוסיפים (או יוצרים רשימה חדשה), ואז מחפשים פריט לפי שם או קטגוריה בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות ולא להוסיף כלום — הפריט נוסף רק כשבאמת בוחרים התאמה.
+              במסך הבית — בוחרים מתג רגיל/אונליין (כדי לדעת מול אילו רשתות להשוות) ואז מחפשים פריט לפי שם או קטגוריה, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
               כפתור קטן ליד "+ הוספת פריט" ("🧮 סיום והשוואת מחירים" ברשימה רגילה, "🛒 סיום ומעבר להזמנה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
