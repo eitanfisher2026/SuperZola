@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.88";
+const VERSION = "v1.89";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1413,7 +1413,6 @@ function ListCard({ list, onOpen }) {
       onClick={onOpen}
       className="bg-white border border-[#E0D4B4] rounded-2xl px-4 py-4 flex items-center gap-2 shadow-sm cursor-pointer"
     >
-      {list.mode === "online" && <span className="text-base flex-shrink-0" title="מחירי אונליין">🛒</span>}
       <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate text-[#2B2418]">
         {list.name}
       </span>
@@ -1447,6 +1446,21 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // opening an online list shouldn't count as having completed setup. Only
   // a real in-store branch, which the user actually chose to add, does.
   const isNewUser = profilesLoaded && activeProfiles.filter(p => (p.mode || "instore") === "instore").length === 0;
+  const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
+  const onlineVendors = useOnlineVendors();
+
+  useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
+    .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
+
+  // Fires once per app-open, unconditionally — every list now shows both
+  // price views, so online vendor profiles need to be ready before ANY
+  // list is opened rather than only when opening an "online" one. Home
+  // always mounts before a list or FindItemModal can be reached, so this
+  // is the one place this needs to happen.
+  useEffect(() => {
+    provisionOnlineVendorProfiles(uid, onlineVendors, allProfiles, setToast);
+    // eslint-disable-next-line
+  }, [allProfiles, JSON.stringify(onlineVendors)]);
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     setIsAdmin((snap.data() || {}).role === "admin");
@@ -1504,10 +1518,10 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
   // menu) is one tap, and this way starting a list never blocks on typing.
-  async function quickCreate(mode) {
+  async function quickCreate() {
     if (creating) return;
     setCreating(true);
-    const prefix = mode === "online" ? "רשימת מחירי אונליין #" : "רשימת מחירי חנות #";
+    const prefix = "רשימה #";
     let maxNum = 0;
     (lists || []).forEach(l => {
       if (l.name && l.name.indexOf(prefix) === 0) {
@@ -1519,11 +1533,10 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
     const ref = await db.collection("lists").add({
       name,
       ownerId: uid,
-      mode: mode === "online" ? "online" : "instore",
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     setCreating(false);
-    onOpenList(ref.id, name, mode === "online");
+    onOpenList(ref.id, name);
   }
 
   return (
@@ -1640,20 +1653,13 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
         ))}
       </div>
 
-      <div className="px-4 mt-4 flex gap-2">
+      <div className="px-4 mt-4">
         <button
-          onClick={() => quickCreate("instore")}
+          onClick={quickCreate}
           disabled={creating}
-          className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
+          className="w-full border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
         >
-          {creating ? "יוצר..." : "+ מחירי חנות"}
-        </button>
-        <button
-          onClick={() => quickCreate("online")}
-          disabled={creating}
-          className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
-        >
-          {creating ? "יוצר..." : "+ מחירי אונליין"}
+          {creating ? "יוצר..." : "+ רשימה חדשה"}
         </button>
       </div>
       <div className="px-4 mt-2">
@@ -3347,71 +3353,31 @@ function BarcodeAddFlow({ activeProfiles, categories, onInsert, onClose, showToa
   );
 }
 
-// ── FIND ITEM (search by name/category, no list open yet) ────────────────────
-// The same "add item" mechanism used inside an open list — ItemWizard and
-// CategoryBrowseModal are reused here completely unchanged. Searching only
-// needs a mode (regular/online, to know which vendors to match against),
-// never a list — a list is only asked for at the moment of actually adding
-// something, exactly once per sitting (picked lazily, then reused for
-// every further add), so "just checking a price" never has to detour
-// through picking a list at all. This replaces the old standalone
-// "בדיקת מחיר": searching and seeing prices without committing still
-// works, it's simply not tapping the final add button, rather than being
-// a separate mode. A barcode-photo search mode is planned as a third
-// option alongside "לפי שם"/"עיון לפי קטגוריה" below — not built yet,
-// flagged here so it isn't lost: Eitan asked to remember it for a later
-// version (2026-09-05).
+// ── FIND ITEM (search by name/category/barcode, no list open yet) ────────────
+// The same "add item" mechanism used inside an open list — ItemWizard,
+// CategoryBrowseModal and BarcodeAddFlow are reused here completely
+// unchanged. Searching matches against every active vendor unconditionally
+// (there's no more instore/online distinction) — a list is only asked for
+// at the moment of actually adding something, exactly once per sitting
+// (picked lazily, then reused for every further add), so "just checking a
+// price" never has to detour through picking a list at all. This replaces
+// the old standalone "בדיקת מחיר": searching and seeing prices without
+// committing still works, it's simply not tapping the final add button,
+// rather than being a separate mode.
 function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
-  const allActiveProfiles = useActiveVendorProfiles(uid);
-  // Which vendors count depends on whether this search is for a regular
-  // (in-store) or online buy — remembered per account rather than asked
-  // every time, since most people mostly shop one way and rarely switch.
-  const [mode, setMode] = useState("instore");
-  const [modeLoaded, setModeLoaded] = useState(false);
-  const [method, setMethod] = useState(null); // null | "byName" | "byCategory"
+  const activeProfiles = useActiveVendorProfiles(uid);
+  const [method, setMethod] = useState(null); // null | "byName" | "byCategory" | "byBarcode"
   const [destList, setDestList] = useState(null); // { id, name } | null — resolved once, then reused for the rest of this sitting
   const [pendingInsert, setPendingInsert] = useState(null); // { payload, done } while the list-picker overlay is open
   const [myLists, setMyLists] = useState(null);
   const [creatingNew, setCreatingNew] = useState(false);
   const [newListName, setNewListName] = useState("");
   const [savingNewList, setSavingNewList] = useState(false);
-  const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
-  const onlineVendors = useOnlineVendors();
-
-  useEffect(() => {
-    db.collection("users").doc(uid).get().then(snap => {
-      if ((snap.data() || {}).checkPriceMode === "online") setMode("online");
-      setModeLoaded(true);
-    }, () => setModeLoaded(true));
-    // eslint-disable-next-line
-  }, [uid]);
-
-  function switchMode(next) {
-    if (next === mode) return;
-    setMode(next);
-    setDestList(null); // a list picked under the old mode may not even be the right kind
-    setMyLists(null);
-    db.collection("users").doc(uid).update({ checkPriceMode: next }).catch(() => {});
-  }
-
-  useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
-    .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
-
-  // Picking (or creating) an online list here is the only way to reach one
-  // without ever opening ListScreen, which is normally what auto-
-  // provisions its "premade" online vendor list on first open — do the
-  // same thing here so items can actually price-match right away instead
-  // of showing zero active vendors until the list happens to be opened.
-  useEffect(() => {
-    if (mode !== "online") return;
-    provisionOnlineVendorProfiles(uid, onlineVendors, allProfiles, showToast);
-    // eslint-disable-next-line
-  }, [mode, allProfiles, JSON.stringify(onlineVendors)]);
 
   function openListPicker() {
     if (myLists === null) {
       db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(l => (l.mode || "instore") === mode);
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
         setMyLists(rows);
       });
@@ -3446,13 +3412,11 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
     const name = newListName.trim();
     if (!name || savingNewList) return;
     setSavingNewList(true);
-    db.collection("lists").add({ name, ownerId: uid, mode, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+    db.collection("lists").add({ name, ownerId: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
       setSavingNewList(false);
       useListForPending(ref.id, name);
     }, () => { setSavingNewList(false); showToast("שגיאה ביצירת הרשימה"); });
   }
-
-  const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === mode);
 
   // The finish button's destination and label both depend on whether
   // anything was actually added this sitting: nothing added yet → back to
@@ -3528,46 +3492,32 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
         {destList ? <React.Fragment>מוסיפים ל"{destList.name}" · <button onClick={() => setDestList(null)} className="underline font-semibold">שינוי</button></React.Fragment>
           : "רשימת היעד תיבחר כשתלחצו להוסיף"}
       </p>
-      <div className="flex bg-[#F3ECD9] rounded-full p-0.5 mb-4">
-        <button onClick={() => switchMode("instore")}
-          className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (mode === "instore" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
-          רגיל
+      <div className="space-y-2">
+        <button onClick={() => setMethod("byName")}
+          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+          <span className="text-xl">🔎</span>
+          <span>
+            <div className="text-sm font-semibold text-[#2B2418]">לפי שם</div>
+            <div className="text-[11px] text-[#8A7F66]">מקלידים שם ובוחרים התאמה</div>
+          </span>
         </button>
-        <button onClick={() => switchMode("online")}
-          className={"flex-1 text-xs px-3 py-1.5 rounded-full font-bold transition " + (mode === "online" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
-          אונליין
+        <button onClick={() => setMethod("byCategory")}
+          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+          <span className="text-xl">📂</span>
+          <span>
+            <div className="text-sm font-semibold text-[#2B2418]">עיון לפי קטגוריה</div>
+            <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
+          </span>
+        </button>
+        <button onClick={() => setMethod("byBarcode")}
+          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+          <span className="text-xl">📷</span>
+          <span>
+            <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
+            <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
+          </span>
         </button>
       </div>
-      {!modeLoaded ? (
-        <div className="flex justify-center py-6"><Spinner2 /></div>
-      ) : (
-        <div className="space-y-2">
-          <button onClick={() => setMethod("byName")}
-            className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-            <span className="text-xl">🔎</span>
-            <span>
-              <div className="text-sm font-semibold text-[#2B2418]">לפי שם</div>
-              <div className="text-[11px] text-[#8A7F66]">מקלידים שם ובוחרים התאמה</div>
-            </span>
-          </button>
-          <button onClick={() => setMethod("byCategory")}
-            className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-            <span className="text-xl">📂</span>
-            <span>
-              <div className="text-sm font-semibold text-[#2B2418]">עיון לפי קטגוריה</div>
-              <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
-            </span>
-          </button>
-          <button onClick={() => setMethod("byBarcode")}
-            className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-            <span className="text-xl">📷</span>
-            <span>
-              <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
-              <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
-            </span>
-          </button>
-        </div>
-      )}
     </Modal>
   );
 }
@@ -3576,7 +3526,7 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
 // Per-list display filter: hiding a vendor here only affects what THIS list
 // shows — matching/pricing keeps running for it in the background so
 // un-hiding it later doesn't need a fresh search.
-function VendorVisibilityModal({ uid, listMode, activeProfiles, hiddenVendorIds, onToggle, onClose, showToast }) {
+function VendorVisibilityModal({ uid, activeProfiles, hiddenVendorIds, onToggle, onClose, showToast }) {
   const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
 
   useEffect(() => {
@@ -3587,42 +3537,57 @@ function VendorVisibilityModal({ uid, listMode, activeProfiles, hiddenVendorIds,
     }).catch(() => {});
   }, []);
 
+  const instoreProfiles = (activeProfiles || []).filter(p => (p.mode || "instore") === "instore");
+  const onlineProfiles = (activeProfiles || []).filter(p => p.mode === "online");
+
+  function renderRow(p) {
+    const isVisible = hiddenVendorIds.indexOf(p.id) === -1;
+    return (
+      <div key={p.id} className="rounded-xl px-3 py-2.5 bg-[#F7F2E4]">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-[#2B2418]">{profileLabel(p, activeProfiles)}</span>
+          <button onClick={() => onToggle(p.id)}
+            className={"text-xs font-bold rounded-full px-3 py-1 " + (isVisible ? "text-[#256A3F] bg-[#DDEEDA]" : "text-[#8A7F66] bg-[#EFE4C6]")}>
+            {isVisible ? "מוצג" : "מוסתר"}
+          </button>
+        </div>
+        <div className="text-[11px] text-[#A79A7C] mt-1">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</div>
+      </div>
+    );
+  }
+
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות מוצגות</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">בחרו אילו רשתות להציג ברשימה הזו</p>
-      <div className="space-y-1.5">
-        {(activeProfiles || []).length === 0 && (
-          <p className="text-center text-[#A79A7C] text-sm py-4">אין רשתות פעילות</p>
-        )}
-        {(activeProfiles || []).map(p => {
-          const isVisible = hiddenVendorIds.indexOf(p.id) === -1;
-          return (
-            <div key={p.id} className="rounded-xl px-3 py-2.5 bg-[#F7F2E4]">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-[#2B2418]">{profileLabel(p, activeProfiles)}</span>
-                <button onClick={() => onToggle(p.id)}
-                  className={"text-xs font-bold rounded-full px-3 py-1 " + (isVisible ? "text-[#256A3F] bg-[#DDEEDA]" : "text-[#8A7F66] bg-[#EFE4C6]")}>
-                  {isVisible ? "מוצג" : "מוסתר"}
-                </button>
-              </div>
-              <div className="text-[11px] text-[#A79A7C] mt-1">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</div>
+      {(activeProfiles || []).length === 0 ? (
+        <p className="text-center text-[#A79A7C] text-sm py-4">אין רשתות פעילות</p>
+      ) : (
+        <div className="space-y-4">
+          {instoreProfiles.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold text-[#A79A7C] uppercase tracking-wide mb-1.5">סניפים פיזיים</div>
+              <div className="space-y-1.5">{instoreProfiles.map(renderRow)}</div>
             </div>
-          );
-        })}
-      </div>
-      {listMode !== "online" && (
-        <div className="mt-4 pt-4 border-t border-[#E5D8B5]">
-          <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} />
+          )}
+          {onlineProfiles.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold text-[#A79A7C] uppercase tracking-wide mb-1.5">רשתות אונליין</div>
+              <div className="space-y-1.5">{onlineProfiles.map(renderRow)}</div>
+            </div>
+          )}
         </div>
       )}
+      <div className="mt-4 pt-4 border-t border-[#E5D8B5]">
+        <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} />
+      </div>
       <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
     </Modal>
   );
 }
 
 // ── COPY ITEMS TO ANOTHER LIST ────────────────────────────────────────────────
-function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onClose, showToast }) {
+function CopyItemsModal({ uid, sourceListId, items, categories, onClose, showToast }) {
   const [step, setStep] = useState("pick");
   const [selectedIds, setSelectedIds] = useState({});
   const [myLists, setMyLists] = useState(null);
@@ -3642,11 +3607,8 @@ function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onCl
     setStep("dest");
     if (myLists === null) {
       db.collection("lists").where("ownerId", "==", uid).get().then(snap => {
-        // A physical-branch list and an online list never share vendor
-        // profiles, so an item copied across modes would arrive unmatched —
-        // only offer destinations of the same mode as the list it's coming from.
         const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-          .filter(l => l.id !== sourceListId && (l.mode || "instore") === sourceMode);
+          .filter(l => l.id !== sourceListId);
         rows.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
         setMyLists(rows);
       });
@@ -3678,7 +3640,7 @@ function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onCl
     const name = newListName.trim();
     if (!name || busy) return;
     setBusy(true);
-    db.collection("lists").add({ name, ownerId: uid, mode: sourceMode, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
+    db.collection("lists").add({ name, ownerId: uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }).then(ref => {
       copyToList(ref.id);
     }, () => { setBusy(false); showToast("שגיאה ביצירת הרשימה"); });
   }
@@ -3753,18 +3715,21 @@ function CopyItemsModal({ uid, sourceListId, sourceMode, items, categories, onCl
 }
 
 // ── SHOPPING OPTIMIZER ────────────────────────────────────────────────────────
-// Best split of the list's items across 1..3 of the currently displayed
-// vendors. Small numbers only (capped at 3 of however many vendors are
-// displayed), so plain enumeration of every combo is exact and fast — no
-// real optimizer needed. Never touches the original list; only writes
-// anything if the user picks a plan and asks to create lists from it.
-function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onlineVendors, priceMap, promoMap, pricesLoading, onClose, onHome, showToast }) {
-  const [plans, setPlans] = useState(null);
-  const [selectedK, setSelectedK] = useState(null);
+// Best split of the list's items across 1..3 vendors — computed separately
+// for the in-store pool and the online pool (delivery fees only apply to
+// the online side), so the same basket's cheapest-in-store and cheapest-
+// online plans can be shown side by side with a cost-difference headline.
+// Small numbers only (capped at 3 of however many vendors are active per
+// side), so plain enumeration of every combo is exact and fast — no real
+// optimizer needed. Never touches the original list; only writes anything
+// if the user picks a plan and asks to create lists from it.
+function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, onlineVendors, priceMap, promoMap, pricesLoading, onClose, onHome, showToast }) {
+  const [plans, setPlans] = useState(null); // { instore: [...], online: [...] } | null
+  const [selectedInstoreK, setSelectedInstoreK] = useState(null);
+  const [selectedOnlineK, setSelectedOnlineK] = useState(null);
   const [creating, setCreating] = useState(false);
   const [createdCount, setCreatedCount] = useState(null);
   const [orderVendor, setOrderVendor] = useState(null); // { vendor, entries } | null
-  const isOnline = list.mode === "online";
   // A ref, not state — opening this modal before prices have finished
   // loading must NOT get stuck showing an all-₪0 result computed from an
   // empty priceMap; recomputing once real prices arrive is the fix. The
@@ -3773,77 +3738,91 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
   // later while the modal is still open.
   const autoSelectedRef = useRef(false);
 
+  const visibleAll = allActiveProfiles.filter(p => hiddenVendorIds.indexOf(p.id) === -1);
+  const instorePool = visibleAll.filter(p => (p.mode || "instore") === "instore");
+  const onlinePool = visibleAll.filter(p => p.mode === "online");
+
   useEffect(() => {
     // Prices load asynchronously after the list screen mounts — computing
     // a plan against a still-empty priceMap marked every item "missing"
     // and every total ₪0.00. Wait for the real fetch to finish instead.
     if (pricesLoading) return;
-    const pool = visibleProfiles;
-    const maxK = Math.min(3, pool.length);
-    const computed = [];
-    for (let k = 1; k <= maxK; k++) {
-      const combos = combinations(pool, k);
-      let best = null;
-      combos.forEach(combo => {
-        let itemsCost = 0;
-        const missingItems = [];
-        const byVendor = {};
-        combo.forEach(p => { byVendor[p.id] = []; });
-        items.forEach(item => {
-          const priced = itemProfilePrices(item, combo, priceMap, promoMap);
-          if (priced.length === 0) { missingItems.push(item.name); return; }
-          const bestEntry = priced.reduce((acc, e) => {
-            const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
-            const accEff = (acc.promo && acc.promo.active) ? acc.promo.price : acc.price;
-            return eff < accEff ? e : acc;
+
+    function buildPlans(pool, withDelivery) {
+      const maxK = Math.min(3, pool.length);
+      const computed = [];
+      for (let k = 1; k <= maxK; k++) {
+        const combos = combinations(pool, k);
+        let best = null;
+        combos.forEach(combo => {
+          let itemsCost = 0;
+          const missingItems = [];
+          const byVendor = {};
+          combo.forEach(p => { byVendor[p.id] = []; });
+          items.forEach(item => {
+            const priced = itemProfilePrices(item, combo, priceMap, promoMap);
+            if (priced.length === 0) { missingItems.push(item.name); return; }
+            const bestEntry = priced.reduce((acc, e) => {
+              const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
+              const accEff = (acc.promo && acc.promo.active) ? acc.promo.price : acc.price;
+              return eff < accEff ? e : acc;
+            });
+            const effPrice = (bestEntry.promo && bestEntry.promo.active) ? bestEntry.promo.price : bestEntry.price;
+            itemsCost += effPrice * (item.quantity || 1);
+            byVendor[bestEntry.profile.id].push({ item, price: effPrice });
           });
-          const effPrice = (bestEntry.promo && bestEntry.promo.active) ? bestEntry.promo.price : bestEntry.price;
-          itemsCost += effPrice * (item.quantity || 1);
-          byVendor[bestEntry.profile.id].push({ item, price: effPrice });
+          // Delivery is per vendor actually used in this combo (a vendor with
+          // no items assigned to it in this split contributes nothing) — the
+          // "fewer stores wins unless splitting saves more" ranking below
+          // falls out on its own once delivery is folded into the same total,
+          // since a 2-store split now has to beat two delivery fees, not zero.
+          let deliveryCost = 0;
+          const belowMinimum = [];
+          if (withDelivery) {
+            combo.forEach(p => {
+              const vendorItems = byVendor[p.id];
+              if (!vendorItems || vendorItems.length === 0) return;
+              const cfg = onlineVendors[p.vendor] || {};
+              deliveryCost += cfg.deliveryFee || 0;
+              const subtotal = vendorItems.reduce((s, e) => s + e.price * (e.item.quantity || 1), 0);
+              if (cfg.minimumOrder && subtotal < cfg.minimumOrder) {
+                belowMinimum.push({ profile: p, subtotal, minimumOrder: cfg.minimumOrder });
+              }
+            });
+          }
+          const totalCost = itemsCost + deliveryCost;
+          if (!best || missingItems.length < best.missingItems.length ||
+              (missingItems.length === best.missingItems.length && totalCost < best.totalCost)) {
+            best = { k, vendors: combo, itemsCost, deliveryCost, totalCost, missingItems, byVendor, belowMinimum };
+          }
         });
-        // Delivery is per vendor actually used in this combo (a vendor with
-        // no items assigned to it in this split contributes nothing) — the
-        // "fewer stores wins unless splitting saves more" ranking below
-        // falls out on its own once delivery is folded into the same total,
-        // since a 2-store split now has to beat two delivery fees, not zero.
-        let deliveryCost = 0;
-        const belowMinimum = [];
-        if (isOnline) {
-          combo.forEach(p => {
-            const vendorItems = byVendor[p.id];
-            if (!vendorItems || vendorItems.length === 0) return;
-            const cfg = onlineVendors[p.vendor] || {};
-            deliveryCost += cfg.deliveryFee || 0;
-            const subtotal = vendorItems.reduce((s, e) => s + e.price * (e.item.quantity || 1), 0);
-            if (cfg.minimumOrder && subtotal < cfg.minimumOrder) {
-              belowMinimum.push({ profile: p, subtotal, minimumOrder: cfg.minimumOrder });
-            }
-          });
-        }
-        const totalCost = itemsCost + deliveryCost;
-        if (!best || missingItems.length < best.missingItems.length ||
-            (missingItems.length === best.missingItems.length && totalCost < best.totalCost)) {
-          best = { k, vendors: combo, itemsCost, deliveryCost, totalCost, missingItems, byVendor, belowMinimum };
-        }
-      });
-      if (best) computed.push(best);
+        if (best) computed.push(best);
+      }
+      return computed;
     }
-    setPlans(computed);
-    // Auto-expand the recommended plan (fewest missing items, then
-    // cheapest) so its per-vendor breakdown — and, for an online list, the
-    // "מעבר להזמנה" hand-off — is visible immediately instead of requiring
-    // an extra tap to open a plan card first. Only the first time: if
-    // prices refresh again later while the modal is open, this must not
-    // yank a plan the user already picked by hand back to the "best" one.
-    if (!autoSelectedRef.current && computed.length > 0) {
-      const recommended = computed.reduce((acc, p) =>
-        (!acc || p.missingItems.length < acc.missingItems.length ||
-          (p.missingItems.length === acc.missingItems.length && p.totalCost < acc.totalCost)) ? p : acc, null);
-      setSelectedK(recommended.k);
+
+    const instorePlans = buildPlans(instorePool, false);
+    const onlinePlans = buildPlans(onlinePool, true);
+    setPlans({ instore: instorePlans, online: onlinePlans });
+
+    // Auto-expand the recommended plan on each side (fewest missing items,
+    // then cheapest) so its per-vendor breakdown — and, on the online side,
+    // the "מעבר להזמנה" hand-off — is visible immediately instead of
+    // requiring an extra tap to open a plan card first. Only the first
+    // time: if prices refresh again later while the modal is open, this
+    // must not yank a plan the user already picked by hand back to "best".
+    if (!autoSelectedRef.current) {
+      function pickBest(computed) {
+        return computed.reduce((acc, p) =>
+          (!acc || p.missingItems.length < acc.missingItems.length ||
+            (p.missingItems.length === acc.missingItems.length && p.totalCost < acc.totalCost)) ? p : acc, null);
+      }
+      if (instorePlans.length > 0) setSelectedInstoreK(pickBest(instorePlans).k);
+      if (onlinePlans.length > 0) setSelectedOnlineK(pickBest(onlinePlans).k);
       autoSelectedRef.current = true;
     }
     // eslint-disable-next-line
-  }, [pricesLoading, items, visibleProfiles, onlineVendors, isOnline, JSON.stringify(priceMap), JSON.stringify(promoMap)]);
+  }, [pricesLoading, items, JSON.stringify(instorePool.map(p => p.id)), JSON.stringify(onlinePool.map(p => p.id)), onlineVendors, JSON.stringify(priceMap), JSON.stringify(promoMap)]);
 
   function createListsFromPlan(plan) {
     setCreating(true);
@@ -3855,10 +3834,10 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
       .map(p => ({ profile: p, vendorItems: plan.byVendor[p.id] || [] }))
       .filter(x => x.vendorItems.length > 0);
     Promise.all(toCreate.map(x => {
-      const hideIds = activeProfiles.filter(vp => vp.id !== x.profile.id).map(vp => vp.id);
+      const hideIds = allActiveProfiles.filter(vp => vp.id !== x.profile.id).map(vp => vp.id);
       return db.collection("lists").add({
         name: list.name + " - " + profileLabel(x.profile, plan.vendors),
-        ownerId: uid, mode: (list.mode || "instore"), hiddenVendorIds: hideIds,
+        ownerId: uid, hiddenVendorIds: hideIds,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       }).then(ref => ({ ref, vendorItems: x.vendorItems }));
     })).then(created => {
@@ -3880,6 +3859,97 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
     }, () => { setCreating(false); showToast("שגיאה ביצירת הרשימות"); });
   }
 
+  function cheapestOf(computed) {
+    if (!computed || computed.length === 0) return null;
+    return computed.reduce((acc, p) =>
+      (!acc || p.missingItems.length < acc.missingItems.length ||
+        (p.missingItems.length === acc.missingItems.length && p.totalCost < acc.totalCost)) ? p : acc, null);
+  }
+
+  // Shared renderer for one side's plan list (in-store or online) — the
+  // only difference between the two is whether delivery/minimum-order/
+  // hand-off UI applies, driven by `withDelivery`.
+  function renderPlanSection(computed, selectedK, setSelectedK, withDelivery) {
+    return (
+      <div className="space-y-2">
+        {computed.map(plan => {
+          const isSelected = selectedK === plan.k;
+          const vendorNames = plan.vendors.map(p => profileLabel(p, plan.vendors)).join(" + ");
+          return (
+            <div key={plan.k}>
+              <button onClick={() => setSelectedK(isSelected ? null : plan.k)}
+                className={"w-full text-right rounded-xl px-4 py-3 border transition " + (isSelected ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E5D8B5]")}>
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[#2B2418] text-sm">{plan.k === 1 ? "חנות אחת" : plan.k + " חנויות"}</span>
+                  <span className="font-bold text-[#2E4A3B] text-sm">₪{plan.totalCost.toFixed(2)}</span>
+                </div>
+                <div className="text-xs text-[#8A7F66] mt-1">{vendorNames}</div>
+                {withDelivery && (
+                  <div className="text-[11px] text-[#8A7F66] mt-0.5">
+                    פריטים: ₪{plan.itemsCost.toFixed(2)} + משלוח: ₪{plan.deliveryCost.toFixed(2)}
+                  </div>
+                )}
+                {plan.missingItems.length > 0 && (
+                  <div className="text-[11px] text-[#B8462F] mt-1">חסר: {plan.missingItems.join(", ")}</div>
+                )}
+                {withDelivery && plan.belowMinimum.length > 0 && (
+                  <div className="text-[11px] text-[#8A5A15] mt-1">
+                    {plan.belowMinimum.map(b => `${vendorLabel(b.profile.vendor)}: מתחת למינימום הזמנה (₪${b.subtotal.toFixed(2)} מתוך ₪${b.minimumOrder})`).join(" · ")}
+                  </div>
+                )}
+              </button>
+              {isSelected && (
+                <div className="mt-2 mb-1 space-y-2 px-1">
+                  {plan.vendors.map(p => {
+                    const vendorItems = plan.byVendor[p.id] || [];
+                    if (vendorItems.length === 0) return null;
+                    return (
+                      <div key={p.id} className="bg-[#F7F2E4] rounded-xl p-2.5">
+                        <div className="text-xs font-semibold text-[#5B5749] mb-1">{profileLabel(p, plan.vendors)} ({vendorItems.length})</div>
+                        <div className="space-y-0.5">
+                          {vendorItems.map(entry => (
+                            <div key={entry.item.id} className="flex items-center justify-between text-xs text-[#5B5749]">
+                              <span>{entry.item.name}</span>
+                              <span>₪{entry.price.toFixed(2)}</span>
+                            </div>
+                          ))}
+                          {withDelivery && (onlineVendors[p.vendor] || {}).deliveryFee != null && (
+                            <div className="flex items-center justify-between text-xs text-[#8A7F66] pt-0.5 border-t border-[#E5D8B5] mt-1">
+                              <span>משלוח</span>
+                              <span>₪{(onlineVendors[p.vendor].deliveryFee).toFixed(2)}</span>
+                            </div>
+                          )}
+                        </div>
+                        {withDelivery && (
+                          <button
+                            onClick={() => setOrderVendor({ vendor: p.vendor, entries: vendorItems.map(e => e.item) })}
+                            className="w-full mt-2 bg-white border border-[#B9D9B0] text-[#256A3F] py-2 rounded-lg text-xs font-semibold">
+                            🛒 מעבר להזמנה ב{vendorLabel(p.vendor)}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button onClick={() => createListsFromPlan(plan)} disabled={creating}
+                    className="w-full bg-[#2E4A3B] text-white py-2.5 rounded-xl font-medium text-sm disabled:opacity-40">
+                    {creating ? <Spinner /> : "+ צור רשימות לפי התכנית"}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  const instorePlans = plans ? plans.instore : null;
+  const onlinePlans = plans ? plans.online : null;
+  const hasBothSides = instorePool.length > 0 && onlinePool.length > 0;
+  const bestInstore = cheapestOf(instorePlans);
+  const bestOnline = cheapestOf(onlinePlans);
+  const delta = (bestInstore && bestOnline) ? bestInstore.totalCost - bestOnline.totalCost : null;
+
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>אופטימיזציית קניות</h3>
@@ -3894,81 +3964,44 @@ function OptimizerModal({ uid, list, items, visibleProfiles, activeProfiles, onl
         </div>
       ) : (
         <React.Fragment>
-          <p className="text-xs text-[#8A7F66] text-center mb-4">השוואת עלות קנייה במספר חנויות שונה — הרשימה המקורית לא משתנה</p>
+          <p className="text-xs text-[#8A7F66] text-center mb-4">השוואת עלות קנייה בחנות מול אונליין — הרשימה המקורית לא משתנה</p>
           {plans === null ? (
             <div className="flex justify-center py-10"><Spinner2 /></div>
-          ) : plans.length === 0 ? (
+          ) : instorePool.length === 0 && onlinePool.length === 0 ? (
             <p className="text-center text-[#A79A7C] text-sm py-6">אין מספיק נתוני מחיר להשוואה</p>
           ) : (
-            <div className="space-y-2">
-              {plans.map(plan => {
-                const isSelected = selectedK === plan.k;
-                const vendorNames = plan.vendors.map(p => profileLabel(p, plan.vendors)).join(" + ");
-                return (
-                  <div key={plan.k}>
-                    <button onClick={() => setSelectedK(isSelected ? null : plan.k)}
-                      className={"w-full text-right rounded-xl px-4 py-3 border transition " + (isSelected ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E5D8B5]")}>
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-[#2B2418] text-sm">{plan.k === 1 ? "חנות אחת" : plan.k + " חנויות"}</span>
-                        <span className="font-bold text-[#2E4A3B] text-sm">₪{plan.totalCost.toFixed(2)}</span>
-                      </div>
-                      <div className="text-xs text-[#8A7F66] mt-1">{vendorNames}</div>
-                      {isOnline && (
-                        <div className="text-[11px] text-[#8A7F66] mt-0.5">
-                          פריטים: ₪{plan.itemsCost.toFixed(2)} + משלוח: ₪{plan.deliveryCost.toFixed(2)}
-                        </div>
-                      )}
-                      {plan.missingItems.length > 0 && (
-                        <div className="text-[11px] text-[#B8462F] mt-1">חסר: {plan.missingItems.join(", ")}</div>
-                      )}
-                      {isOnline && plan.belowMinimum.length > 0 && (
-                        <div className="text-[11px] text-[#8A5A15] mt-1">
-                          {plan.belowMinimum.map(b => `${vendorLabel(b.profile.vendor)}: מתחת למינימום הזמנה (₪${b.subtotal.toFixed(2)} מתוך ₪${b.minimumOrder})`).join(" · ")}
-                        </div>
-                      )}
-                    </button>
-                    {isSelected && (
-                      <div className="mt-2 mb-1 space-y-2 px-1">
-                        {plan.vendors.map(p => {
-                          const vendorItems = plan.byVendor[p.id] || [];
-                          if (vendorItems.length === 0) return null;
-                          return (
-                            <div key={p.id} className="bg-[#F7F2E4] rounded-xl p-2.5">
-                              <div className="text-xs font-semibold text-[#5B5749] mb-1">{profileLabel(p, plan.vendors)} ({vendorItems.length})</div>
-                              <div className="space-y-0.5">
-                                {vendorItems.map(entry => (
-                                  <div key={entry.item.id} className="flex items-center justify-between text-xs text-[#5B5749]">
-                                    <span>{entry.item.name}</span>
-                                    <span>₪{entry.price.toFixed(2)}</span>
-                                  </div>
-                                ))}
-                                {isOnline && (onlineVendors[p.vendor] || {}).deliveryFee != null && (
-                                  <div className="flex items-center justify-between text-xs text-[#8A7F66] pt-0.5 border-t border-[#E5D8B5] mt-1">
-                                    <span>משלוח</span>
-                                    <span>₪{(onlineVendors[p.vendor].deliveryFee).toFixed(2)}</span>
-                                  </div>
-                                )}
-                              </div>
-                              {isOnline && (
-                                <button
-                                  onClick={() => setOrderVendor({ vendor: p.vendor, entries: vendorItems.map(e => e.item) })}
-                                  className="w-full mt-2 bg-white border border-[#B9D9B0] text-[#256A3F] py-2 rounded-lg text-xs font-semibold">
-                                  🛒 מעבר להזמנה ב{vendorLabel(p.vendor)}
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
-                        <button onClick={() => createListsFromPlan(plan)} disabled={creating}
-                          className="w-full bg-[#2E4A3B] text-white py-2.5 rounded-xl font-medium text-sm disabled:opacity-40">
-                          {creating ? <Spinner /> : "+ צור רשימות לפי התכנית"}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <React.Fragment>
+              {hasBothSides && delta != null && (
+                <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2.5 mb-4 text-center">
+                  <p className="text-sm font-semibold text-[#8A5A15]">
+                    {Math.abs(delta) < 0.01 ? "אותה עלות בערך בחנות ובאונליין"
+                      : delta > 0 ? `🛒 אונליין זול ב-₪${delta.toFixed(2)} לעומת בחנות`
+                      : `🏪 בחנות זול ב-₪${(-delta).toFixed(2)} לעומת אונליין`}
+                  </p>
+                  {bestInstore.missingItems.length !== bestOnline.missingItems.length && (
+                    <p className="text-[11px] text-[#8A5A15] mt-1">⚠️ ההשוואה חלקית — לא כל הפריטים תומחרו משני הצדדים</p>
+                  )}
+                </div>
+              )}
+              {instorePool.length > 0 && (
+                <div className={onlinePool.length > 0 ? "mb-4" : ""}>
+                  {hasBothSides && <div className="text-[11px] font-semibold text-[#A79A7C] uppercase tracking-wide mb-1.5">🏪 בחנות</div>}
+                  {renderPlanSection(instorePlans, selectedInstoreK, setSelectedInstoreK, false)}
+                </div>
+              )}
+              {onlinePool.length > 0 && (
+                <div>
+                  {hasBothSides && <div className="text-[11px] font-semibold text-[#A79A7C] uppercase tracking-wide mb-1.5">🛒 אונליין</div>}
+                  {renderPlanSection(onlinePlans, selectedOnlineK, setSelectedOnlineK, true)}
+                </div>
+              )}
+              {instorePool.length === 0 && (
+                <p className="text-center text-[#A79A7C] text-xs mt-3">הוסיפו סניף פיזי (⚙️ ← רשתות להשוואת מחירים) כדי להשוות גם מולו</p>
+              )}
+              {onlinePool.length === 0 && (
+                <p className="text-center text-[#A79A7C] text-xs mt-3">הוסיפו רשת אונליין (⚙️ ← רשתות להשוואת מחירים) כדי להשוות גם מולה</p>
+              )}
+            </React.Fragment>
           )}
         </React.Fragment>
       )}
@@ -4026,7 +4059,7 @@ function VendorOrderModal({ vendor, entries, onClose }) {
 }
 
 // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
+function ListScreen({ uid, listId, listName, onBack }) {
   const [list, setList] = useState({ name: listName });
   const [items, setItems] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -4044,30 +4077,30 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
   const [pricesLoading, setPricesLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
+  const [priceView, setPriceView] = useState("instore"); // "instore" | "online" — which vendors' prices this list is currently showing
   const [showVendorVisibility, setShowVendorVisibility] = useState(false);
   const [showCopyItems, setShowCopyItems] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
-  const [profiles, setProfiles] = useState(null); // every vendorProfiles doc, active or not — needed to avoid re-provisioning a vendor the user turned off
 
-  useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
-    .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
-
-  const listMode = list.mode || "instore";
-  // A user's vendor profiles span both in-store and online — each list only
-  // ever deals with the ones matching its own mode, exactly like it never
-  // saw the others at all. Everything downstream (matching, pricing, promo
-  // tags, the optimizer) is unchanged either way; it just receives a
-  // pre-filtered set instead of the whole thing.
-  const allActiveProfiles = useActiveVendorProfiles(uid);
-  const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === listMode);
+  // Every list now matches against every active vendor regardless of type —
+  // there's no more "instore list"/"online list" distinction. priceView
+  // below is purely a display filter for what's currently shown.
+  const activeProfiles = useActiveVendorProfiles(uid);
   const onlineVendors = useOnlineVendors();
   const categories = useCategories();
+  const hasInstoreActive = activeProfiles.some(p => (p.mode || "instore") === "instore");
+  const hasOnlineActive = activeProfiles.some(p => p.mode === "online");
+  // A user with vendors active on only one side has nothing to toggle —
+  // auto-pin to whichever side actually has data instead of showing a
+  // 2-option control where one option is always empty.
+  const effectivePriceView = hasOnlineActive && !hasInstoreActive ? "online" : hasInstoreActive && !hasOnlineActive ? "instore" : priceView;
+  const viewProfiles = activeProfiles.filter(p => (p.mode || "instore") === effectivePriceView);
   // Which of the user's active vendors THIS list currently shows — a
   // per-list display filter, distinct from "active" (a vendor stays
   // active/matched in the background even while hidden here, so unhiding
   // it later doesn't need a fresh search).
   const hiddenVendorIds = list.hiddenVendorIds || [];
-  const visibleProfiles = activeProfiles.filter(p => hiddenVendorIds.indexOf(p.id) === -1);
+  const visibleProfiles = viewProfiles.filter(p => hiddenVendorIds.indexOf(p.id) === -1);
   function toggleVendorVisibility(profileId) {
     const nowHidden = hiddenVendorIds.indexOf(profileId) === -1;
     db.collection("lists").doc(listId).update({
@@ -4081,11 +4114,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
     if (toast) { const t = setTimeout(() => setToast(null), 3400); return () => clearTimeout(t); }
   }, [toast]);
 
-  useEffect(() => {
-    if (justCreatedOnline) setToast("⚠️ זו השוואת מחירים בין רשתות — ההזמנה בפועל מתבצעת באתר הרשת שתבחרו");
-    // eslint-disable-next-line
-  }, []);
-
   useEffect(() => db.collection("lists").doc(listId).onSnapshot(snap => {
     if (snap.exists) setList({ id: snap.id, ...snap.data() });
   }), [listId]);
@@ -4094,17 +4122,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
     return db.collection("lists").doc(listId).collection("items").orderBy("addedAt")
       .onSnapshot(snap => setItems(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
   }, [listId]);
-
-
-  // Opening an online list for the first time is what actually creates its
-  // "premade" vendor list (Settings does the same thing, so whichever the
-  // user reaches first is enough) — this is what makes the list usable
-  // without a separate trip to Settings first.
-  useEffect(() => {
-    if (listMode !== "online") return;
-    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
-    // eslint-disable-next-line
-  }, [listMode, profiles, JSON.stringify(onlineVendors)]);
 
   const barcodesByVendor = {};
   (items || []).forEach(it => {
@@ -4155,7 +4172,6 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
     const newRef = await db.collection("lists").add({
       name,
       ownerId: uid,
-      mode: listMode,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     const batch = db.batch();
@@ -4200,6 +4216,23 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
         <button onClick={() => setShowMenu(true)} className="text-[#F3ECD9] text-lg w-8 h-8 flex items-center justify-center bg-white/10 rounded-full flex-shrink-0">☰</button>
       </div>
 
+      {hasInstoreActive && hasOnlineActive && (
+        <div className="px-4 pt-3 flex justify-center no-print">
+          <div className="flex bg-[#F3ECD9] rounded-full p-0.5">
+            <button onClick={() => setPriceView("instore")}
+              className={"text-xs px-4 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+                (effectivePriceView === "instore" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+              בחנות
+            </button>
+            <button onClick={() => setPriceView("online")}
+              className={"text-xs px-4 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+                (effectivePriceView === "online" ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+              אונליין
+            </button>
+          </div>
+        </div>
+      )}
+
       {pricesLoading && visibleProfiles.length > 0 && (
         <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2 no-print">
           <Spinner2 /> טוען מחירים...
@@ -4242,12 +4275,12 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
       </div>
 
       <div className="fixed bottom-24 left-1/2 -translate-x-1/2 flex items-center gap-2 no-print">
-        {visibleProfiles.length > 0 && (items || []).length > 0 && (
+        {activeProfiles.length > 0 && (items || []).length > 0 && (
           <button
             onClick={() => setShowOptimizer(true)}
             className="bg-white border border-[#C7B78E] text-[#5B5749] px-3 py-2 rounded-xl shadow-md text-xs font-medium flex items-center gap-1 whitespace-nowrap"
           >
-            {listMode === "online" ? "🛒 בחירת רשת להזמנה באתרה" : "🧮 אופטימיזציה וסיום"}
+            🧮 אופטימיזציה והשוואה
           </button>
         )}
         <button
@@ -4361,15 +4394,15 @@ function ListScreen({ uid, listId, listName, justCreatedOnline, onBack }) {
           onClose={() => setConfirmDeleteItem(null)} />
       )}
       {showVendorVisibility && (
-        <VendorVisibilityModal uid={uid} listMode={listMode} activeProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
+        <VendorVisibilityModal uid={uid} activeProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
           onToggle={toggleVendorVisibility} onClose={() => setShowVendorVisibility(false)} showToast={setToast} />
       )}
       {showCopyItems && (
-        <CopyItemsModal uid={uid} sourceListId={listId} sourceMode={listMode} items={items || []} categories={categories}
+        <CopyItemsModal uid={uid} sourceListId={listId} items={items || []} categories={categories}
           onClose={() => setShowCopyItems(false)} showToast={setToast} />
       )}
       {showOptimizer && (
-        <OptimizerModal uid={uid} list={list} items={items || []} visibleProfiles={visibleProfiles} activeProfiles={activeProfiles}
+        <OptimizerModal uid={uid} list={list} items={items || []} allActiveProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
           onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} pricesLoading={pricesLoading}
           onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
       )}
@@ -4605,14 +4638,14 @@ function HelpScreen({ onBack }) {
             <HelpCard icon="📲" title="1. התקנה למסך הבית">
               כפתור גלגל השיניים ⚙️ בפינת מסך הבית ← "התקנת אפליקציה". כך סופר זולה נפתחת כמו אפליקציה רגילה, בלי לחפש אותה בדפדפן בכל פעם.
             </HelpCard>
-            <HelpCard icon="🏪" title="2. הוספת רשתות וסניפים למחירי חנות">
+            <HelpCard icon="🏪" title="2. הוספת רשתות וסניפים">
               כפתור גלגל השיניים ⚙️ ← "רשתות להשוואת מחירים" — הוסיפו את הסניפים שבהם אתם קונים בפועל — חיפוש לפי שם או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
             </HelpCard>
             <HelpCard icon="🛒" title="3. רוצים גם מחירי אונליין?">
-              חשוב להבהיר: סופר זולה לא מבצעת הזמנות בעצמה — היא רק משווה מחירים. אין צורך להוסיף כלום ידנית: כשפותחים רשימה מסוג "מחירי אונליין" האפליקציה בונה אוטומטית רשימת רשתות שתומכות במשלוח, ואפשר לכבות מהן את מה שלא רלוונטי. הזמינות בפועל תלויה בעיר המשלוח שלכם — האפליקציה לא בודקת זאת אוטומטית, כדאי לוודא באתר הרשת לפני ההזמנה.
+              חשוב להבהיר: סופר זולה לא מבצעת הזמנות בעצמה — היא רק משווה מחירים. אין צורך להוסיף כלום ידנית: רשתות האונליין המוגדרות נוספות אוטומטית ברגע שנכנסים לאפליקציה, ואפשר לכבות מהן את מה שלא רלוונטי (⚙️ ← "רשתות להשוואת מחירים"). הזמינות בפועל תלויה בעיר המשלוח שלכם — האפליקציה לא בודקת זאת אוטומטית, כדאי לוודא באתר הרשת לפני ההזמנה.
             </HelpCard>
             <HelpCard icon="📝" title="4. יצירת רשימה">
-              במסך הבית: "+ מחירי חנות" להשוואת מחירים בסניפים שבהם אתם קונים בעצמכם, או "+ מחירי אונליין" להשוואה מול הרשתות שמוכרות אונליין. שני הסוגים הם רשימות השוואת מחירים בלבד — הקנייה עצמה תמיד מתבצעת מחוץ לאפליקציה, בחנות או באתר הרשת. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
+              במסך הבית: "+ רשימה חדשה" — רשימה אחת שמשווה מחירים גם בחנות וגם אונליין, לפי הרשתות הפעילות שלכם, עם אפשרות להחליף תצוגה ולראות גם השוואה בין השתיים. הקנייה עצמה תמיד מתבצעת מחוץ לאפליקציה — בחנות או באתר הרשת. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
               בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק, או 📷 סריקת ברקוד — מצלמים את הברקוד שעל המוצר והאפליקציה מוצאת אותו אוטומטית בכל רשת פעילה. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט, לא לפני החיפוש.
@@ -4623,23 +4656,26 @@ function HelpScreen({ onBack }) {
             <HelpCard icon="📊" title="7. תצוגת רשימה מול טבלה">
               בכל רשימה יש שני מצבי תצוגה, מתחלפים מכפתור בראש המסך: 📋 רשימה — פריט אחר פריט עם המחירים לצדו. 📊 טבלה — כל הפריטים והרשתות יחד כמו גיליון, כולל שורת סיכום.
             </HelpCard>
+            <HelpCard icon="🔀" title="8. תצוגת בחנות מול אונליין">
+              כשיש לכם גם סניפים פיזיים וגם רשתות אונליין פעילים, מופיע מתג נוסף בראש הרשימה — "בחנות" / "אונליין" — שמחליף אילו מחירים מוצגים לאותם הפריטים בדיוק. השוואת העלות הכוללת בין השתיים נמצאת באופטימיזציית הקניות (☰).
+            </HelpCard>
           </React.Fragment>
         ) : (
           <React.Fragment>
             <HelpCard icon="🔍" title="חיפוש והוספת פריט">
-              במסך הבית — בוחרים מתג רגיל/אונליין (כדי לדעת מול אילו רשתות להשוות) ואז מחפשים פריט לפי שם, קטגוריה או סריקת ברקוד, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
+              במסך הבית — מחפשים פריט לפי שם, קטגוריה או סריקת ברקוד, מול כל הרשתות הפעילות שלכם בבת אחת, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
             </HelpCard>
-            <HelpCard icon="🧮" title="אופטימיזציית קניות">
-              כפתור קטן ליד "+ הוספת פריט" ("🧮 אופטימיזציה וסיום" ברשימה רגילה, "🛒 בחירת רשת להזמנה באתרה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת מחירי אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
+            <HelpCard icon="🧮" title="אופטימיזציה והשוואה">
+              כפתור "🧮 אופטימיזציה והשוואה" ליד "+ הוספת פריט" פותח מסך שמראה את התכנית הזולה ביותר בחנות (עד 3 חנויות מפוצלות) ואת התכנית הזולה ביותר אונליין (כולל דמי משלוח), זו לצד זו עם הפרש העלות ביניהן. אפשר גם ליצור רשימות נפרדות לפי כל תכנית.
             </HelpCard>
-            <HelpCard icon="🛒" title="מעבר להזמנה (רשימת אונליין)">
-              בתכנית שנבחרה באופטימיזציה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
+            <HelpCard icon="🛒" title="מעבר להזמנה (ברשת אונליין)">
+              בתכנית האונליין באופטימיזציה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
             </HelpCard>
             <HelpCard icon="🏪" title="רשתות מוצגות">
-              מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם. מאותו מסך אפשר גם להוסיף סניף חדש (לא רק לנהל את הקיימים).
+              מסתירים רשת מסוימת רק ברשימה הזו, בלי לכבות אותה לגמרי — שימושי כשלא מתכננים לקנות שם הפעם. הסניפים הפיזיים ורשתות האונליין מוצגים בשתי קבוצות נפרדות. מאותו מסך אפשר גם להוסיף סניף חדש (לא רק לנהל את הקיימים).
             </HelpCard>
             <HelpCard icon="📤" title="העתק פריטים לרשימה אחרת">
-              בתפריט הרשימה (☰) — בוחרים פריטים מהרשימה הנוכחית ומעתיקים אותם לרשימה קיימת או חדשה, מאותו סוג (רגילה או אונליין) כמו הרשימה המקורית.
+              בתפריט הרשימה (☰) — בוחרים פריטים מהרשימה הנוכחית ומעתיקים אותם לרשימה קיימת או חדשה.
             </HelpCard>
             <HelpCard icon="🏷️" title="מבצעים">
               תג כתום ליד מחיר מציין מבצע שתלוי בכמות, למשל "2 ב-₪10" — המחיר יתעדכן אוטומטית כשתגיעו לכמות הנדרשת.
@@ -4681,7 +4717,6 @@ function App() {
         uid={user.uid}
         listId={screen.id}
         listName={screen.name}
-        justCreatedOnline={screen.justCreatedOnline}
         onBack={() => setScreen({ view: "home" })}
       />
     );
@@ -4697,7 +4732,7 @@ function App() {
         uid={user.uid}
         displayName={user.displayName}
         email={user.email}
-        onOpenList={(id, name, justCreatedOnline) => setScreen({ view: "list", id, name, justCreatedOnline })}
+        onOpenList={(id, name) => setScreen({ view: "list", id, name })}
         onOpenVendors={() => setScreen({ view: "vendors" })}
         onOpenAdminOptions={() => setScreen({ view: "adminOptions" })}
         onOpenHelp={() => setScreen({ view: "help" })}
