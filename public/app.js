@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.87";
+const VERSION = "v1.88";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1413,7 +1413,7 @@ function ListCard({ list, onOpen }) {
       onClick={onOpen}
       className="bg-white border border-[#E0D4B4] rounded-2xl px-4 py-4 flex items-center gap-2 shadow-sm cursor-pointer"
     >
-      {list.mode === "online" && <span className="text-base flex-shrink-0" title="קנייה אונליין">🛒</span>}
+      {list.mode === "online" && <span className="text-base flex-shrink-0" title="מחירי אונליין">🛒</span>}
       <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate text-[#2B2418]">
         {list.name}
       </span>
@@ -1507,7 +1507,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   async function quickCreate(mode) {
     if (creating) return;
     setCreating(true);
-    const prefix = mode === "online" ? "רשימת קנייה אונליין #" : "רשימת קניות #";
+    const prefix = mode === "online" ? "רשימת מחירי אונליין #" : "רשימת מחירי חנות #";
     let maxNum = 0;
     (lists || []).forEach(l => {
       if (l.name && l.name.indexOf(prefix) === 0) {
@@ -1646,14 +1646,14 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           disabled={creating}
           className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
         >
-          {creating ? "יוצר..." : "+ קניה בסניף"}
+          {creating ? "יוצר..." : "+ מחירי חנות"}
         </button>
         <button
           onClick={() => quickCreate("online")}
           disabled={creating}
           className="flex-1 border-2 border-dashed border-[#C7B78E] rounded-2xl py-3 text-[#A0906B] text-[15px] disabled:opacity-50"
         >
-          {creating ? "יוצר..." : "+ קנייה אונליין"}
+          {creating ? "יוצר..." : "+ מחירי אונליין"}
         </button>
       </div>
       <div className="px-4 mt-2">
@@ -2131,8 +2131,8 @@ function VendorsScreen({ uid, onBack }) {
         </div>
 
         <div>
-          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות לקנייה אונליין</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">רשימת כל הרשתות עם אפשרות קנייה אונליין — אפשר לכבות כל רשת שלא רוצים.</p>
+          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>רשתות אונליין</h2>
+          <p className="text-xs text-[#8A7F66] mb-3">רשימת כל הרשתות שיש להן מחירים אונליין — אפשר לכבות כל רשת שלא רוצים.</p>
           <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2.5 mb-3">
             <p className="text-xs text-[#8A5A15]">
               הזמינות בפועל תלויה בעיר המשלוח שלכם — הרשימה כאן לא בודקת את זה. מומלץ לוודא באתר הרשת לפני ההזמנה.
@@ -2140,7 +2140,7 @@ function VendorsScreen({ uid, onBack }) {
           </div>
           <div className="flex flex-col gap-2">
             {onlineProfiles.length === 0 && (
-              <div className="text-[#8A7F66] text-sm">אין עדיין רשתות לקנייה אונליין</div>
+              <div className="text-[#8A7F66] text-sm">אין עדיין רשתות אונליין</div>
             )}
             {onlineProfiles.map(p => (
               <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
@@ -2957,7 +2957,7 @@ function AdminOptionsScreen({ uid, onBack }) {
           onConfirm={() => deleteCategory(confirmDeleteCat)} onClose={() => setConfirmDeleteCat(null)} />
       )}
       {confirmDeleteOnlineVendor && (
-        <ConfirmDialog message={`להסיר את ${vendorLabel(confirmDeleteOnlineVendor)} מרשתות הקנייה האונליין?`}
+        <ConfirmDialog message={`להסיר את ${vendorLabel(confirmDeleteOnlineVendor)} מרשתות האונליין?`}
           onConfirm={() => deleteOnlineVendor(confirmDeleteOnlineVendor)} onClose={() => setConfirmDeleteOnlineVendor(null)} />
       )}
 
@@ -4605,14 +4605,14 @@ function HelpScreen({ onBack }) {
             <HelpCard icon="📲" title="1. התקנה למסך הבית">
               כפתור גלגל השיניים ⚙️ בפינת מסך הבית ← "התקנת אפליקציה". כך סופר זולה נפתחת כמו אפליקציה רגילה, בלי לחפש אותה בדפדפן בכל פעם.
             </HelpCard>
-            <HelpCard icon="🏪" title="2. הוספת רשתות וסניפים לקנייה רגילה">
+            <HelpCard icon="🏪" title="2. הוספת רשתות וסניפים למחירי חנות">
               כפתור גלגל השיניים ⚙️ ← "רשתות להשוואת מחירים" — הוסיפו את הסניפים שבהם אתם קונים בפועל — חיפוש לפי שם או לפי כתובת קרובה. רק סניפים "פעילים" משפיעים על השוואת המחירים.
             </HelpCard>
-            <HelpCard icon="🛒" title="3. קונים גם אונליין?">
-              אין צורך להוסיף כלום ידנית. כשפותחים רשימה מסוג "קנייה אונליין" האפליקציה בונה אוטומטית רשימת רשתות שתומכות במשלוח, ואפשר לכבות מהן את מה שלא רלוונטי. הזמינות בפועל תלויה בעיר המשלוח שלכם — האפליקציה לא בודקת זאת אוטומטית, כדאי לוודא באתר הרשת לפני ההזמנה.
+            <HelpCard icon="🛒" title="3. רוצים גם מחירי אונליין?">
+              חשוב להבהיר: סופר זולה לא מבצעת הזמנות בעצמה — היא רק משווה מחירים. אין צורך להוסיף כלום ידנית: כשפותחים רשימה מסוג "מחירי אונליין" האפליקציה בונה אוטומטית רשימת רשתות שתומכות במשלוח, ואפשר לכבות מהן את מה שלא רלוונטי. הזמינות בפועל תלויה בעיר המשלוח שלכם — האפליקציה לא בודקת זאת אוטומטית, כדאי לוודא באתר הרשת לפני ההזמנה.
             </HelpCard>
             <HelpCard icon="📝" title="4. יצירת רשימה">
-              במסך הבית: "+ קניה בסניף" לקנייה רגילה, או "+ קנייה אונליין" לרשימה שמושווית מול הרשתות האונליין. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
+              במסך הבית: "+ מחירי חנות" להשוואת מחירים בסניפים שבהם אתם קונים בעצמכם, או "+ מחירי אונליין" להשוואה מול הרשתות שמוכרות אונליין. שני הסוגים הם רשימות השוואת מחירים בלבד — הקנייה עצמה תמיד מתבצעת מחוץ לאפליקציה, בחנות או באתר הרשת. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
               בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק, או 📷 סריקת ברקוד — מצלמים את הברקוד שעל המוצר והאפליקציה מוצאת אותו אוטומטית בכל רשת פעילה. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט, לא לפני החיפוש.
@@ -4630,7 +4630,7 @@ function HelpScreen({ onBack }) {
               במסך הבית — בוחרים מתג רגיל/אונליין (כדי לדעת מול אילו רשתות להשוות) ואז מחפשים פריט לפי שם, קטגוריה או סריקת ברקוד, בדיוק כמו בתוך רשימה. אפשר גם רק להסתכל על ההתאמות בלי להוסיף כלום. רק ברגע שבאמת לוחצים להוסיף פריט נשאלים לאיזו רשימה — ואז זה נשמר לכל שאר החיפוש, בלי לשאול שוב על כל פריט.
             </HelpCard>
             <HelpCard icon="🧮" title="אופטימיזציית קניות">
-              כפתור קטן ליד "+ הוספת פריט" ("🧮 אופטימיזציה וסיום" ברשימה רגילה, "🛒 בחירת רשת להזמנה באתרה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת קנייה אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
+              כפתור קטן ליד "+ הוספת פריט" ("🧮 אופטימיזציה וסיום" ברשימה רגילה, "🛒 בחירת רשת להזמנה באתרה" ברשימת אונליין) פותח את אופטימיזציית הקניות — משווה קנייה בחנות אחת מול פיצול בין כמה חנויות, ומאפשר ליצור רשימות נפרדות לפי התכנית הזולה ביותר. ברשימת מחירי אונליין העלות כוללת גם דמי משלוח לכל רשת בתכנית, והתכנית הזולה נבחרת אוטומטית עם הפתיחה.
             </HelpCard>
             <HelpCard icon="🛒" title="מעבר להזמנה (רשימת אונליין)">
               בתכנית שנבחרה באופטימיזציה יש לכל רשת כפתור מעבר להזמנה. הוא פותח את אתר הרשת בטאב חדש, ומאפשר להעתיק כל שם פריט ולהדביק אותו בחיפוש שם. ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו.
