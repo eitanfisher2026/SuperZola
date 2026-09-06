@@ -88,6 +88,7 @@ const DAILY_CALL_CAPS = {
   browseCategoryItems: 300,
   lookupItemByBarcode: 300,
   prewarmVendorCatalog: 50,
+  geocodeVendorBranchesBatch: 100,
   submitCategoryCorrection: 50,
   submitFeedbackMessage: 50,
 };
@@ -334,6 +335,13 @@ exports.categorizeItemName = onCall(
     if (!name || typeof name !== 'string' || !name.trim()) throw new HttpsError('invalid-argument', 'name required');
     const cats = Array.isArray(categories) && categories.length > 0 ? categories : [];
     if (cats.length === 0) return { category: null };
+    // Item names repeat constantly across users ("חלב", "לחם", "ביצים"...)
+    // and the category list is global/shared, so once a name has been
+    // categorized it never needs to go back to the AI — same caching
+    // pattern productCategories already uses for barcodes, keyed by name.
+    const cacheRef = db.collection('itemNameCategories').doc(itemNameKey(name));
+    const cacheSnap = await cacheRef.get();
+    if (cacheSnap.exists) return { category: cacheSnap.data().category || null };
     if ((await monthlyCostSoFar(request.auth.uid)) >= FREE_TIER_MONTHLY_AI_CAP_USD) return { category: null };
     const config = await getAppAiConfig();
     if (!config) return { category: null };
@@ -342,6 +350,7 @@ exports.categorizeItemName = onCall(
     try {
       const { category, usage } = await categorizeName(ai, name, cats.map(c => c.label));
       await recordCost(request, ai, usage?.input_tokens || 0, usage?.output_tokens || 0);
+      if (category) await cacheRef.set({ category, categorizedAt: Date.now() });
       return { category };
     } catch (e) {
       return { category: null };
@@ -1171,14 +1180,6 @@ async function getUserActiveProfiles(uid) {
   return rows.slice(0, DEFAULT_MAX_ACTIVE_VENDORS).map(({ id, vendor, branchId }) => ({ id, vendor, branchId }));
 }
 
-exports.getVendorList = onCall(
-  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
-  async (request) => {
-    requireSignedIn(request);
-    return { vendors: VENDOR_IDS.map(id => ({ id, label: VENDOR_LABELS[id] || id })) };
-  }
-);
-
 exports.getVendorBranches = onCall(
   { timeoutSeconds: 180, memory: '512MiB', region: REGION },
   async (request) => {
@@ -1208,9 +1209,10 @@ exports.getVendorBranches = onCall(
 // geocode is marked geocodeFailed so it's skipped on future batches instead
 // of being retried (and re-delaying) forever.
 exports.geocodeVendorBranchesBatch = onCall(
-  { timeoutSeconds: 60, memory: '256MiB', region: REGION },
+  { timeoutSeconds: 60, memory: '256MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'geocodeVendorBranchesBatch');
     const { vendor } = request.data || {};
     if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
     const batchSize = 15;
@@ -1263,9 +1265,19 @@ exports.prewarmVendorCatalog = onCall(
     // live feed (not the "warm the cache in the background" default) —
     // gated to editor/admin so it can't be triggered ad hoc by every user.
     if (force) await requireEditorOrAdmin(request);
-    await ensureFreshCatalog(vendor, String(branchId), !!force).catch(() => {});
-    const snap = await db.collection('vendorCatalogIndex').doc(docKey(vendor, String(branchId))).get();
-    return { ok: true, updatedAt: (snap.data() || {}).updatedAt || null };
+    const key = docKey(vendor, String(branchId));
+    const indexRef = db.collection('vendorCatalogIndex').doc(key);
+    const indexSnap = await indexRef.get();
+    // Only actually ingest when there's no catalog yet or a forced refresh
+    // was requested. Previously this always called ensureFreshCatalog(),
+    // which — for a branch someone else already added — read back every
+    // item in the catalog (thousands of docs) just to discard the result;
+    // there was nothing left to "warm" once the index already exists.
+    if (!indexSnap.exists || force) {
+      await ingestVendorCatalog(vendor, String(branchId)).catch(() => {});
+    }
+    const finalSnap = await indexRef.get();
+    return { ok: true, updatedAt: (finalSnap.data() || {}).updatedAt || null };
   }
 );
 
@@ -1598,33 +1610,3 @@ exports.getBasketPrices = onCall(
   }
 );
 
-exports.getVendorPromotions = onCall(
-  { timeoutSeconds: 300, memory: '1GiB', region: REGION },
-  async (request) => {
-    requireSignedIn(request);
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
-    if (activeProfiles.length === 0) return { promotionsByProfile: {}, profiles: activeProfiles };
-    const promosByBranch = {};
-    await Promise.all(activeProfiles.map(async (p) => {
-      const key = `${p.vendor}:${p.branchId}`;
-      if (!promosByBranch[key]) {
-        promosByBranch[key] = db.collection('vendorPromotions').doc(docKey(p.vendor, p.branchId)).get()
-          .then(snap => (snap.data() || {}).promotions || []);
-      }
-      return promosByBranch[key];
-    }));
-    const promotionsByProfile = {};
-    await Promise.all(activeProfiles.map(async (p) => {
-      const key = `${p.vendor}:${p.branchId}`;
-      const promotions = await promosByBranch[key];
-      const barcodes = [...new Set(promotions.flatMap(promo => promo.items.map(i => i.barcode)))];
-      const dKey = docKey(p.vendor, p.branchId);
-      const itemsByBarcode = await readCatalogItemsBatch(dKey, barcodes);
-      promotionsByProfile[p.id] = promotions.map(promo => ({
-        ...promo,
-        items: promo.items.map(item => ({ ...item, name: itemsByBarcode[item.barcode]?.name || '' })),
-      }));
-    }));
-    return { promotionsByProfile, profiles: activeProfiles };
-  }
-);

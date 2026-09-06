@@ -78,14 +78,32 @@ service cloud.firestore {
     // Vendor/catalog data is server-only — every access goes through a
     // Cloud Function using the Admin SDK, which bypasses these rules
     // entirely. No client path ever needs read or write here.
-    match /vendorBranches/{vendor}/{branchId} {
+    match /vendorBranches/{vendor} {
       allow read, write: if false;
     }
-    match /catalogRefs/{key} {
+    match /vendorCatalogIndex/{key} {
       allow read: if isAdmin();
       allow write: if false;
     }
-    match /catalogs/{key}/items/{barcode} {
+    match /vendorCatalogs/{key}/items/{barcode} {
+      allow read, write: if false;
+    }
+    match /vendorPromotionsIndex/{key} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+    match /vendorPromotions/{key} {
+      allow read, write: if false;
+    }
+    match /vendorPromoPrices/{key} {
+      allow read, write: if false;
+    }
+    // Global name->barcode match cache (resolveItemBarcodes/confirmItemBarcode)
+    // and name->category cache (categorizeItemName) — same server-only model.
+    match /itemBarcodes/{key} {
+      allow read, write: if false;
+    }
+    match /itemNameCategories/{key} {
       allow read, write: if false;
     }
     // Shared category tag per barcode, reused across every vendor's copy of

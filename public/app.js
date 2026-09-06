@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.95";
+const VERSION = "v1.96";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -451,21 +451,6 @@ function useActiveVendorProfiles(uid) {
       .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
   }, [uid]);
   return profiles;
-}
-// Same query as useActiveVendorProfiles, but also reports whether the
-// first snapshot has actually arrived — an empty array is the initial
-// state too, so anything that treats "zero" as meaningful (e.g. a
-// first-time-setup banner) needs to know not to trust it before the real
-// data has had a chance to load, or it flashes for every existing user.
-function useActiveVendorProfilesState(uid) {
-  const [state, setState] = useState({ profiles: [], loaded: false });
-  useEffect(() => {
-    if (!uid) return;
-    return db.collection("users").doc(uid).collection("vendorProfiles")
-      .where("active", "==", true)
-      .onSnapshot(snap => setState({ profiles: snap.docs.map(d => ({ id: d.id, ...d.data() })), loaded: true }));
-  }, [uid]);
-  return state;
 }
 
 // ── SHARED UI ─────────────────────────────────────────────────────────────────
@@ -1461,17 +1446,22 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const [viewAsUser, setViewAsUser] = useState(isViewingAsUser());
   const simulatedIsAdmin = isAdmin && !viewAsUser;
   const categories = useCategories();
-  const { profiles: activeProfiles, loaded: profilesLoaded } = useActiveVendorProfilesState(uid);
-  // Online vendors are admin-configured and the same for everyone — a user
-  // never "sets those up," so an online profile auto-provisioned just from
-  // opening an online list shouldn't count as having completed setup. Only
-  // a real in-store branch, which the user actually chose to add, does.
-  const isNewUser = profilesLoaded && activeProfiles.filter(p => (p.mode || "instore") === "instore").length === 0;
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
+
+  // Derived from the same allProfiles listener above instead of its own
+  // separate active-only query — Home used to run two live listeners on
+  // the same small vendorProfiles subcollection at once (one filtered, one
+  // not), which cost double the reads for no real benefit.
+  const profilesLoaded = allProfiles !== null;
+  // Online vendors are admin-configured and the same for everyone — a user
+  // never "sets those up," so an online profile auto-provisioned just from
+  // opening an online list shouldn't count as having completed setup. Only
+  // a real in-store branch, which the user actually chose to add, does.
+  const isNewUser = profilesLoaded && (allProfiles || []).filter(p => p.active && (p.mode || "instore") === "instore").length === 0;
 
   // Fires once per app-open, unconditionally — every list now shows both
   // price views, so online vendor profiles need to be ready before ANY
@@ -3256,46 +3246,70 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
 }
 
 // ── BARCODE SCAN (camera search mode) ─────────────────────────────────────────
-// Wraps html5-qrcode's camera reader (loaded via a plain <script> tag in
-// index.html, exposed as window.Html5Qrcode — there's no bundler here, so
-// no npm import). Scoped to retail 1D formats only (EAN-13/EAN-8/UPC-A/
+// html5-qrcode (~85KB gzip) is only ever needed by this one rarely-used
+// screen, so instead of a permanent <script> tag in index.html (paid for by
+// every visit, including the vast majority that never scan a barcode) it's
+// loaded on demand, right here, the first time this modal actually opens.
+// Exposed as window.Html5Qrcode once loaded — there's no bundler here, so
+// no npm import. Scoped to retail 1D formats only (EAN-13/EAN-8/UPC-A/
 // UPC-E cover virtually every Israeli grocery barcode) so it locks onto a
 // real barcode fast instead of also hunting for QR codes.
+const HTML5_QRCODE_SRC = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
+let html5QrcodeLoadPromise = null;
+function loadHtml5Qrcode() {
+  if (window.Html5Qrcode) return Promise.resolve();
+  if (!html5QrcodeLoadPromise) {
+    html5QrcodeLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = HTML5_QRCODE_SRC;
+      script.onload = () => resolve();
+      script.onerror = () => { html5QrcodeLoadPromise = null; reject(new Error("load failed")); };
+      document.head.appendChild(script);
+    });
+  }
+  return html5QrcodeLoadPromise;
+}
+
 function BarcodeScanModal({ onDetected, onClose }) {
   const [error, setError] = useState(null);
   const activeRef = useRef(false); // true once .start() resolved and not yet stopped
   const detectedRef = useRef(false);
+  const readerRef = useRef(null);
 
   useEffect(() => {
-    if (!window.Html5Qrcode) {
-      setError("סריקת ברקוד לא נטענה — בדקו את החיבור לאינטרנט ונסו שוב");
-      return;
-    }
-    const config = { verbose: false };
-    if (window.Html5QrcodeSupportedFormats) {
-      config.formatsToSupport = [
-        window.Html5QrcodeSupportedFormats.EAN_13,
-        window.Html5QrcodeSupportedFormats.EAN_8,
-        window.Html5QrcodeSupportedFormats.UPC_A,
-        window.Html5QrcodeSupportedFormats.UPC_E,
-      ];
-    }
-    const reader = new window.Html5Qrcode("barcode-scan-region", config);
-    reader.start(
-      { facingMode: "environment" },
-      { fps: 10, qrbox: { width: 260, height: 160 } },
-      decodedText => {
-        if (detectedRef.current) return; // a second frame can decode before stop() finishes
-        detectedRef.current = true;
-        activeRef.current = false;
-        reader.stop().then(() => onDetected(decodedText), () => onDetected(decodedText));
-      },
-      () => {} // per-frame "nothing found in this frame" — expected continuously, not an error
-    ).then(() => { activeRef.current = true; }, () => {
-      setError("לא ניתן לגשת למצלמה — ודאו שניתנה הרשאה למצלמה בדפדפן");
+    let cancelled = false;
+    loadHtml5Qrcode().then(() => {
+      if (cancelled) return;
+      const config = { verbose: false };
+      if (window.Html5QrcodeSupportedFormats) {
+        config.formatsToSupport = [
+          window.Html5QrcodeSupportedFormats.EAN_13,
+          window.Html5QrcodeSupportedFormats.EAN_8,
+          window.Html5QrcodeSupportedFormats.UPC_A,
+          window.Html5QrcodeSupportedFormats.UPC_E,
+        ];
+      }
+      const reader = new window.Html5Qrcode("barcode-scan-region", config);
+      readerRef.current = reader;
+      reader.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 260, height: 160 } },
+        decodedText => {
+          if (detectedRef.current) return; // a second frame can decode before stop() finishes
+          detectedRef.current = true;
+          activeRef.current = false;
+          reader.stop().then(() => onDetected(decodedText), () => onDetected(decodedText));
+        },
+        () => {} // per-frame "nothing found in this frame" — expected continuously, not an error
+      ).then(() => { if (!cancelled) activeRef.current = true; }, () => {
+        if (!cancelled) setError("לא ניתן לגשת למצלמה — ודאו שניתנה הרשאה למצלמה בדפדפן");
+      });
+    }, () => {
+      if (!cancelled) setError("סריקת ברקוד לא נטענה — בדקו את החיבור לאינטרנט ונסו שוב");
     });
     return () => {
-      if (activeRef.current) { activeRef.current = false; reader.stop().catch(() => {}); }
+      cancelled = true;
+      if (activeRef.current && readerRef.current) { activeRef.current = false; readerRef.current.stop().catch(() => {}); }
     };
     // eslint-disable-next-line
   }, []);
@@ -4868,4 +4882,45 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+// Catches a crash anywhere below it (like the null-price optimizer bug
+// fixed in v1.95) that happens AFTER the app has already loaded — the boot
+// watchdog above only ever catches a failure to render within the first
+// 10 seconds, so without this a later runtime crash left a frozen blank
+// screen with no recovery except force-closing the app.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error) {
+    console.error("Uncaught render error:", error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-dvh flex flex-col items-center justify-center gap-4 p-6 text-center" dir="rtl">
+          <div className="text-4xl">⚠️</div>
+          <div className="text-sm text-gray-600 max-w-xs">
+            אירעה שגיאה בלתי צפויה. נסו לרענן את הדף.
+          </div>
+          <button
+            className="bg-blue-600 text-white border-none px-7 py-3.5 rounded-2xl text-sm font-semibold"
+            onClick={() => window.location.reload()}
+          >
+            רענון
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);

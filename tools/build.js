@@ -14,7 +14,8 @@ const source = fs.readFileSync(srcPath, 'utf8');
 const result = babel.transformSync(source, {
   presets: ['@babel/preset-react'],
   filename: srcPath,
-  compact: false,
+  compact: true,
+  comments: false,
 });
 
 fs.writeFileSync(outPath, result.code, 'utf8');
