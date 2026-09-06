@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.90";
+const VERSION = "v1.91";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -614,7 +614,7 @@ function Loading() {
   );
 }
 
-function SignInScreen() {
+function SignInScreen({ error }) {
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center gap-8 bg-[#FBF4E7] px-6">
       <AppIcon size={72} />
@@ -625,6 +625,11 @@ function SignInScreen() {
       >
         התחברות עם Google
       </button>
+      {error && (
+        <div className="bg-[#FBEAE5] border border-[#E0B0A5] rounded-xl px-4 py-2.5 max-w-xs text-center">
+          <p className="text-xs text-[#B8462F]">ההתחברות נכשלה: {error}</p>
+        </div>
+      )}
       <a href="/privacy.html" className="text-xs text-[#A79A7C] underline">מדיניות פרטיות</a>
     </div>
   );
@@ -4700,9 +4705,20 @@ function HelpScreen({ onBack }) {
 function App() {
   const [user, setUser] = useState(undefined); // undefined = still resolving
   const [screen, setScreen] = useState({ view: "home" });
+  const [signInError, setSignInError] = useState(null);
 
   useEffect(() => {
     return auth.onAuthStateChanged(setUser);
+  }, []);
+
+  // signInWithRedirect fails silently otherwise — the page just bounces
+  // back to the sign-in screen with zero feedback, which is exactly what
+  // made a real failure impossible to diagnose remotely. This surfaces
+  // whatever Firebase Auth actually says went wrong.
+  useEffect(() => {
+    auth.getRedirectResult().catch(err => {
+      setSignInError((err && err.code ? err.code + ": " : "") + (err && err.message ? err.message : String(err)));
+    });
   }, []);
 
   useEffect(() => {
@@ -4716,7 +4732,7 @@ function App() {
   if (user === undefined) {
     content = <Loading />;
   } else if (!user) {
-    content = <SignInScreen />;
+    content = <SignInScreen error={signInError} />;
   } else if (screen.view === "list") {
     content = (
       <ListScreen
