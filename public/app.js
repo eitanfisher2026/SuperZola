@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.94";
+const VERSION = "v1.95";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3781,7 +3781,13 @@ function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, 
           const byVendor = {};
           combo.forEach(p => { byVendor[p.id] = []; });
           items.forEach(item => {
-            const priced = itemProfilePrices(item, combo, priceMap, promoMap);
+            // itemProfilePrices includes an entry per vendor that was ever
+            // looked up, even ones with no real price (price: null, meaning
+            // "checked, not sold there") — fine for display elsewhere, but
+            // here that must count as missing, not as a priced entry with a
+            // null price that later crashes on `.toFixed()`.
+            const priced = itemProfilePrices(item, combo, priceMap, promoMap)
+              .filter(e => ((e.promo && e.promo.active) ? e.promo.price : e.price) != null);
             if (priced.length === 0) { missingItems.push(item.name); return; }
             const bestEntry = priced.reduce((acc, e) => {
               const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
@@ -4207,7 +4213,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
           const vendorPrices = prices[p.id];
           if (!vendorPrices) return;
           Object.values(it.barcodes || {}).forEach(bc => {
-            if (bc in vendorPrices) {
+            // A key existing just means the server checked this barcode at
+            // this vendor — it explicitly stores null for "checked, not
+            // sold there", which must NOT count as an online match.
+            if (vendorPrices[bc] != null) {
               overlay[it.id] = Object.assign({}, overlay[it.id], { [p.vendor]: bc });
             }
           });
