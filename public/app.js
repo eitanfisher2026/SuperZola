@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.85";
+const VERSION = "v1.86";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1169,7 +1169,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   );
 }
 
-function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast, initialDraft, initialPriceMap, initialPromoMap }) {
+function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast, initialDraft, initialPriceMap, initialPromoMap, closeLabel }) {
   const isEdit = mode === "edit";
   const [step, setStep] = useState(1);
   const blankDraft = () => {
@@ -1281,7 +1281,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   });
 
   return (
-    <Modal onClose={onClose} disableClose={!isEdit} closeLabel={!isEdit ? "סיום וחזרה לרשימה" : undefined} footer={
+    <Modal onClose={onClose} disableClose={!isEdit} closeLabel={!isEdit ? (closeLabel || "סיום וחזרה לרשימה") : undefined} footer={
       step === 1 ? (
         isEdit ? (
           <button onClick={finish} disabled={!draft.name.trim() || saving}
@@ -1670,7 +1670,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
       </div>
 
       {showCheckPrice && (
-        <FindItemModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} showToast={setToast} />
+        <FindItemModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} onOpenList={onOpenList} showToast={setToast} />
       )}
       {showFeedback && (
         <FeedbackDialog uid={uid} displayName={displayName} email={email} onClose={() => setShowFeedback(false)} />
@@ -2978,7 +2978,7 @@ function BrowseChevron() {
     </svg>
   );
 }
-function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, showToast }) {
+function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, showToast, closeLabel }) {
   const [selectedCat, setSelectedCat] = useState(null);
   const [selectedSub, setSelectedSub] = useState(null); // {id,label} | "ALL" | null
   const [items, setItems] = useState(null);
@@ -3113,7 +3113,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     : `${selectedCat.emoji} ${selectedCat.label}` + (selectedSub && selectedSub !== "ALL" ? ` · ${selectedSub.label}` : "");
 
   return (
-    <Modal onClose={onClose} closeLabel="סיום וחזרה לרשימה" footer={draftVendorCount > 0 && (
+    <Modal onClose={onClose} closeLabel={closeLabel || "סיום וחזרה לרשימה"} footer={draftVendorCount > 0 && (
       <button onClick={commitDraftItem} className="w-full bg-[#2E4A3B] text-white py-3 rounded-xl font-semibold text-sm">
         הוספה לרשימה ({draftVendorCount}/{(activeProfiles || []).length} רשתות)
       </button>
@@ -3293,7 +3293,7 @@ function BarcodeScanModal({ onDetected, onClose }) {
 // retailers, so there's no fuzzy name matching to do at all) → straight
 // into the exact same ItemWizard every other add path uses, pre-filled
 // with whatever match it already found.
-function BarcodeAddFlow({ activeProfiles, categories, onInsert, onClose, showToast }) {
+function BarcodeAddFlow({ activeProfiles, categories, onInsert, onClose, showToast, closeLabel }) {
   const [stage, setStage] = useState("scan"); // "scan" | "looking" | "notFound" | "found"
   const [result, setResult] = useState(null); // { initialDraft, initialPriceMap, initialPromoMap } | null
 
@@ -3321,7 +3321,7 @@ function BarcodeAddFlow({ activeProfiles, categories, onInsert, onClose, showToa
   if (stage === "found" && result) {
     return <ItemWizard mode="add" categories={categories} activeProfiles={activeProfiles}
       initialDraft={result.initialDraft} initialPriceMap={result.initialPriceMap} initialPromoMap={result.initialPromoMap}
-      onInsert={onInsert} onClose={onClose} showToast={showToast} />;
+      onInsert={onInsert} onClose={onClose} showToast={showToast} closeLabel={closeLabel} />;
   }
   if (stage === "scan") {
     return <BarcodeScanModal onDetected={handleDetected} onClose={onClose} />;
@@ -3361,7 +3361,7 @@ function BarcodeAddFlow({ activeProfiles, categories, onInsert, onClose, showToa
 // option alongside "לפי שם"/"עיון לפי קטגוריה" below — not built yet,
 // flagged here so it isn't lost: Eitan asked to remember it for a later
 // version (2026-09-05).
-function FindItemModal({ uid, categories, onClose, showToast }) {
+function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
   const allActiveProfiles = useActiveVendorProfiles(uid);
   // Which vendors count depends on whether this search is for a regular
   // (in-store) or online buy — remembered per account rather than asked
@@ -3454,6 +3454,17 @@ function FindItemModal({ uid, categories, onClose, showToast }) {
 
   const activeProfiles = allActiveProfiles.filter(p => (p.mode || "instore") === mode);
 
+  // The finish button's destination and label both depend on whether
+  // anything was actually added this sitting: nothing added yet → back to
+  // Home, same as closing without having opened a list at all; something
+  // added → straight into that list, exactly like finishing "+ הוספת פריט"
+  // from inside the list itself.
+  const finishLabel = destList ? "סיום וחזרה לרשימה" : "סיום וחזרה";
+  function finishAndReturn() {
+    if (destList) onOpenList(destList.id, destList.name);
+    else onClose();
+  }
+
   const listPickerOverlay = pendingInsert && (
     <Modal onClose={() => setPendingInsert(null)}>
       <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספה לאיזו רשימה?</h3>
@@ -3491,21 +3502,21 @@ function FindItemModal({ uid, categories, onClose, showToast }) {
   if (method === "byName") {
     return <React.Fragment>
       <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles}
-        onInsert={handleInsert} onClose={() => setMethod(null)} showToast={showToast} />
+        onInsert={handleInsert} onClose={finishAndReturn} closeLabel={finishLabel} showToast={showToast} />
       {listPickerOverlay}
     </React.Fragment>;
   }
   if (method === "byCategory") {
     return <React.Fragment>
       <CategoryBrowseModal categories={categories} activeProfiles={activeProfiles}
-        onInsert={handleInsert} onClose={() => setMethod(null)} showToast={showToast} />
+        onInsert={handleInsert} onClose={finishAndReturn} closeLabel={finishLabel} showToast={showToast} />
       {listPickerOverlay}
     </React.Fragment>;
   }
   if (method === "byBarcode") {
     return <React.Fragment>
       <BarcodeAddFlow categories={categories} activeProfiles={activeProfiles}
-        onInsert={handleInsert} onClose={() => setMethod(null)} showToast={showToast} />
+        onInsert={handleInsert} onClose={finishAndReturn} closeLabel={finishLabel} showToast={showToast} />
       {listPickerOverlay}
     </React.Fragment>;
   }
