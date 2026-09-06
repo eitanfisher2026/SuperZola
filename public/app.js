@@ -1,11 +1,21 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.93";
+const VERSION = "v1.94";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyAGgVfSLivPF_UPvp_0ZjlFzTmj8sqT-rU",
-  authDomain: "superzola.firebaseapp.com",
+  // The app's own Hosting domain, not the default *.firebaseapp.com one —
+  // Firebase Hosting automatically serves the auth handler at /__/auth/*
+  // on every one of the project's Hosting domains too, so this keeps the
+  // whole sign-in redirect on one origin instead of bouncing through a
+  // second domain. That cross-domain hop depends on third-party cookies/
+  // storage to relay the result back, which a growing share of Chrome and
+  // Edge installs block by default — when blocked, the redirect silently
+  // completes with no user and no error at all (confirmed live: exactly
+  // that symptom on a desktop browser, while the same account worked fine
+  // on mobile). This is Google's own documented fix for that failure mode.
+  authDomain: "superzola.web.app",
   projectId: "superzola",
   storageBucket: "superzola.firebasestorage.app",
   messagingSenderId: "1010693964960",
