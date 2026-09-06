@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.89";
+const VERSION = "v1.90";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -30,7 +30,13 @@ const db   = firebase.firestore();
 const fns  = firebase.app().functions("europe-west1"); // must match functions region in functions/index.js
 
 function signIn() {
-  auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+  // Redirect, not popup — a popup needs the browser's permission and gets
+  // silently blocked by default in plenty of real setups (confirmed live:
+  // "auth/popup-blocked" after a full site-data clear reset that
+  // permission). A redirect navigates the page itself to Google and back,
+  // so there's no popup for anything to block, and it's the more reliable
+  // choice in an installed PWA regardless.
+  auth.signInWithRedirect(new firebase.auth.GoogleAuthProvider());
 }
 function signOut() {
   auth.signOut();
