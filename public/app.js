@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef } = React;
 
-const VERSION = "v1.91";
+const VERSION = "v1.92";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -4093,9 +4093,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showCopyItems, setShowCopyItems] = useState(false);
   const [showOptimizer, setShowOptimizer] = useState(false);
 
-  // Every list now matches against every active vendor regardless of type —
-  // there's no more "instore list"/"online list" distinction. priceView
-  // below is purely a display filter for what's currently shown.
+  // There's no more "instore list"/"online list" distinction — any list can
+  // show either. New items match against whichever side is currently being
+  // viewed (see `viewProfiles` below); the other side is resolved lazily,
+  // on demand, further down.
   const activeProfiles = useActiveVendorProfiles(uid);
   const onlineVendors = useOnlineVendors();
   const categories = useCategories();
@@ -4159,6 +4160,69 @@ function ListScreen({ uid, listId, listName, onBack }) {
 
   useEffect(() => { fetchPrices(); }, [barcodeKey, activeProfiles.length]);
 
+  // ── On-demand online price resolution ────────────────────────────────────
+  // Online vendors are auto-provisioned, not chosen deliberately like
+  // branches — matching every item against them eagerly (like in-store) would
+  // pay real fuzzy-matching/AI cost for vendors a given list might never
+  // actually be compared against. Instead: reuse whatever barcode an item
+  // already has from an in-store match (a barcode is the same physical-
+  // product code at every retailer) and just check whether that exact
+  // barcode is priced at each online vendor — a plain lookup, no fresh
+  // search — and only do this once the user actually asks to see online
+  // prices (switches the view, or opens the optimizer). Nothing here is
+  // ever written to Firestore — pure client state for this visit, so it
+  // simply evaporates if the user never acts on it. Items with no barcode
+  // at any vendor yet just can't be checked this way — they show up as
+  // unpriced online ("לא נמכר כאן"), same as any other unmatched vendor.
+  const [onlineOverlay, setOnlineOverlay] = useState({}); // { itemId: { vendorId: barcode } }
+  const [onlinePriceMap, setOnlinePriceMap] = useState({});
+  const [onlinePromoMap, setOnlinePromoMap] = useState({});
+  const [onlinePricesLoading, setOnlinePricesLoading] = useState(false);
+  const onlineProfilesVisible = activeProfiles.filter(p => p.mode === "online" && hiddenVendorIds.indexOf(p.id) === -1);
+  const wantsOnline = effectivePriceView === "online" || showOptimizer;
+  const knownBarcodesKey = [...new Set((items || []).flatMap(it => Object.values(it.barcodes || {})))].sort().join(",");
+
+  useEffect(() => {
+    if (!wantsOnline || onlineProfilesVisible.length === 0 || !knownBarcodesKey) return;
+    const knownBarcodes = knownBarcodesKey.split(",");
+    setOnlinePricesLoading(true);
+    const payload = {};
+    onlineProfilesVisible.forEach(p => { payload[p.vendor] = knownBarcodes; });
+    fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
+      const prices = res.data.prices || {};
+      const promoPrices = res.data.promoPrices || {};
+      const overlay = {};
+      (items || []).forEach(it => {
+        onlineProfilesVisible.forEach(p => {
+          const vendorPrices = prices[p.id];
+          if (!vendorPrices) return;
+          Object.values(it.barcodes || {}).forEach(bc => {
+            if (bc in vendorPrices) {
+              overlay[it.id] = Object.assign({}, overlay[it.id], { [p.vendor]: bc });
+            }
+          });
+        });
+      });
+      setOnlineOverlay(overlay);
+      setOnlinePriceMap(prices);
+      setOnlinePromoMap(promoPrices);
+      setOnlinePricesLoading(false);
+    }).catch(() => { setOnlinePricesLoading(false); });
+    // eslint-disable-next-line
+  }, [wantsOnline, knownBarcodesKey, JSON.stringify(onlineProfilesVisible.map(p => p.id))]);
+
+  // Items enriched with the on-demand online overlay (never persisted on
+  // the original doc) — used for every render/consumer instead of the raw
+  // Firestore-backed `items`, so nothing downstream (ItemRow, the table,
+  // the optimizer) needs to know this overlay exists at all.
+  const enrichedItems = (items || []).map(it => {
+    const overlay = onlineOverlay[it.id];
+    if (!overlay) return it;
+    return Object.assign({}, it, { barcodes: Object.assign({}, it.barcodes, overlay) });
+  });
+  const effectivePriceMap = Object.assign({}, priceMap, onlinePriceMap);
+  const effectivePromoMap = Object.assign({}, promoMap, onlinePromoMap);
+
   function insertItem(payload, done) {
     db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
       addedBy: uid,
@@ -4203,7 +4267,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     onBack();
   }
 
-  const groups = groupByCategory(items || [], categories);
+  const groups = groupByCategory(enrichedItems, categories);
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7] flex flex-col">
@@ -4250,6 +4314,12 @@ function ListScreen({ uid, listId, listName, onBack }) {
         </div>
       )}
 
+      {onlinePricesLoading && effectivePriceView === "online" && (
+        <div className="bg-[#EFE4C6] text-[#5B5749] text-xs px-4 py-2 flex items-center justify-center gap-2 no-print">
+          <Spinner2 /> בודקים מחירי אונליין...
+        </div>
+      )}
+
       <div className="hidden print-only px-4 pt-4 pb-2">
         <h1 className="text-xl font-bold text-right" style={{ fontFamily: "'Suez One', serif" }}>{list.name}</h1>
         <p className="text-xs text-[#8A7F66] text-right mt-1">{new Date().toLocaleDateString("he-IL")}</p>
@@ -4261,7 +4331,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
           <div className="text-[#8A7F66] text-sm py-6 text-center">הרשימה ריקה</div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
-          <PriceComparisonTable items={items} activeProfiles={visibleProfiles} priceMap={priceMap} promoMap={promoMap} onEditItem={setEditItem} />
+          <PriceComparisonTable items={enrichedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem} />
         ) : (
           groups.map(group => (
             <div key={group.label} className="mb-5">
@@ -4275,7 +4345,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
               </div>
               <div>
                 {group.items.map(item => (
-                  <ItemRow key={item.id} item={item} activeProfiles={visibleProfiles} priceMap={priceMap} promoMap={promoMap}
+                  <ItemRow key={item.id} item={item} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap}
                     onDelete={setConfirmDeleteItem} onEdit={setEditItem}
                     onUpdateNote={note => updateNote(item, note)} />
                 ))}
@@ -4334,13 +4404,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
         </Modal>
       )}
       {showAdd && (
-        <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
+        <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
       {showBrowse && (
-        <CategoryBrowseModal categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowBrowse(false)} showToast={setToast} />
+        <CategoryBrowseModal categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowBrowse(false)} showToast={setToast} />
       )}
       {showBarcodeAdd && (
-        <BarcodeAddFlow categories={categories} activeProfiles={activeProfiles} onInsert={insertItem} onClose={() => setShowBarcodeAdd(false)} showToast={setToast} />
+        <BarcodeAddFlow categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowBarcodeAdd(false)} showToast={setToast} />
       )}
       {editItem && (
         <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
@@ -4413,8 +4483,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
           onClose={() => setShowCopyItems(false)} showToast={setToast} />
       )}
       {showOptimizer && (
-        <OptimizerModal uid={uid} list={list} items={items || []} allActiveProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
-          onlineVendors={onlineVendors} priceMap={priceMap} promoMap={promoMap} pricesLoading={pricesLoading}
+        <OptimizerModal uid={uid} list={list} items={enrichedItems} allActiveProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
+          onlineVendors={onlineVendors} priceMap={effectivePriceMap} promoMap={effectivePromoMap} pricesLoading={pricesLoading || onlinePricesLoading}
           onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
       )}
       {toast && <Toast msg={toast} />}
