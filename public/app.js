@@ -1,6 +1,6 @@
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.92";
+const VERSION = "v1.93";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -4214,14 +4214,18 @@ function ListScreen({ uid, listId, listName, onBack }) {
   // Items enriched with the on-demand online overlay (never persisted on
   // the original doc) — used for every render/consumer instead of the raw
   // Firestore-backed `items`, so nothing downstream (ItemRow, the table,
-  // the optimizer) needs to know this overlay exists at all.
-  const enrichedItems = (items || []).map(it => {
+  // the optimizer) needs to know this overlay exists at all. Memoized —
+  // OptimizerModal's own effect depends on this array by reference, and a
+  // fresh array on every single render (regardless of whether anything
+  // actually changed) made it recompute its whole plan on every render
+  // while open, which was slow/heavy enough to freeze the page.
+  const enrichedItems = useMemo(() => (items || []).map(it => {
     const overlay = onlineOverlay[it.id];
     if (!overlay) return it;
     return Object.assign({}, it, { barcodes: Object.assign({}, it.barcodes, overlay) });
-  });
-  const effectivePriceMap = Object.assign({}, priceMap, onlinePriceMap);
-  const effectivePromoMap = Object.assign({}, promoMap, onlinePromoMap);
+  }), [items, onlineOverlay]);
+  const effectivePriceMap = useMemo(() => Object.assign({}, priceMap, onlinePriceMap), [priceMap, onlinePriceMap]);
+  const effectivePromoMap = useMemo(() => Object.assign({}, promoMap, onlinePromoMap), [promoMap, onlinePromoMap]);
 
   function insertItem(payload, done) {
     db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
@@ -4325,7 +4329,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         <p className="text-xs text-[#8A7F66] text-right mt-1">{new Date().toLocaleDateString("he-IL")}</p>
       </div>
 
-      <div className="flex-1 px-3 pt-3 pb-28 print-items-area">
+      <div className="flex-1 px-3 pt-3 pb-40 print-items-area">
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
         {items !== null && items.length === 0 && (
           <div className="text-[#8A7F66] text-sm py-6 text-center">הרשימה ריקה</div>
