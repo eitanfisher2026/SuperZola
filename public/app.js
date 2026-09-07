@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.1";
+const VERSION = "v2.2";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -182,6 +182,17 @@ function useCategories() {
 
 // Vendors with a known online-delivery branch, admin-managed (Settings).
 // { [vendorId]: { branchId, label, deliveryFee, minimumOrder, active } }
+// null = not loaded yet (distinct from {} = loaded, doc has no extra
+// fields) — callers that need to know "has the real snapshot arrived"
+// (e.g. before writing a default value) can check for null explicitly.
+function useUserDoc(uid) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    if (!uid) return;
+    return db.collection("users").doc(uid).onSnapshot(snap => setData(snap.data() || {}));
+  }, [uid]);
+  return data;
+}
 function useOnlineVendors() {
   const [onlineVendors, setOnlineVendors] = useState({});
   useEffect(() => {
@@ -1443,7 +1454,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [toast, setToast] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const userDoc = useUserDoc(uid);
+  const isAdmin = (userDoc || {}).role === "admin";
+  const pricePreference = (userDoc || {}).pricePreference || "both";
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
   const [canInstall, setCanInstall] = useState(!isInstalled);
@@ -1471,19 +1484,31 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // a real in-store branch, which the user actually chose to add, does.
   const isNewUser = profilesLoaded && (allProfiles || []).filter(p => p.active && (p.mode || "instore") === "instore").length === 0;
 
-  // Fires once per app-open, unconditionally — every list now shows both
-  // price views, so online vendor profiles need to be ready before ANY
-  // list is opened rather than only when opening an "online" one. Home
-  // always mounts before a list or FindItemModal can be reached, so this
-  // is the one place this needs to happen.
+  // A brand-new user who never touches the banner's toggle below still
+  // ends up with an explicit choice saved (rather than silently defaulting
+  // to "both" forever) — written once the real user doc has actually
+  // loaded (userDoc !== null) so this can never race a genuine existing
+  // choice that just hasn't arrived over the wire yet.
   useEffect(() => {
+    if (isNewUser && userDoc !== null && userDoc.pricePreference === undefined) {
+      savePricePreference(uid, "instoreOnly");
+    }
+    // eslint-disable-next-line
+  }, [isNewUser, userDoc]);
+
+  // Fires once per app-open — every list now shows both price views, so
+  // online vendor profiles need to be ready before ANY list is opened
+  // rather than only when opening an "online" one. Home always mounts
+  // before a list or FindItemModal can be reached, so this is the one
+  // place this needs to happen. Skipped entirely for a user who's said
+  // they only ever shop in-store — no reason to silently create online
+  // profiles (and pay for warming their catalogs) for someone who's asked
+  // not to see them at all.
+  useEffect(() => {
+    if (pricePreference === "instoreOnly") return;
     provisionOnlineVendorProfiles(uid, onlineVendors, allProfiles, setToast);
     // eslint-disable-next-line
-  }, [allProfiles, JSON.stringify(onlineVendors)]);
-
-  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
-    setIsAdmin((snap.data() || {}).role === "admin");
-  }), [uid]);
+  }, [allProfiles, JSON.stringify(onlineVendors), pricePreference]);
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1577,9 +1602,13 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
             // first — instead of being split between this and a separate
             // info button, so there's exactly one place to look.
             <div onClick={e => e.stopPropagation()}
-              className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-40 overflow-hidden">
+              className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-56 overflow-hidden">
+              <div className="px-4 pt-3 pb-2.5">
+                <div className="text-[11px] text-[#8A7F66] mb-1.5">השוואת מחירים</div>
+                <PricePreferenceToggle value={pricePreference} onChange={v => savePricePreference(uid, v)} />
+              </div>
               <button onClick={() => { setShowUserMenu(false); onOpenVendors(); }}
-                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2">
+                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>🏪</span><span>רשתות להשוואת מחירים</span>
               </button>
               <button onClick={() => { setShowUserMenu(false); onOpenHelp(); }}
@@ -1648,6 +1677,10 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
             <p className="text-[13px] text-[#3F5A38] leading-snug mb-3">
               כדי שהאפליקציה תשווה מחירים, קודם צריך להוסיף את הסניפים שבהם אתם קונים — זה לוקח דקה, וזה השלב היחיד שחוזר על עצמו.
             </p>
+            <div className="mb-3">
+              <div className="text-[12px] text-[#3F5A38] mb-1.5">איפה תרצו להשוות מחירים?</div>
+              <PricePreferenceToggle value={pricePreference} onChange={v => savePricePreference(uid, v)} />
+            </div>
             <div className="flex gap-2">
               <button onClick={onOpenVendors}
                 className="flex-1 bg-[#2E4A3B] text-white rounded-xl py-2.5 text-sm font-semibold">
@@ -1945,6 +1978,32 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
 // missing, but disabled until that's resolved on their side.
 const UNSUPPORTED_VENDORS = new Set(["victory", "mahsaniAshuk"]);
 
+// A personal, cross-list default for whether a user wants to see online
+// vendors at all — separate from a list's own hiddenVendorIds (which
+// answers "which of my vendors matter for THIS list", not "do I ever care
+// about online"). Reused as-is in the first-time banner and the gear menu.
+function PricePreferenceToggle({ value, onChange }) {
+  const options = [
+    { id: "instoreOnly", label: "בחנות בלבד" },
+    { id: "both", label: "גם וגם" },
+    { id: "onlineOnly", label: "אונליין בלבד" },
+  ];
+  return (
+    <div className="flex bg-[#F3ECD9] rounded-full p-0.5">
+      {options.map(o => (
+        <button key={o.id} type="button" onClick={() => onChange(o.id)}
+          className={"flex-1 text-xs px-2 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+            ((value || "both") === o.id ? "bg-[#2E4A3B] text-[#FBF4E7]" : "text-[#8A7F66]")}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+function savePricePreference(uid, value) {
+  db.collection("users").doc(uid).update({ pricePreference: value });
+}
+
 // Self-contained "pick a vendor, then a branch, then add it" flow — used
 // both in Settings and from a list's own vendor screen, so adding a branch
 // never requires a separate trip to Settings first.
@@ -2058,15 +2117,16 @@ function VendorsScreen({ uid, onBack }) {
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
 
-  useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
-    const data = snap.data() || {};
-    setRole(effectiveRole(data.role || null));
-  }), [uid]);
+  const userDoc = useUserDoc(uid) || {};
+  const pricePreference = userDoc.pricePreference || "both";
+
+  useEffect(() => { setRole(effectiveRole(userDoc.role || null)); }, [userDoc.role]);
 
   useEffect(() => {
+    if (pricePreference === "instoreOnly") return;
     provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
     // eslint-disable-next-line
-  }, [profiles, JSON.stringify(onlineVendors)]);
+  }, [profiles, JSON.stringify(onlineVendors), pricePreference]);
 
   function loadCatalogTimestamps() {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -4166,13 +4226,25 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const activeProfiles = useActiveVendorProfiles(uid);
   const onlineVendors = useOnlineVendors();
   const categories = useCategories();
-  const hasInstoreActive = activeProfiles.some(p => (p.mode || "instore") === "instore");
-  const hasOnlineActive = activeProfiles.some(p => p.mode === "online");
+  // A personal, cross-list preference (set in the gear menu / first-time
+  // banner) — distinct from hiddenVendorIds below, which answers "which of
+  // my vendors matter for THIS list", not "do I ever want to see online at
+  // all". Folding it in here means everything downstream (the toggle's
+  // visibility, the optimizer's pools, the on-demand online fetch) treats
+  // the disabled side exactly as if the user had zero active vendors there.
+  const pricePreference = (useUserDoc(uid) || {}).pricePreference || "both";
+  const preferenceFilteredProfiles = pricePreference === "instoreOnly"
+    ? activeProfiles.filter(p => (p.mode || "instore") === "instore")
+    : pricePreference === "onlineOnly"
+    ? activeProfiles.filter(p => p.mode === "online")
+    : activeProfiles;
+  const hasInstoreActive = preferenceFilteredProfiles.some(p => (p.mode || "instore") === "instore");
+  const hasOnlineActive = preferenceFilteredProfiles.some(p => p.mode === "online");
   // A user with vendors active on only one side has nothing to toggle —
   // auto-pin to whichever side actually has data instead of showing a
   // 2-option control where one option is always empty.
   const effectivePriceView = hasOnlineActive && !hasInstoreActive ? "online" : hasInstoreActive && !hasOnlineActive ? "instore" : priceView;
-  const viewProfiles = activeProfiles.filter(p => (p.mode || "instore") === effectivePriceView);
+  const viewProfiles = preferenceFilteredProfiles.filter(p => (p.mode || "instore") === effectivePriceView);
   // Which of the user's active vendors THIS list currently shows — a
   // per-list display filter, distinct from "active" (a vendor stays
   // active/matched in the background even while hidden here, so unhiding
@@ -4245,7 +4317,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [onlinePromoMap, setOnlinePromoMap] = useState({});
   const [onlinePricesLoading, setOnlinePricesLoading] = useState(false);
   const onlineProfilesVisible = activeProfiles.filter(p => p.mode === "online" && hiddenVendorIds.indexOf(p.id) === -1);
-  const wantsOnline = effectivePriceView === "online" || showOptimizer;
+  const wantsOnline = pricePreference !== "instoreOnly" && (effectivePriceView === "online" || showOptimizer);
   const knownBarcodesKey = [...new Set((items || []).flatMap(it => Object.values(it.barcodes || {})))].sort().join(",");
 
   useEffect(() => {
@@ -4556,7 +4628,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
           onClose={() => setShowCopyItems(false)} showToast={setToast} />
       )}
       {showOptimizer && (
-        <OptimizerModal uid={uid} list={list} items={enrichedItems} allActiveProfiles={activeProfiles} hiddenVendorIds={hiddenVendorIds}
+        <OptimizerModal uid={uid} list={list} items={enrichedItems} allActiveProfiles={preferenceFilteredProfiles} hiddenVendorIds={hiddenVendorIds}
           onlineVendors={onlineVendors} priceMap={effectivePriceMap} promoMap={effectivePromoMap} pricesLoading={pricesLoading || onlinePricesLoading}
           onClose={() => setShowOptimizer(false)} onHome={onBack} showToast={setToast} />
       )}
