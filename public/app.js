@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.99";
+const VERSION = "v2.0";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -281,11 +281,19 @@ const VENDOR_LIST = [
   { id: "mahsaniAshuk", label: "מחסני השוק" },
   { id: "haziHinam", label: "חצי חינם" },
   { id: "wolt", label: "וולט מרקט" },
+  { id: "quik", label: "קוויק" },
 ];
 function vendorLabel(id) {
   const v = VENDOR_LIST.find(x => x.id === id);
   return v ? v.label : id;
 }
+// These have no real multi-branch physical presence to pick from — wolt is
+// delivery-only, and quik's feed is actually Carrefour's own (reused for
+// its data only), so offering it in the physical-branch picker would show
+// every unrelated Carrefour store underneath it. Both only ever get set up
+// through "ניהול רשתות אונליין" (which still lists them via VENDOR_LIST),
+// never as a picked physical branch.
+const ONLINE_ONLY_VENDORS = new Set(["wolt", "quik"]);
 // Hand-off point into a vendor's own site for the "מעבר להזמנה" flow. No
 // vendor exposes an add-to-cart-via-URL or address-prefill mechanism
 // (confirmed by hand against the real sites) — a plain link can't build a
@@ -1997,7 +2005,7 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
       <select value={addingVendor} onChange={e => pickVendor(e.target.value)}
         className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
         <option value="">בחירת רשת...</option>
-        {VENDOR_LIST.map(v => (
+        {VENDOR_LIST.filter(v => !ONLINE_ONLY_VENDORS.has(v.id)).map(v => (
           <option key={v.id} value={v.id} disabled={UNSUPPORTED_VENDORS.has(v.id)}>
             {v.label}{UNSUPPORTED_VENDORS.has(v.id) ? " (לא זמין כרגע)" : ""}
           </option>

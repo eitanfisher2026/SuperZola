@@ -545,12 +545,23 @@ const VENDORS = {
   mahsaniAshuk: { http: 'laibcatalog', chainId: '7290661400001' },
   haziHinam: { http: 'haziHinam', chainId: '7290700100008' },
   wolt: { http: 'wolt', chainId: '7290058249350' },
+  // Quik (קוויק) is a real, separate business (an Electra/Yeinot Bitan JV,
+  // not part of Carrefour) — it just happens to be reported inside
+  // Carrefour's own government price feed for ownership/history reasons.
+  // Reuses the exact same fetch code as carrefour (no separate integration
+  // needed); it's distinguished purely by always using branch 473, fixed
+  // via the online-vendor admin screen — confirmed via a real price
+  // comparison that 473's catalog/pricing is ~99% identical to 472
+  // (an older, smaller "יינות ביתן"-branded copy of the same feed) and
+  // mostly different from Carrefour's own 471, so it's a genuinely
+  // distinct catalog, not just a relabeled duplicate.
+  quik: { http: 'carrefour' },
 };
 const VENDOR_LABELS = {
   ramiLevy: 'רמי לוי', osherAd: 'אושר עד', keshet: 'קשת טעמים', yohananof: 'יוחננוף',
   superYuda: 'סופר יודה', lahav: 'פרש מרקט', shufersal: 'שופרסל', carrefour: 'קרפור',
   tivTaam: 'טיב טעם', salachDabach: 'סלאח דבאח', stopMarket: 'סטופ מרקט', victory: 'ויקטורי',
-  mahsaniAshuk: 'מחסני השוק', haziHinam: 'חצי חינם', wolt: 'וולט מרקט',
+  mahsaniAshuk: 'מחסני השוק', haziHinam: 'חצי חינם', wolt: 'וולט מרקט', quik: 'קוויק',
 };
 const VENDOR_IDS = Object.keys(VENDORS);
 const FTP_HOST = 'url.retail.publishedprices.co.il';
