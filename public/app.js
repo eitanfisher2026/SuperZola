@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.97";
+const VERSION = "v1.98";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1924,15 +1924,18 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
   );
 }
 
-// Vendors whose feed can't currently be reached from our server. Victory
-// and מחסני השוק (laibcatalog.co.il) time out — a plain request to the same
-// URL succeeds instantly from a normal network, pointing at the feed
-// blocking cloud-server traffic. חצי חינם is more clear-cut: its site sits
-// behind a Cloudflare bot challenge ("Just a moment...") that only a real
-// browser running JavaScript can pass — no request header can get through
-// that. Shown in the vendor picker (not hidden) so it's clear these exist
-// and aren't just missing, but disabled until that's resolved.
-const UNSUPPORTED_VENDORS = new Set(["victory", "mahsaniAshuk", "haziHinam"]);
+// Vendors whose feed can't currently be reached from our server. חצי חינם
+// (Cloudflare-challenged from our old Belgium server) started working once
+// the backend moved to Tel Aviv (v1.97) — confirmed with repeated real
+// requests from the production server IP, not just a one-off. Victory and
+// מחסני השוק are a different, unrelated problem: their laibcatalog.co.il
+// feed responds normally (not blocked) but currently lists zero files for
+// either chain — the same empty result other unrelated chains on that same
+// hosting platform get too, so it looks like an outage on the EDI
+// provider's side rather than something fixable from our end. Shown in the
+// vendor picker (not hidden) so it's clear these exist and aren't just
+// missing, but disabled until that's resolved on their side.
+const UNSUPPORTED_VENDORS = new Set(["victory", "mahsaniAshuk"]);
 
 // Self-contained "pick a vendor, then a branch, then add it" flow — used
 // both in Settings and from a list's own vendor screen, so adding a branch
