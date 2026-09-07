@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.2";
+const VERSION = "v2.3";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -596,6 +596,69 @@ function ConfirmDialog({ message, confirmLabel, onConfirm, onClose }) {
   );
 }
 
+// In-app dialog instead of a separate page (public/privacy.html still
+// exists as a plain static fallback for anyone landing on a direct/old
+// link, but every in-app entry point now opens this instead) — closing
+// it is the same drag/tap/× the rest of the app already uses, instead of
+// relying on the browser's own back button.
+function PrivacyPolicyModal({ onClose }) {
+  return (
+    <Modal onClose={onClose} closeLabel="סגירה">
+      <h3 className="text-xl mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>מדיניות פרטיות</h3>
+      <div className="text-xs text-[#8A7F66] mb-4">עודכן לאחרונה: ספטמבר 2026</div>
+      <p className="text-sm text-[#2B2418] leading-relaxed mb-4">
+        סופר זולה היא אפליקציה להשוואת מחירים וניהול רשימות קניות. כאן מוסבר איזה מידע האפליקציה
+        אוספת, לשם מה, ועם מי הוא משותף — בפשטות ובלי ניסוחים משפטיים מיותרים.
+      </p>
+
+      <h4 className="text-base font-bold mb-1.5 mt-4" style={{ color: "#26361F" }}>איזה מידע נאסף</h4>
+      <ul className="list-disc pr-5 text-sm text-[#2B2418] leading-relaxed space-y-1.5">
+        <li><b>פרטי חשבון Google</b> — שם, כתובת אימייל ותמונת פרופיל, כשאתם מתחברים לאפליקציה.</li>
+        <li><b>רשימות הקניות שלכם</b> — הפריטים, הכמויות והקטגוריות שאתם מוסיפים.</li>
+        <li><b>הרשתות והסניפים</b> שבחרתם לעקוב אחריהם, לצורך השוואת מחירים.</li>
+        <li><b>נתוני שימוש כלליים</b> (כמות פעולות בשימוש יומי) — לצורך מניעת שימוש לרעה באפליקציה ותכנון עתידי.</li>
+      </ul>
+
+      <h4 className="text-base font-bold mb-1.5 mt-4" style={{ color: "#26361F" }}>איך המידע משמש</h4>
+      <ul className="list-disc pr-5 text-sm text-[#2B2418] leading-relaxed space-y-1.5">
+        <li>כדי להריץ את האפליקציה עצמה — לשמור את הרשימות שלכם ולהציג השוואת מחירים בין רשתות.</li>
+        <li>כאשר אתם מקלידים שם של פריט חדש, השם (ורק השם — לא שום מידע אישי אחר) עשוי להישלח לספק בינה מלאכותית חיצוני (כגון Anthropic, OpenAI או Google) לצורך זיהוי אוטומטי של הקטגוריה המתאימה.</li>
+        <li>אם חיפשתם סניף לפי כתובת קרובה, הכתובת שהקלדתם נשלחת לשירות מיפוי חיצוני וחינמי (OpenStreetMap Nominatim) לצורך תרגום לקואורדינטות באותו רגע — היא לא נשמרת בשום מקום, לא אצלנו ולא אצלם.</li>
+        <li>כשמשווים מחירים מול רשתות אונליין, אפשר לעבור מהאפליקציה לאתר של רשת שבחרתם כדי להשלים שם את ההזמנה בפועל. המעבר פותח את אתר הרשת עם חיפוש מוכן לפי שמות הפריטים ברשימה — ההתחברות, הסל, הכתובת למשלוח והתשלום מתבצעים כולם באתר הרשת עצמו, ולא עוברים דרך סופר זולה בשום שלב.</li>
+      </ul>
+
+      <h4 className="text-base font-bold mb-1.5 mt-4" style={{ color: "#26361F" }}>שיתוף מידע</h4>
+      <p className="text-sm text-[#2B2418] leading-relaxed">
+        אנחנו לא מוכרים ולא משתפים את המידע האישי שלכם עם צדדים שלישיים לצורכי שיווק או פרסום.
+        האפליקציה לא כוללת כלי מעקב, פרסום או אנליטיקס חיצוניים. המידע היחיד שיוצא החוצה הוא זה
+        המצוין למעלה (שם פריט לצורך סיווג, כתובת לצורך מיקום), ורק לספקים המפורטים.
+      </p>
+
+      <h4 className="text-base font-bold mb-1.5 mt-4" style={{ color: "#26361F" }}>אבטחה ואחסון</h4>
+      <p className="text-sm text-[#2B2418] leading-relaxed">
+        הנתונים מאוחסנים בשירותי Firebase (גוגל), עם כללי הרשאה שמגבילים גישה לנתונים של כל משתמש
+        אך ורק לבעל החשבון ולמנהלי המערכת.
+      </p>
+
+      <h4 className="text-base font-bold mb-1.5 mt-4" style={{ color: "#26361F" }}>מחיקת מידע</h4>
+      <p className="text-sm text-[#2B2418] leading-relaxed">
+        ניתן לבקש בכל עת מחיקה מלאה של החשבון והנתונים שלכם, דרך "משוב ותמיכה" בתוך האפליקציה או
+        בפנייה ישירה לכתובת המייל שמופיעה למטה.
+      </p>
+
+      <h4 className="text-base font-bold mb-1.5 mt-4" style={{ color: "#26361F" }}>שינויים במדיניות</h4>
+      <p className="text-sm text-[#2B2418] leading-relaxed">
+        מדיניות זו עשויה להתעדכן מעת לעת. תאריך העדכון האחרון תמיד יופיע כאן.
+      </p>
+
+      <div className="bg-[#F3ECD9] border border-[#E0D4B4] rounded-xl p-4 mt-4">
+        <b className="text-sm">יצירת קשר בנוגע לפרטיות:</b><br />
+        <a href="mailto:eitanfisher100@gmail.com" className="text-sm text-[#2E4A3B] underline">eitanfisher100@gmail.com</a>
+      </div>
+    </Modal>
+  );
+}
+
 function RenameDialog({ title, initialValue, onSave, onClose }) {
   const [value, setValue] = useState(initialValue || "");
   return (
@@ -629,6 +692,7 @@ function Loading() {
 }
 
 function SignInScreen({ error }) {
+  const [showPrivacy, setShowPrivacy] = useState(false);
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center gap-8 bg-[#FBF4E7] px-6">
       <AppIcon size={72} />
@@ -644,7 +708,8 @@ function SignInScreen({ error }) {
           <p className="text-xs text-[#B8462F]">ההתחברות נכשלה: {error}</p>
         </div>
       )}
-      <a href="/privacy.html" className="text-xs text-[#A79A7C] underline">מדיניות פרטיות</a>
+      <button onClick={() => setShowPrivacy(true)} className="text-xs text-[#A79A7C] underline">מדיניות פרטיות</button>
+      {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
     </div>
   );
 }
@@ -1453,6 +1518,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const [showCheckPrice, setShowCheckPrice] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
   const [toast, setToast] = useState(null);
   const userDoc = useUserDoc(uid);
   const isAdmin = (userDoc || {}).role === "admin";
@@ -1630,10 +1696,10 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>🔗</span><span>שיתוף אפליקציה</span>
               </button>
-              <a href="/privacy.html" onClick={() => setShowUserMenu(false)}
+              <button onClick={() => { setShowUserMenu(false); setShowPrivacy(true); }}
                 className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>🔒</span><span>מדיניות פרטיות</span>
-              </a>
+              </button>
               {simulatedIsAdmin && (
                 <button onClick={() => { setShowUserMenu(false); onOpenAdminOptions(); }}
                   className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
@@ -1733,6 +1799,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
       {showFeedback && (
         <FeedbackDialog uid={uid} displayName={displayName} email={email} onClose={() => setShowFeedback(false)} />
       )}
+      {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
       {/* Fallback for browsers that never fired (or don't support) the
           native install prompt — iOS Safari gets exact steps since it has
           no install prompt at all, every other browser gets a generic
@@ -2302,6 +2369,9 @@ function AdminOptionsScreen({ uid, onBack }) {
   const isEditorOrAdmin = role === "editor" || role === "admin";
   const [allUsers, setAllUsers] = useState(null);
   const [userStats, setUserStats] = useState({}); // { [uid]: { costThisMonth, callsToday } }
+  const [confirmClearUserData, setConfirmClearUserData] = useState(null); // user object | null
+  const [confirmDeleteUserAccount, setConfirmDeleteUserAccount] = useState(null); // user object | null
+  const [userActionBusy, setUserActionBusy] = useState(null); // uid currently running an action, or null
   const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
@@ -2398,6 +2468,28 @@ function AdminOptionsScreen({ uid, onBack }) {
 
   function changeUserRole(userId, newRole) {
     db.collection("users").doc(userId).update({ role: newRole }).then(() => setToast("התפקיד עודכן"), () => setToast("שגיאה בעדכון תפקיד"));
+  }
+
+  // Fulfills the privacy policy's deletion promise. Erases the user's data
+  // (lists, tracked branches, AI-cost/usage history, feedback) but keeps
+  // their users/{uid} profile doc and Google sign-in — deleteUserAccount
+  // below is the separate, further step for removing the login itself.
+  function clearUserData(user) {
+    setUserActionBusy(user.id);
+    fns.httpsCallable("deleteUserData", { timeout: 120000 })({ targetUid: user.id }).then(() => {
+      setUserActionBusy(null);
+      setToast(`המידע של ${user.displayName || user.email || user.id} נמחק`);
+    }, () => { setUserActionBusy(null); setToast("שגיאה במחיקת המידע"); });
+  }
+
+  // Permanently removes the person's Google sign-in identity — irreversible,
+  // separate from clearUserData on purpose (see the confirm dialog wording).
+  function deleteUserAccountAction(user) {
+    setUserActionBusy(user.id);
+    fns.httpsCallable("deleteUserAccount", { timeout: 30000 })({ targetUid: user.id }).then(() => {
+      setUserActionBusy(null);
+      setToast(`החשבון של ${user.displayName || user.email || user.id} נותק`);
+    }, () => { setUserActionBusy(null); setToast("שגיאה בניתוק החשבון"); });
   }
 
   function startEditOnlineVendor(vendor, cfg) {
@@ -3032,6 +3124,19 @@ function AdminOptionsScreen({ uid, onBack }) {
                       עלות AI החודש: ${(userStats[u.id]?.costThisMonth || 0).toFixed(4)} · קריאות היום: {userStats[u.id]?.callsToday || 0}
                     </div>
                   )}
+                  {u.id !== uid && (
+                    <div className="flex gap-3 mt-2 pt-2 border-t border-[#F0E9D4]">
+                      <button onClick={() => setConfirmClearUserData(u)} disabled={userActionBusy === u.id}
+                        className="text-[11px] font-bold text-[#8A5A15] underline disabled:opacity-40">
+                        נקה מידע משתמש
+                      </button>
+                      <button onClick={() => setConfirmDeleteUserAccount(u)} disabled={userActionBusy === u.id}
+                        className="text-[11px] font-bold text-[#B8462F] underline disabled:opacity-40">
+                        ניתוק חשבון
+                      </button>
+                      {userActionBusy === u.id && <Spinner2 />}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -3071,6 +3176,19 @@ function AdminOptionsScreen({ uid, onBack }) {
       {confirmDeleteOnlineVendor && (
         <ConfirmDialog message={`להסיר את ${vendorLabel(confirmDeleteOnlineVendor)} מרשתות האונליין?`}
           onConfirm={() => deleteOnlineVendor(confirmDeleteOnlineVendor)} onClose={() => setConfirmDeleteOnlineVendor(null)} />
+      )}
+
+      {confirmClearUserData && (
+        <ConfirmDialog
+          message={`למחוק את כל המידע של ${confirmClearUserData.displayName || confirmClearUserData.email || confirmClearUserData.id}? הרשימות, הסניפים העוקבים והיסטוריית השימוש שלו יימחקו לצמיתות. חשבון ההתחברות שלו יישאר פעיל — פעולה זו אינה ניתנת לביטול.`}
+          confirmLabel="מחיקת מידע"
+          onConfirm={() => clearUserData(confirmClearUserData)} onClose={() => setConfirmClearUserData(null)} />
+      )}
+      {confirmDeleteUserAccount && (
+        <ConfirmDialog
+          message={`לנתק לצמיתות את חשבון ההתחברות של ${confirmDeleteUserAccount.displayName || confirmDeleteUserAccount.email || confirmDeleteUserAccount.id}? אם ישוב להתחבר, ייווצר עבורו חשבון חדש לגמרי, ללא קשר לחשבון הנוכחי. פעולה זו אינה ניתנת לביטול.`}
+          confirmLabel="ניתוק לצמיתות"
+          onConfirm={() => deleteUserAccountAction(confirmDeleteUserAccount)} onClose={() => setConfirmDeleteUserAccount(null)} />
       )}
 
       {toast && <Toast msg={toast} />}

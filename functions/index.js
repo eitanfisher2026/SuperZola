@@ -458,6 +458,76 @@ exports.getUsageStats = onCall(
   }
 );
 
+// Fulfills the privacy policy's "מחיקת מידע" promise from the admin side —
+// erases everything a user generated (lists+items, tracked branches, AI-cost
+// and usage history, feedback threads, category corrections). Deliberately
+// does NOT touch users/{targetUid} itself or their Auth account — that's
+// the separate, even-more-irreversible deleteUserAccount below. Needs the
+// Admin SDK regardless of role: costLedger/usageLedger are admin-write:
+// false in the rules (by design, so no client path can tamper with billing/
+// abuse tracking), so this could never be done as a batch of client writes
+// even by an admin.
+exports.deleteUserData = onCall(
+  { timeoutSeconds: 120, memory: '256MiB', region: REGION },
+  async (request) => {
+    await requireAdmin(request);
+    const { targetUid } = request.data || {};
+    if (!targetUid || typeof targetUid !== 'string') throw new HttpsError('invalid-argument', 'targetUid required');
+    if (targetUid === request.auth.uid) throw new HttpsError('invalid-argument', 'לא ניתן להריץ פעולה זו על החשבון שלך');
+
+    let listsDeleted = 0, itemsDeleted = 0;
+    const listsSnap = await db.collection('lists').where('ownerId', '==', targetUid).get();
+    for (const listDoc of listsSnap.docs) {
+      const itemsSnap = await listDoc.ref.collection('items').get();
+      const batch = db.batch();
+      itemsSnap.forEach(d => { batch.delete(d.ref); itemsDeleted++; });
+      batch.delete(listDoc.ref);
+      await batch.commit();
+      listsDeleted++;
+    }
+
+    const vendorProfilesSnap = await db.collection('users').doc(targetUid).collection('vendorProfiles').get();
+    await Promise.all(vendorProfilesSnap.docs.map(d => d.ref.delete()));
+
+    const costMonthsSnap = await db.collection('costLedger').doc(targetUid).collection('months').get();
+    await Promise.all(costMonthsSnap.docs.map(d => d.ref.delete()));
+    await db.collection('costLedger').doc(targetUid).delete().catch(() => {});
+
+    const usageDaysSnap = await db.collection('usageLedger').doc(targetUid).collection('days').get();
+    await Promise.all(usageDaysSnap.docs.map(d => d.ref.delete()));
+    await db.collection('usageLedger').doc(targetUid).delete().catch(() => {});
+
+    const threadsSnap = await db.collection('feedbackThreads').where('userId', '==', targetUid).get();
+    await Promise.all(threadsSnap.docs.map(d => d.ref.delete()));
+
+    const correctionsSnap = await db.collection('categoryCorrections').where('uid', '==', targetUid).get();
+    await Promise.all(correctionsSnap.docs.map(d => d.ref.delete()));
+
+    return {
+      ok: true, listsDeleted, itemsDeleted,
+      vendorProfilesDeleted: vendorProfilesSnap.size,
+      feedbackThreadsDeleted: threadsSnap.size,
+      categoryCorrectionsDeleted: correctionsSnap.size,
+    };
+  }
+);
+
+// Separate from deleteUserData on purpose — this permanently removes the
+// person's actual Google sign-in identity from Firebase Auth. If they sign
+// in again afterward it creates a brand-new account with a new uid, fully
+// disconnected from anything that happened before. There is no undo.
+exports.deleteUserAccount = onCall(
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
+  async (request) => {
+    await requireAdmin(request);
+    const { targetUid } = request.data || {};
+    if (!targetUid || typeof targetUid !== 'string') throw new HttpsError('invalid-argument', 'targetUid required');
+    if (targetUid === request.auth.uid) throw new HttpsError('invalid-argument', 'לא ניתן להריץ פעולה זו על החשבון שלך');
+    await admin.auth().deleteUser(targetUid);
+    return { ok: true };
+  }
+);
+
 // Moved off a direct client-side Firestore write so it goes through the same
 // daily-cap machinery as everything else — a create-only Firestore rule has
 // no way to rate-limit, so a signed-in user could otherwise flood this
