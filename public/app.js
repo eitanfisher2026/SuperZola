@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.0";
+const VERSION = "v2.1";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2901,7 +2901,16 @@ function AdminOptionsScreen({ uid, onBack }) {
             <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
               <div className="text-xs font-semibold text-[#8A7F66]">{newOnlineVendorDraft.vendor ? `עריכת ${vendorLabel(newOnlineVendorDraft.vendor)}` : "רשת אונליין חדשה"}</div>
               <select value={newOnlineVendorDraft.vendor} disabled={!!onlineVendors[newOnlineVendorDraft.vendor]}
-                onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { vendor: e.target.value }))}
+                onChange={e => {
+                  const vendor = e.target.value;
+                  // Picking a vendor that's already configured needs to load
+                  // its real saved values first — without this, "שמירה" would
+                  // silently overwrite it with whatever was left in the blank
+                  // fields (real incident: wiped Carrefour's online branch to
+                  // 0/0 fees this way).
+                  if (vendor && onlineVendors[vendor]) startEditOnlineVendor(vendor, onlineVendors[vendor]);
+                  else setNewOnlineVendorDraft(prev => Object.assign({}, prev, { vendor }));
+                }}
                 className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none disabled:bg-[#F7F2E4]">
                 <option value="">בחירת רשת...</option>
                 {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
