@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.98";
+const VERSION = "v1.99";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1940,7 +1940,7 @@ const UNSUPPORTED_VENDORS = new Set(["victory", "mahsaniAshuk"]);
 // Self-contained "pick a vendor, then a branch, then add it" flow — used
 // both in Settings and from a list's own vendor screen, so adding a branch
 // never requires a separate trip to Settings first.
-function AddBranchWidget({ uid, existingProfiles, showToast, onAdded }) {
+function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVendors }) {
   const [branchCache, setBranchCache] = useState({});
   const [addingVendor, setAddingVendor] = useState("");
   const [branchId, setBranchId] = useState("");
@@ -1954,6 +1954,19 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded }) {
       setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
       showToast("שגיאה בטעינת סניפים");
     });
+  }
+  // A chain's own government-mandated branch file often lists its online/
+  // delivery storefront as just another "branch" (e.g. חצי חינם's 103,
+  // named "חצי חינם משלוחים") — once that id is registered as this vendor's
+  // online branch (below, in "ניהול רשתות אונליין"), it needs to disappear
+  // from the physical-branch picker: picking it as an in-store branch would
+  // silently treat delivery-only prices as shelf prices.
+  function excludeOnlineBranch(vendorId, branches) {
+    const onlineBranchId = onlineVendors && onlineVendors[vendorId] && String(onlineVendors[vendorId].branchId);
+    if (!onlineBranchId || !branches || typeof branches !== "object") return branches;
+    const filtered = Object.assign({}, branches);
+    delete filtered[onlineBranchId];
+    return filtered;
   }
   function pickVendor(vendorId) {
     setAddingVendor(vendorId);
@@ -1974,7 +1987,9 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded }) {
     if (onAdded) onAdded();
   }
 
-  const addingBranches = addingVendor ? branchCache[addingVendor] : null;
+  const addingBranches = addingVendor
+    ? excludeOnlineBranch(addingVendor, branchCache[addingVendor])
+    : null;
 
   return (
     <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
@@ -2147,7 +2162,7 @@ function VendorsScreen({ uid, onBack }) {
             ))}
           </div>
 
-          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} />
+          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} onlineVendors={onlineVendors} />
         </div>
 
         <div>
@@ -3566,6 +3581,7 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
 // un-hiding it later doesn't need a fresh search.
 function VendorVisibilityModal({ uid, activeProfiles, hiddenVendorIds, onToggle, onClose, showToast }) {
   const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
+  const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -3617,7 +3633,7 @@ function VendorVisibilityModal({ uid, activeProfiles, hiddenVendorIds, onToggle,
         </div>
       )}
       <div className="mt-4 pt-4 border-t border-[#E5D8B5]">
-        <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} />
+        <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} onlineVendors={onlineVendors} />
       </div>
       <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
     </Modal>
