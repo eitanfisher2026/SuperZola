@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v1.96";
+const VERSION = "v1.97";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -37,7 +37,7 @@ try {
 } catch (e) { /* never block app boot over App Check failing to init */ }
 const auth = firebase.auth();
 const db   = firebase.firestore();
-const fns  = firebase.app().functions("europe-west1"); // must match functions region in functions/index.js
+const fns  = firebase.app().functions("me-west1"); // must match functions region in functions/index.js
 
 function signIn() {
   // Redirect, not popup — a popup needs the browser's permission and gets

@@ -9,13 +9,22 @@ const OpenAI = require('openai');
 admin.initializeApp();
 const db = admin.firestore();
 
-const REGION = 'europe-west1'; // must match the client's functions("europe-west1") call
+// Tel Aviv — moved from europe-west1 (Belgium) after confirming several
+// vendor price feeds (see haziHinam) block or block/challenge traffic from
+// outside Israel; running here also cuts round-trip latency for Firestore
+// reads/writes, since virtually every real user is in Israel.
+const REGION = 'me-west1'; // must match the client's functions("me-west1") call
+// onUserCreate below is a legacy (1st-gen) Auth trigger — those only
+// support an older, fixed set of regions that doesn't include me-west1 yet,
+// so it stays in europe-west1. It's fire-and-forget (writes a Firestore
+// doc after signup) with no client-side region coupling, so this is safe.
+const LEGACY_TRIGGER_REGION = 'europe-west1';
 
 // Creates the Firestore profile the moment a Google sign-in produces a new
 // Auth user — server-side only, so the client never writes (and can never
 // forge) its own role. Every new account starts as a plain 'user'; admin
 // promotes editors/admins by hand later.
-exports.onUserCreate = functions.region(REGION).auth.user().onCreate(async (user) => {
+exports.onUserCreate = functions.region(LEGACY_TRIGGER_REGION).auth.user().onCreate(async (user) => {
   await db.collection('users').doc(user.uid).set({
     email: user.email || null,
     displayName: user.displayName || null,
