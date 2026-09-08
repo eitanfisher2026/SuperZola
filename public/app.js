@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.9";
+const VERSION = "v2.10";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -170,6 +170,23 @@ function useUserDoc(uid) {
     return db.collection("users").doc(uid).onSnapshot(snap => setData(snap.data() || {}));
   }, [uid]);
   return data;
+}
+// A single limit(1) live query rather than loading every thread (which
+// FeedbackDialog only does once it's actually open) — cheap enough to keep
+// running in the background just to show a badge. Admin sees whether ANY
+// user's thread has an unread reply; a regular user sees whether their OWN
+// threads have one, since feedbackThreads has no client read access beyond
+// "mine" for a non-admin anyway (see firestore.rules).
+function useHasUnreadFeedback(uid, isAdmin) {
+  const [hasUnread, setHasUnread] = useState(false);
+  useEffect(() => {
+    if (!uid) return;
+    const q = isAdmin
+      ? db.collection("feedbackThreads").where("unreadByAdmin", "==", true).limit(1)
+      : db.collection("feedbackThreads").where("userId", "==", uid).where("unreadByUser", "==", true).limit(1);
+    return q.onSnapshot(snap => setHasUnread(!snap.empty), () => {});
+  }, [uid, isAdmin]);
+  return hasUnread;
 }
 function useOnlineVendors() {
   const [onlineVendors, setOnlineVendors] = useState({});
@@ -1510,6 +1527,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // itself the moment it's turned on.
   const [viewAsUser, setViewAsUser] = useState(isViewingAsUser());
   const simulatedIsAdmin = isAdmin && !viewAsUser;
+  const hasUnreadFeedback = useHasUnreadFeedback(uid, simulatedIsAdmin);
   const categories = useCategories();
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
@@ -1640,6 +1658,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
             {isNewUser && (
               <span className="absolute top-0 left-0 w-2 h-2 rounded-full bg-[#E3A939]" />
             )}
+            {hasUnreadFeedback && (
+              <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#B8462F]" />
+            )}
           </button>
           {showUserMenu && (
             // Every top-level destination lives in this one menu — most-used
@@ -1661,8 +1682,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
                 {isNewUser && <span className="absolute top-2.5 right-3 w-2 h-2 rounded-full bg-[#E3A939]" />}
               </button>
               <button onClick={() => { setShowUserMenu(false); setShowFeedback(true); }}
-                className="w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
+                className="relative w-full text-right px-4 py-3 text-sm text-[#2B2418] hover:bg-[#FBF4E7] flex items-center gap-2 border-t border-[#E5D8B5]">
                 <span>💬</span><span>{simulatedIsAdmin ? "ניהול משובים" : "שליחת משוב"}</span>
+                {hasUnreadFeedback && <span className="absolute top-2.5 right-3 w-2 h-2 rounded-full bg-[#B8462F]" />}
               </button>
               {canInstall && (
                 <button onClick={() => { setShowUserMenu(false); installApp(); }}
