@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.5";
+const VERSION = "v2.6";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1741,7 +1741,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
               <h2 className="text-[15px] font-bold text-[#2E4A3B]">בואו נתחיל!</h2>
             </div>
             <p className="text-[13px] text-[#3F5A38] leading-snug mb-3">
-              כדי שהאפליקציה תשווה מחירים, קודם צריך להוסיף את הסניפים שבהם אתם קונים — זה לוקח דקה, וזה השלב היחיד שחוזר על עצמו.
+              כדי שהאפליקציה תשווה מחירים, קודם צריך להוסיף את הסניפים שבהם אתם קונים — זה לוקח דקה, וזה שלב חד-פעמי.
             </p>
             <div className="mb-3">
               <div className="text-[12px] text-[#3F5A38] mb-1.5">איפה תרצו להשוות מחירים?</div>
