@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.10";
+const VERSION = "v2.11";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -4645,6 +4645,7 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
 
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
+  const [confirmEndThread, setConfirmEndThread] = useState(false);
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     setIsAdmin(effectiveRole((snap.data() || {}).role) === "admin");
@@ -4673,6 +4674,17 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
     }
   }
 
+  // Deletes the whole thread, for both sides — either the thread's own
+  // owner or an admin can do this (see firestore.rules).
+  function endConversation() {
+    if (!activeThread) return;
+    db.collection("feedbackThreads").doc(activeThread.id).delete().then(() => {
+      setActiveThread(null);
+      setView("list");
+      loadThreads(isAdmin);
+    });
+  }
+
   function handleCreate() {
     if (!text.trim()) return;
     setSubmitting(true);
@@ -4697,6 +4709,7 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
   }
 
   return (
+    <React.Fragment>
     <Modal onClose={onClose} footer={
       view === "list" && !isAdmin ? (
         <button onClick={() => setView("new")} className="w-full bg-[#2E4A3B] text-white py-3 rounded-2xl font-semibold text-sm">
@@ -4733,7 +4746,9 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
         <h3 className="flex-1 text-lg text-center" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>
           {view === "thread" ? (activeThread?.subject || feedbackCategoryLabel(activeThread?.category)) : "💬 משוב"}
         </h3>
-        {view === "thread" && <span style={{ width: 20 }} />}
+        {view === "thread" && (
+          <button onClick={() => setConfirmEndThread(true)} title="מחיקת שיחה" className="text-[#B8462F] text-base px-1">🗑️</button>
+        )}
       </div>
 
       {view === "list" && (
@@ -4788,6 +4803,14 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
         </div>
       )}
     </Modal>
+    {confirmEndThread && (
+      <ConfirmDialog
+        message="למחוק את השיחה הזו? הפעולה תמחק אותה לצמיתות עבור שני הצדדים."
+        confirmLabel="מחיקת שיחה"
+        onConfirm={endConversation}
+        onClose={() => setConfirmEndThread(false)} />
+    )}
+    </React.Fragment>
   );
 }
 
