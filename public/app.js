@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.4";
+const VERSION = "v2.5";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -653,7 +653,7 @@ function PrivacyPolicyModal({ onClose }) {
 
       <div className="bg-[#F3ECD9] border border-[#E0D4B4] rounded-xl p-4 mt-4">
         <b className="text-sm">יצירת קשר בנוגע לפרטיות:</b><br />
-        <a href="mailto:eitanfisher100@gmail.com" className="text-sm text-[#2E4A3B] underline">eitanfisher100@gmail.com</a>
+        <a href="mailto:eitanfisher.apps@gmail.com" className="text-sm text-[#2E4A3B] underline">eitanfisher.apps@gmail.com</a>
       </div>
     </Modal>
   );
