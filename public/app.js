@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.6";
+const VERSION = "v2.7";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2009,8 +2009,12 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
         </div>
       )}
       {loading && <div className="py-2"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>}
-      {origin && !loading && withCoords.length === 0 && !needsWarmup && (
-        <p className="text-xs text-[#A79A7C] text-center py-3">לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט</p>
+      {origin && !loading && withCoords.length === 0 && (
+        <p className="text-xs text-[#A79A7C] text-center py-3">
+          {needsWarmup
+            ? 'מיקומי הסניפים של הרשת הזו עדיין לא אותרו — לחצו על "איתור מיקומי סניפים" למעלה, ואז חפשו שוב'
+            : "לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט"}
+        </p>
       )}
       {origin && !loading && withCoords.length > 0 && (
         <div className="max-h-56 overflow-y-auto space-y-1">
