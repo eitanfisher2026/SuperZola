@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.8";
+const VERSION = "v2.9";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -76,28 +76,6 @@ function formatRelativeUpdatedAt(ms, neverText) {
   if (diffDays === 1) return "אתמול";
   if (diffDays < 7) return `לפני ${diffDays} ימים`;
   return new Date(ms).toLocaleDateString("he-IL");
-}
-function haversineMeters(lat1, lng1, lat2, lng2) {
-  const R = 6371000;
-  const toRad = d => d * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-function formatDistance(m) {
-  return m < 1000 ? Math.round(m) + " מ׳" : (m / 1000).toFixed(1) + ' ק"מ';
-}
-// Shared with NearbyBranchPicker's own address search — free, no API key,
-// no billing risk. Returns null (never throws) so callers can just show a
-// "not found" message either way.
-function geocodeAddress(query) {
-  const q = (query || "").trim();
-  if (!q) return Promise.resolve(null);
-  return fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=il&q=" + encodeURIComponent(q))
-    .then(r => r.json())
-    .then(results => (results && results.length > 0) ? { lat: parseFloat(results[0].lat), lng: parseFloat(results[0].lon) } : null)
-    .catch(() => null);
 }
 // Seeded into Firestore (categories collection) the first time it's empty —
 // from then on this is only the emergency fallback if that read ever fails.
@@ -1899,147 +1877,6 @@ function BranchPicker({ branches, branchId, onPick }) {
   );
 }
 
-// Finds branches of the already-selected vendor within a radius of either
-// the browser's geolocation or a geocoded address — a separate mode from
-// BranchPicker's text search, not a replacement (some chains' feeds don't
-// carry coordinates at all, so text search always has to keep working).
-// Address geocoding goes through Nominatim (OpenStreetMap) — free, no API
-// key, no billing risk; browser-side requests identify themselves via the
-// page's own referrer, which is what its usage policy asks for.
-function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUpdated }) {
-  const [origin, setOrigin] = useState(null); // { lat, lng } | null
-  const [addressQuery, setAddressQuery] = useState("");
-  const [geocoding, setGeocoding] = useState(false);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [radius, setRadius] = useState(2000);
-  const [warmingUp, setWarmingUp] = useState(false);
-  const [warmupProgress, setWarmupProgress] = useState(null); // { done, total } | null
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
-  const loading = branches === "loading";
-
-  // Branch coordinates aren't in the vendor's own feed at all (see the
-  // comment below) — this walks the chain's branches through free
-  // OpenStreetMap geocoding a batch at a time (its usage policy caps
-  // requests at ~1/second, so hundreds of branches can take minutes).
-  // Resumable: whatever's already geocoded is cached server-side, so
-  // closing and reopening this picker later just continues where it
-  // left off instead of starting over.
-  async function warmUpCoordinates() {
-    setWarmingUp(true);
-    setErrorMsg("");
-    let keepGoing = true;
-    while (keepGoing && mountedRef.current) {
-      let res;
-      try {
-        res = await fns.httpsCallable("geocodeVendorBranchesBatch", { timeout: 60000 })({ vendor: vendorId });
-      } catch (e) {
-        if (mountedRef.current) { setErrorMsg("שגיאה באיתור מיקומי הסניפים"); setWarmingUp(false); }
-        return;
-      }
-      if (!mountedRef.current) return;
-      const { processed, remaining, total, branches: updated } = res.data;
-      setWarmupProgress({ done: total - remaining, total });
-      if (onBranchesUpdated) onBranchesUpdated(updated);
-      keepGoing = remaining > 0 && processed > 0;
-    }
-    if (mountedRef.current) setWarmingUp(false);
-  }
-
-  function searchAddress() {
-    const q = addressQuery.trim();
-    if (!q) return;
-    setGeocoding(true);
-    setErrorMsg("");
-    geocodeAddress(q).then(coords => {
-      setGeocoding(false);
-      if (!coords) { setErrorMsg("הכתובת לא נמצאה"); return; }
-      setOrigin(coords);
-    });
-  }
-
-  const allEntries = (branches && !loading) ? Object.entries(branches) : [];
-  const withCoords = allEntries.filter(([, b]) => b.lat != null && b.lng != null);
-  const needsWarmup = allEntries.length > 0 && withCoords.length < allEntries.length;
-  const results = origin
-    ? withCoords
-        .map(([id, b]) => ({ id, b, dist: haversineMeters(origin.lat, origin.lng, b.lat, b.lng) }))
-        .filter(r => r.dist <= radius)
-        .sort((a, b) => a.dist - b.dist)
-    : [];
-
-  return (
-    <div className="space-y-2">
-      {!loading && needsWarmup && (
-        <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-lg px-3 py-2.5">
-          <p className="text-xs text-[#8A5A15] mb-2">
-            מיקומי הסניפים של הרשת הזו עדיין לא אותרו — פעולה חד־פעמית, אחריה החיפוש יעבוד מיד לכולם.
-          </p>
-          <button type="button" onClick={warmUpCoordinates} disabled={warmingUp}
-            className="w-full bg-[#8A5A15] text-white rounded-lg py-2 text-xs font-bold disabled:opacity-50">
-            {warmingUp
-              ? `מאתר מיקומים... ${warmupProgress ? warmupProgress.done + "/" + warmupProgress.total : ""}`
-              : "📍 איתור מיקומי סניפים"}
-          </button>
-        </div>
-      )}
-      {loading && <div className="py-2"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>}
-      {/* Address search only makes sense once branches actually have
-          coordinates — showing it alongside the warm-up banner just let
-          people search before the one-time geocoding ran, landing on a
-          confusing "nothing happened" screen. */}
-      {!loading && !needsWarmup && (
-        <React.Fragment>
-          <div className="flex gap-2">
-            <input value={addressQuery} onChange={e => setAddressQuery(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") searchAddress(); }}
-              placeholder="הקלידו כתובת..." autoFocus
-              className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-            <button type="button" onClick={searchAddress} disabled={!addressQuery.trim() || geocoding}
-              className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-              {geocoding ? <Spinner /> : "חיפוש"}
-            </button>
-          </div>
-          {errorMsg && <p className="text-xs text-[#B8462F]">{errorMsg}</p>}
-          {origin && (
-            <div>
-              <span className="text-xs text-[#8A7F66] block mb-1">רדיוס חיפוש</span>
-              <div className="flex flex-wrap gap-1.5">
-                {[500, 1000, 2000, 5000, 10000].map(r => (
-                  <button key={r} type="button" onClick={() => setRadius(r)}
-                    className={"text-xs px-3 py-1.5 rounded-full font-medium border " +
-                      (radius === r ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
-                    {r < 1000 ? r + " מ׳" : (r / 1000) + ' ק"מ'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {origin && withCoords.length === 0 && (
-            <p className="text-xs text-[#A79A7C] text-center py-3">לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט</p>
-          )}
-          {origin && withCoords.length > 0 && (
-            <div className="max-h-56 overflow-y-auto space-y-1">
-              {results.length === 0 ? (
-                <p className="text-xs text-[#A79A7C] text-center py-3">אין סניפים ברדיוס שנבחר — נסו להגדיל אותו</p>
-              ) : results.map(r => (
-                <button key={r.id} type="button" onClick={() => onPick(r.id)}
-                  className={"w-full text-right rounded-lg px-3 py-2 text-sm border " + (branchId === r.id ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-[#F7F2E4] border-transparent")}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[#2B2418]">{r.b.name}</span>
-                    <span className="text-[11px] text-[#8A7F66] flex-shrink-0">{formatDistance(r.dist)}</span>
-                  </div>
-                  <div className="text-[11px] text-[#A79A7C]">{r.b.address}{r.b.city ? ", " + r.b.city : ""}</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </React.Fragment>
-      )}
-    </div>
-  );
-}
-
 // Vendors whose feed can't currently be reached from our server. חצי חינם
 // (Cloudflare-challenged from our old Belgium server) started working once
 // the backend moved to Tel Aviv (v1.97) — confirmed with repeated real
@@ -2086,7 +1923,6 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
   const [branchCache, setBranchCache] = useState({});
   const [addingVendor, setAddingVendor] = useState("");
   const [branchId, setBranchId] = useState("");
-  const [pickerMode, setPickerMode] = useState("text");
 
   function loadBranches(vendorId) {
     setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
@@ -2113,7 +1949,6 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
   function pickVendor(vendorId) {
     setAddingVendor(vendorId);
     setBranchId("");
-    setPickerMode("text");
     if (vendorId && !branchCache[vendorId]) loadBranches(vendorId);
   }
   function addProfile() {
@@ -2146,24 +1981,7 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
         ))}
       </select>
       {addingVendor && (
-        <React.Fragment>
-          <div className="flex bg-[#F7F2E4] rounded-full p-0.5 w-fit">
-            <button type="button" onClick={() => setPickerMode("text")}
-              className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "text" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
-              חיפוש טקסט
-            </button>
-            <button type="button" onClick={() => setPickerMode("nearby")}
-              className={"text-xs px-3 py-1.5 rounded-full font-medium " + (pickerMode === "nearby" ? "bg-white text-[#2E4A3B] shadow-sm" : "text-[#8A7F66]")}>
-              📍 סניפים קרובים
-            </button>
-          </div>
-          {pickerMode === "text" ? (
-            <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
-          ) : (
-            <NearbyBranchPicker vendorId={addingVendor} branches={addingBranches} branchId={branchId} onPick={setBranchId}
-              onBranchesUpdated={updated => setBranchCache(prev => Object.assign({}, prev, { [addingVendor]: updated }))} />
-          )}
-        </React.Fragment>
+        <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
       )}
       <button onClick={addProfile} disabled={!addingVendor || !branchId}
         className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
@@ -2180,6 +1998,7 @@ function VendorsScreen({ uid, onBack }) {
   const [role, setRole] = useState(null);
   const [catalogTimestamps, setCatalogTimestamps] = useState({});
   const [confirmRefresh, setConfirmRefresh] = useState(null);
+  const [confirmRemoveProfile, setConfirmRemoveProfile] = useState(null);
   const [refreshingId, setRefreshingId] = useState(null);
   const [toast, setToast] = useState(null);
   const onlineVendors = useOnlineVendors();
@@ -2290,7 +2109,7 @@ function VendorsScreen({ uid, onBack }) {
                       (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
                     {p.active ? "פעיל" : "כבוי"}
                   </button>
-                  <button onClick={() => removeProfile(p)} className="text-[#B8462F] text-sm px-1 flex-shrink-0">✕</button>
+                  <button onClick={() => setConfirmRemoveProfile(p)} className="text-[#B8462F] text-sm px-1 flex-shrink-0">✕</button>
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-1.5">
                   <span className="text-[11px] text-[#A79A7C]">עודכן לאחרונה: {formatRelativeUpdatedAt(catalogTimestamps[p.id])}</span>
@@ -2339,6 +2158,11 @@ function VendorsScreen({ uid, onBack }) {
         <ConfirmDialog
           message={`לרענן את קטלוג ${vendorLabel(confirmRefresh.vendor)} — ${branchLabel(confirmRefresh.vendor, confirmRefresh.branchId)}? זו פנייה חיה לרשת ועשויה לקחת עד דקה.`}
           confirmLabel="רענון" onConfirm={() => refreshCatalog(confirmRefresh)} onClose={() => setConfirmRefresh(null)} />
+      )}
+      {confirmRemoveProfile && (
+        <ConfirmDialog
+          message={`להסיר את ${vendorLabel(confirmRemoveProfile.vendor)} — ${branchLabel(confirmRemoveProfile.vendor, confirmRemoveProfile.branchId)} מהסניפים להשוואה?`}
+          confirmLabel="הסרה" onConfirm={() => removeProfile(confirmRemoveProfile)} onClose={() => setConfirmRemoveProfile(null)} />
       )}
 
       {toast && <Toast msg={toast} />}
