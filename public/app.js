@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.7";
+const VERSION = "v2.8";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1983,54 +1983,58 @@ function NearbyBranchPicker({ vendorId, branches, branchId, onPick, onBranchesUp
           </button>
         </div>
       )}
-      <div className="flex gap-2">
-        <input value={addressQuery} onChange={e => setAddressQuery(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") searchAddress(); }}
-          placeholder="הקלידו כתובת..." autoFocus
-          className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
-        <button type="button" onClick={searchAddress} disabled={!addressQuery.trim() || geocoding}
-          className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-          {geocoding ? <Spinner /> : "חיפוש"}
-        </button>
-      </div>
-      {errorMsg && <p className="text-xs text-[#B8462F]">{errorMsg}</p>}
-      {origin && (
-        <div>
-          <span className="text-xs text-[#8A7F66] block mb-1">רדיוס חיפוש</span>
-          <div className="flex flex-wrap gap-1.5">
-            {[500, 1000, 2000, 5000, 10000].map(r => (
-              <button key={r} type="button" onClick={() => setRadius(r)}
-                className={"text-xs px-3 py-1.5 rounded-full font-medium border " +
-                  (radius === r ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
-                {r < 1000 ? r + " מ׳" : (r / 1000) + ' ק"מ'}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
       {loading && <div className="py-2"><div className="sz-progress-track"><div className="sz-progress-bar" /></div></div>}
-      {origin && !loading && withCoords.length === 0 && (
-        <p className="text-xs text-[#A79A7C] text-center py-3">
-          {needsWarmup
-            ? 'מיקומי הסניפים של הרשת הזו עדיין לא אותרו — לחצו על "איתור מיקומי סניפים" למעלה, ואז חפשו שוב'
-            : "לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט"}
-        </p>
-      )}
-      {origin && !loading && withCoords.length > 0 && (
-        <div className="max-h-56 overflow-y-auto space-y-1">
-          {results.length === 0 ? (
-            <p className="text-xs text-[#A79A7C] text-center py-3">אין סניפים ברדיוס שנבחר — נסו להגדיל אותו</p>
-          ) : results.map(r => (
-            <button key={r.id} type="button" onClick={() => onPick(r.id)}
-              className={"w-full text-right rounded-lg px-3 py-2 text-sm border " + (branchId === r.id ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-[#F7F2E4] border-transparent")}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[#2B2418]">{r.b.name}</span>
-                <span className="text-[11px] text-[#8A7F66] flex-shrink-0">{formatDistance(r.dist)}</span>
-              </div>
-              <div className="text-[11px] text-[#A79A7C]">{r.b.address}{r.b.city ? ", " + r.b.city : ""}</div>
+      {/* Address search only makes sense once branches actually have
+          coordinates — showing it alongside the warm-up banner just let
+          people search before the one-time geocoding ran, landing on a
+          confusing "nothing happened" screen. */}
+      {!loading && !needsWarmup && (
+        <React.Fragment>
+          <div className="flex gap-2">
+            <input value={addressQuery} onChange={e => setAddressQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") searchAddress(); }}
+              placeholder="הקלידו כתובת..." autoFocus
+              className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
+            <button type="button" onClick={searchAddress} disabled={!addressQuery.trim() || geocoding}
+              className="px-4 rounded-lg bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+              {geocoding ? <Spinner /> : "חיפוש"}
             </button>
-          ))}
-        </div>
+          </div>
+          {errorMsg && <p className="text-xs text-[#B8462F]">{errorMsg}</p>}
+          {origin && (
+            <div>
+              <span className="text-xs text-[#8A7F66] block mb-1">רדיוס חיפוש</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[500, 1000, 2000, 5000, 10000].map(r => (
+                  <button key={r} type="button" onClick={() => setRadius(r)}
+                    className={"text-xs px-3 py-1.5 rounded-full font-medium border " +
+                      (radius === r ? "bg-[#2E4A3B] text-white border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
+                    {r < 1000 ? r + " מ׳" : (r / 1000) + ' ק"מ'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {origin && withCoords.length === 0 && (
+            <p className="text-xs text-[#A79A7C] text-center py-3">לא הצלחנו לאתר מיקום לאף סניף ברשת הזו — נסו חיפוש טקסט</p>
+          )}
+          {origin && withCoords.length > 0 && (
+            <div className="max-h-56 overflow-y-auto space-y-1">
+              {results.length === 0 ? (
+                <p className="text-xs text-[#A79A7C] text-center py-3">אין סניפים ברדיוס שנבחר — נסו להגדיל אותו</p>
+              ) : results.map(r => (
+                <button key={r.id} type="button" onClick={() => onPick(r.id)}
+                  className={"w-full text-right rounded-lg px-3 py-2 text-sm border " + (branchId === r.id ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-[#F7F2E4] border-transparent")}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[#2B2418]">{r.b.name}</span>
+                    <span className="text-[11px] text-[#8A7F66] flex-shrink-0">{formatDistance(r.dist)}</span>
+                  </div>
+                  <div className="text-[11px] text-[#A79A7C]">{r.b.address}{r.b.city ? ", " + r.b.city : ""}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </React.Fragment>
       )}
     </div>
   );
