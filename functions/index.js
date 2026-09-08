@@ -559,12 +559,19 @@ exports.submitFeedbackMessage = onCall(
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'submitFeedbackMessage');
-    const { threadId, text, category, subject, senderName, senderEmail } = request.data || {};
+    const { threadId, text, category, subject, senderName, senderEmail, images } = request.data || {};
     if (!text || typeof text !== 'string' || !text.trim()) throw new HttpsError('invalid-argument', 'text required');
+    // Client-side compression already keeps these small (~90KB raw each) —
+    // this is just a floor against a caller bypassing that, since the whole
+    // thread's messages live in one Firestore document (1MB cap).
+    const validImages = Array.isArray(images)
+      ? images.filter(img => typeof img === 'string' && img.startsWith('data:image/') && img.length <= 300000).slice(0, 3)
+      : [];
     const uid = request.auth.uid;
     const userSnap = await db.collection('users').doc(uid).get();
     const isAdmin = (userSnap.data() || {}).role === 'admin';
     const message = { from: isAdmin ? 'admin' : 'user', text: text.trim(), timestamp: Date.now() };
+    if (validImages.length > 0) message.images = validImages;
 
     if (threadId) {
       const threadRef = db.collection('feedbackThreads').doc(String(threadId));

@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.11";
+const VERSION = "v2.12";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -334,6 +334,43 @@ function copyToClipboard(text) {
       document.body.removeChild(ta);
       resolve();
     } catch (e) { reject(e); }
+  });
+}
+// Ported from FouFou's feedback attachments, with a smaller size target:
+// FouFou stores messages in Realtime Database (no per-document size cap in
+// practice), but here a whole thread's messages live in one Firestore doc
+// (arrayUnion onto feedbackThreads/{id}.messages) — Firestore caps a
+// document at 1MB, so images need to stay genuinely small or a handful of
+// image-heavy replies could eventually hit that ceiling. 900px / ~90KB per
+// image keeps 3 attachments plus a full conversation's text comfortably
+// under that, at the cost of a visibly low-resolution photo.
+function compressFeedbackImage(file, maxSizeKB) {
+  const target = maxSizeKB || 90;
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDimension = 900;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxDimension) { h = Math.round((h / w) * maxDimension); w = maxDimension; }
+        else if (h > maxDimension) { w = Math.round((w / h) * maxDimension); h = maxDimension; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        let quality = 0.82;
+        let result = canvas.toDataURL("image/jpeg", quality);
+        while (result.length > target * 1024 * 1.37 && quality > 0.2) {
+          quality = Math.round((quality - 0.1) * 10) / 10;
+          result = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(result);
+      };
+      img.onerror = () => resolve(null);
+      img.src = e.target.result;
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
   });
 }
 function itemVendorBarcode(item, vendorId) {
@@ -4632,6 +4669,37 @@ function isThreadUnread(thread, isAdmin) {
   return isAdmin ? thread.unreadByAdmin : thread.unreadByUser;
 }
 
+// Shared thumbnail row + "attach" tile (up to 3), used by both the new-
+// conversation form and the in-thread reply box.
+function ImageAttachRow({ images, onRemove, onAdd, onView }) {
+  return (
+    <div className="flex gap-1.5 flex-wrap items-center">
+      {images.map((img, i) => (
+        <div key={i} className="relative flex-shrink-0">
+          <img src={img} alt="" onClick={() => onView(img)}
+            className="w-[70px] h-[70px] object-cover rounded-lg border border-[#E0D4B4] cursor-pointer" />
+          <button type="button" onClick={() => onRemove(i)}
+            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[#B8462F] text-white border-2 border-white text-[10px] font-bold flex items-center justify-center leading-none">
+            ✕
+          </button>
+        </div>
+      ))}
+      {images.length < 3 && (
+        <label title="צירוף תמונה"
+          className="w-[70px] h-[70px] border-2 border-dashed border-[#DECBA1] rounded-lg flex flex-col items-center justify-center gap-0.5 text-[#A79A7C] cursor-pointer flex-shrink-0">
+          <span className="text-xl">📎</span>
+          <span className="text-[9px] font-bold">{images.length}/3</span>
+          <input type="file" accept="image/*" className="hidden" onChange={e => {
+            const file = e.target.files && e.target.files[0];
+            e.target.value = "";
+            if (file) onAdd(file);
+          }} />
+        </label>
+      )}
+    </div>
+  );
+}
+
 function FeedbackDialog({ uid, displayName, email, onClose }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState("list"); // "list" | "new" | "thread"
@@ -4642,10 +4710,13 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
   const [subject, setSubject] = useState("");
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [newImages, setNewImages] = useState([]); // base64 data URLs, up to 3
 
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
+  const [replyImages, setReplyImages] = useState([]); // base64 data URLs, up to 3
   const [confirmEndThread, setConfirmEndThread] = useState(false);
+  const [modalImage, setModalImage] = useState(null); // full-size lightbox
 
   useEffect(() => db.collection("users").doc(uid).onSnapshot(snap => {
     setIsAdmin(effectiveRole((snap.data() || {}).role) === "admin");
@@ -4689,12 +4760,21 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
     if (!text.trim()) return;
     setSubmitting(true);
     fns.httpsCallable("submitFeedbackMessage")({
-      text: text.trim(), category, subject: subject.trim(),
+      text: text.trim(), category, subject: subject.trim(), images: newImages,
       senderName: displayName || "", senderEmail: email || "",
     }).then(() => {
-      setSubject(""); setText(""); setCategory("general"); setView("list");
+      setSubject(""); setText(""); setCategory("general"); setNewImages([]); setView("list");
       loadThreads(isAdmin);
     }).finally(() => setSubmitting(false));
+  }
+
+  // Attaches (compressed) to whichever composer is currently open — shared
+  // by both the new-conversation form and the in-thread reply box.
+  function attachImage(file, images, setImages) {
+    if (!file || images.length >= 3) return;
+    compressFeedbackImage(file).then(compressed => {
+      if (compressed) setImages(prev => prev.concat([compressed]).slice(0, 3));
+    });
   }
 
   function handleReply() {
@@ -4702,9 +4782,10 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
     setSending(true);
     const from = isAdmin ? "admin" : "user";
     const message = { from, text: replyText.trim(), timestamp: Date.now() };
-    fns.httpsCallable("submitFeedbackMessage")({ threadId: activeThread.id, text: replyText.trim() }).then(() => {
+    if (replyImages.length > 0) message.images = replyImages;
+    fns.httpsCallable("submitFeedbackMessage")({ threadId: activeThread.id, text: replyText.trim(), images: replyImages }).then(() => {
       setActiveThread(prev => Object.assign({}, prev, { messages: prev.messages.concat([message]) }));
-      setReplyText("");
+      setReplyText(""); setReplyImages([]);
     }).finally(() => setSending(false));
   }
 
@@ -4727,15 +4808,19 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
           </button>
         </div>
       ) : view === "thread" ? (
-        <div className="flex gap-2">
-          <input value={replyText} onChange={e => setReplyText(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleReply(); }}
-            placeholder="הקלידו תגובה..."
-            className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-right outline-none text-sm" />
-          <button onClick={handleReply} disabled={sending || !replyText.trim()}
-            className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-            {sending ? <Spinner /> : "שליחה"}
-          </button>
+        <div className="space-y-2">
+          <ImageAttachRow images={replyImages} onRemove={i => setReplyImages(prev => prev.filter((_, j) => j !== i))}
+            onAdd={file => attachImage(file, replyImages, setReplyImages)} onView={setModalImage} />
+          <div className="flex gap-2">
+            <input value={replyText} onChange={e => setReplyText(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleReply(); }}
+              placeholder="הקלידו תגובה..."
+              className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-right outline-none text-sm" />
+            <button onClick={handleReply} disabled={sending || !replyText.trim()}
+              className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+              {sending ? <Spinner /> : "שליחה"}
+            </button>
+          </div>
         </div>
       ) : null
     }>
@@ -4787,6 +4872,8 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
             className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none text-sm" />
           <textarea value={text} onChange={e => setText(e.target.value)} rows={6} maxLength={3000} placeholder="ספרו לנו מה חשבתם..."
             className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none text-sm resize-none" />
+          <ImageAttachRow images={newImages} onRemove={i => setNewImages(prev => prev.filter((_, j) => j !== i))}
+            onAdd={file => attachImage(file, newImages, setNewImages)} onView={setModalImage} />
         </div>
       )}
 
@@ -4796,7 +4883,15 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
             <div key={i} className={"flex " + (m.from === (isAdmin ? "admin" : "user") ? "justify-start" : "justify-end")}>
               <div className={"max-w-[80%] rounded-2xl px-3 py-2 text-sm " + (m.from === "admin" ? "bg-[#EEF5EC] text-[#2B2418]" : "bg-[#F3ECD9] text-[#2B2418]")}>
                 <p className="text-[10px] text-[#A79A7C] mb-0.5">{m.from === "admin" ? "👑" : "👤"} {messageTime(m.timestamp)}</p>
-                <p className="whitespace-pre-wrap">{m.text}</p>
+                {m.images && m.images.length > 0 && (
+                  <div className="flex gap-1.5 flex-wrap mb-1.5">
+                    {m.images.map((img, j) => (
+                      <img key={j} src={img} alt="" onClick={() => setModalImage(img)}
+                        className="w-20 h-20 object-cover rounded-lg cursor-pointer border border-black/10" />
+                    ))}
+                  </div>
+                )}
+                {m.text && <p className="whitespace-pre-wrap">{m.text}</p>}
               </div>
             </div>
           ))}
@@ -4809,6 +4904,11 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
         confirmLabel="מחיקת שיחה"
         onConfirm={endConversation}
         onClose={() => setConfirmEndThread(false)} />
+    )}
+    {modalImage && (
+      <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6" onClick={() => setModalImage(null)}>
+        <img src={modalImage} alt="" className="max-w-full max-h-full rounded-lg" onClick={e => e.stopPropagation()} />
+      </div>
     )}
     </React.Fragment>
   );
