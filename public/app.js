@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.12";
+const VERSION = "v2.13";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1602,12 +1602,18 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // place this needs to happen. Skipped entirely for a user who's said
   // they only ever shop in-store — no reason to silently create online
   // profiles (and pay for warming their catalogs) for someone who's asked
-  // not to see them at all.
+  // not to see them at all. Also waits for the real user doc to have
+  // loaded (not just its defaulted "both") — for a brand-new user,
+  // allProfiles can resolve to [] before userDoc's snapshot arrives, and
+  // provisioning on that default would permanently create online profiles
+  // moments before the real "instoreOnly" default gets saved, with no way
+  // to undo it.
   useEffect(() => {
+    if (userDoc === null) return;
     if (pricePreference === "instoreOnly") return;
     provisionOnlineVendorProfiles(uid, onlineVendors, allProfiles, setToast);
     // eslint-disable-next-line
-  }, [allProfiles, JSON.stringify(onlineVendors), pricePreference]);
+  }, [allProfiles, JSON.stringify(onlineVendors), pricePreference, userDoc === null]);
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -2070,16 +2076,22 @@ function VendorsScreen({ uid, onBack }) {
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
 
-  const userDoc = useUserDoc(uid) || {};
+  const userDocRaw = useUserDoc(uid);
+  const userDoc = userDocRaw || {};
   const pricePreference = userDoc.pricePreference || "both";
 
   useEffect(() => { setRole(effectiveRole(userDoc.role || null)); }, [userDoc.role]);
 
+  // Waits for the real user doc before provisioning — see the matching
+  // comment in Home() for why: provisioning on the defaulted "both" before
+  // a brand-new user's real (likely "instoreOnly") preference has loaded
+  // would permanently create online profiles with no way to undo it.
   useEffect(() => {
+    if (userDocRaw === null) return;
     if (pricePreference === "instoreOnly") return;
     provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
     // eslint-disable-next-line
-  }, [profiles, JSON.stringify(onlineVendors), pricePreference]);
+  }, [profiles, JSON.stringify(onlineVendors), pricePreference, userDocRaw === null]);
 
   function loadCatalogTimestamps() {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -2397,8 +2409,14 @@ function AdminOptionsScreen({ uid, onBack }) {
     const d = newOnlineVendorDraft;
     if (!d.vendor || !d.branchId) { setToast("נדרשים רשת ומספר סניף"); return; }
     setSavingOnlineVendor(true);
+    // Real branch ids from every vendor's feed are zero-padded to 3 digits
+    // (e.g. "003", not "3") — matching that here is what lets
+    // excludeOnlineBranch actually find and hide this branch from the
+    // physical-branch picker; typing "3" would otherwise silently fail to
+    // match and let it show up as a pickable in-store branch too.
+    const normalizedBranchId = String(d.branchId).trim().padStart(3, "0");
     db.collection("onlineVendors").doc(d.vendor).set({
-      branchId: d.branchId, label: vendorLabel(d.vendor),
+      branchId: normalizedBranchId, label: vendorLabel(d.vendor),
       deliveryFee: parseFloat(d.deliveryFee) || 0, minimumOrder: parseFloat(d.minimumOrder) || 0,
       active: d.active !== false,
     }).then(() => {
@@ -4282,9 +4300,16 @@ function ListScreen({ uid, listId, listName, onBack }) {
       .onSnapshot(snap => setItems(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
   }, [listId]);
 
+  // Filtered to the current price preference — without this, an item that
+  // was ever matched against a vendor on the side the user has since
+  // turned off (e.g. an online vendor while set to "instoreOnly") kept
+  // silently fetching (and paying for) that vendor's prices on every list
+  // load forever, even though nothing about it was ever shown anywhere.
+  const preferenceVendorNames = new Set(preferenceFilteredProfiles.map(p => p.vendor));
   const barcodesByVendor = {};
   (items || []).forEach(it => {
     Object.entries(it.barcodes || {}).forEach(([v, bc]) => {
+      if (!preferenceVendorNames.has(v)) return;
       if (!barcodesByVendor[v]) barcodesByVendor[v] = new Set();
       barcodesByVendor[v].add(bc);
     });
@@ -4567,7 +4592,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         <BarcodeAddFlow categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowBarcodeAdd(false)} showToast={setToast} />
       )}
       {editItem && (
-        <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={activeProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
+        <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={viewProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
       )}
 
       {showMenu && (
@@ -4725,7 +4750,12 @@ function FeedbackDialog({ uid, displayName, email, onClose }) {
   function loadThreads(admin) {
     setThreads(null);
     const col = db.collection("feedbackThreads");
-    const q = admin ? col.orderBy("lastActivityAt", "desc") : col.where("userId", "==", uid);
+    // Admin's view spans every user's threads and only grows over time —
+    // bounded to the most recently active 50 rather than the whole
+    // collection. A single user's own threads aren't bounded here: now
+    // capped at 5 new ones/day (see createFeedbackThread), so reaching 50
+    // total would take ~10 days of maxing that out every single day.
+    const q = admin ? col.orderBy("lastActivityAt", "desc").limit(50) : col.where("userId", "==", uid);
     q.get().then(snap => {
       const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       // No orderBy combined with the userId filter (would need a composite

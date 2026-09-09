@@ -99,6 +99,9 @@ const DAILY_CALL_CAPS = {
   prewarmVendorCatalog: 50,
   submitCategoryCorrection: 50,
   submitFeedbackMessage: 50,
+  createFeedbackThread: 5,
+  confirmItemBarcode: 300,
+  getVendorBranches: 100,
 };
 async function enforceDailyCap(uid, fnName) {
   const cap = DAILY_CALL_CAPS[fnName];
@@ -375,7 +378,11 @@ function cheapestModelId(models) {
 exports.listProviderModels = onCall(
   { timeoutSeconds: 30, memory: '256MiB', region: REGION },
   async (request) => {
-    requireSignedIn(request);
+    // Only ever called from the admin-only "הגדרות AI" panel (the app's AI
+    // key is one shared, admin-configured secret — see appConfig/ai in
+    // firestore.rules) — gated the same way here so it can't be used as a
+    // free-standing "test any API key against any provider" relay.
+    await requireAdmin(request);
     const { provider, apiKey } = request.data || {};
     if (!apiKey || typeof apiKey !== 'string') throw new HttpsError('invalid-argument', 'apiKey required');
 
@@ -558,14 +565,19 @@ exports.submitFeedbackMessage = onCall(
   { timeoutSeconds: 20, memory: '256MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
-    await enforceDailyCap(request.auth.uid, 'submitFeedbackMessage');
     const { threadId, text, category, subject, senderName, senderEmail, images } = request.data || {};
+    // Starting a brand-new thread gets its own, much tighter daily limit
+    // than replying — a real user rarely opens more than a handful of
+    // support conversations ever, whereas a normal back-and-forth reply
+    // exchange can run much longer.
+    await enforceDailyCap(request.auth.uid, threadId ? 'submitFeedbackMessage' : 'createFeedbackThread');
     if (!text || typeof text !== 'string' || !text.trim()) throw new HttpsError('invalid-argument', 'text required');
     // Client-side compression already keeps these small (~90KB raw each) —
-    // this is just a floor against a caller bypassing that, since the whole
-    // thread's messages live in one Firestore document (1MB cap).
+    // this is just a floor against a caller bypassing that, sized well
+    // under the client's own target since the whole thread's messages live
+    // in one Firestore document (1MB cap).
     const validImages = Array.isArray(images)
-      ? images.filter(img => typeof img === 'string' && img.startsWith('data:image/') && img.length <= 300000).slice(0, 3)
+      ? images.filter(img => typeof img === 'string' && img.startsWith('data:image/') && img.length <= 150000).slice(0, 3)
       : [];
     const uid = request.auth.uid;
     const userSnap = await db.collection('users').doc(uid).get();
@@ -578,6 +590,12 @@ exports.submitFeedbackMessage = onCall(
       const threadSnap = await threadRef.get();
       if (!threadSnap.exists) throw new HttpsError('not-found', 'thread not found');
       if (threadSnap.data().userId !== uid && !isAdmin) throw new HttpsError('permission-denied', 'not your thread');
+      // Cheap proxy for the document's actual byte size (already have the
+      // doc in memory from the ownership check above) — refuses to grow a
+      // thread past Firestore's 1MB document cap instead of failing with an
+      // opaque error and leaving the conversation stuck forever.
+      const currentSize = JSON.stringify(threadSnap.data()).length + JSON.stringify(message).length;
+      if (currentSize > 900000) throw new HttpsError('resource-exhausted', 'השיחה הזו הגיעה לגודל המרבי — פתחו שיחה חדשה');
       await threadRef.update({
         messages: admin.firestore.FieldValue.arrayUnion(message),
         lastActivityAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1186,7 +1204,13 @@ exports.refreshActiveVendorCatalogs = onSchedule(
       const p = doc.data();
       if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) pairs[`${p.vendor}:${p.branchId}`] = p;
     });
-    await Promise.all(Object.values(pairs).map(p => ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {})));
+    // Bounded concurrency, not Promise.all over every pair at once — a
+    // vendorProfiles doc's branchId is now validated at write time (see
+    // firestore.rules) against the vendor's real known branches, but this
+    // is a second line of defense: even a legitimate, large fleet of
+    // tracked branches shouldn't be able to open unlimited simultaneous
+    // live FTP/HTTP connections to third-party price feeds in one run.
+    await runWithConcurrency(Object.values(pairs), 10, p => ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {}));
   }
 );
 
@@ -1277,9 +1301,10 @@ async function getUserActiveProfiles(uid) {
 }
 
 exports.getVendorBranches = onCall(
-  { timeoutSeconds: 180, memory: '512MiB', region: REGION },
+  { timeoutSeconds: 180, memory: '512MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'getVendorBranches');
     const { vendor } = request.data || {};
     console.log('getVendorBranches: start', vendor);
     if (!VENDORS[vendor]) throw new HttpsError('invalid-argument', 'valid vendor required');
@@ -1350,9 +1375,35 @@ exports.resolveItemBarcodes = onCall(
     const vendorIds = Object.keys(repProfileByVendor).filter(v => !Array.isArray(vendors) || vendors.includes(v));
     if (vendorIds.length === 0) throw new HttpsError('invalid-argument', 'no active vendors');
 
+    // Check the shared name->barcode cache for every requested name FIRST,
+    // before touching any vendor's catalog — a catalog fetch is thousands of
+    // Firestore reads (ensureFreshCatalog reads the whole thing when nothing
+    // cached its result recently), so a search whose name(s) are already
+    // fully resolved for every active vendor should never trigger one at
+    // all. Only vendors that some name still needs get their catalog
+    // fetched below, instead of always fetching every active vendor's.
+    const names = [...new Set(items.map(rawName => String(rawName || '').trim()).filter(Boolean))];
+    const cacheByName = {};
+    if (force) {
+      names.forEach(name => { cacheByName[name] = { barcodes: {}, missingVendors: vendorIds.slice() }; });
+    } else {
+      const cacheDocs = names.length > 0
+        ? await db.getAll(...names.map(name => db.collection('itemBarcodes').doc(itemNameKey(name))))
+        : [];
+      names.forEach((name, i) => {
+        const doc = cacheDocs[i];
+        const cached = doc && doc.exists ? doc.data() : null;
+        const barcodes = {};
+        if (cached) vendorIds.forEach(v => { if (cached[v]) barcodes[v] = cached[v]; });
+        cacheByName[name] = { barcodes, missingVendors: vendorIds.filter(v => !barcodes[v]) };
+      });
+    }
+    const neededVendors = new Set();
+    names.forEach(name => { cacheByName[name].missingVendors.forEach(v => neededVendors.add(v)); });
+
     const catalogsByVendor = {};
     const promoPricesByVendor = {};
-    await Promise.all(vendorIds.map(async (vendor) => {
+    await Promise.all([...neededVendors].map(async (vendor) => {
       const p = repProfileByVendor[vendor];
       const key = docKey(vendor, p.branchId);
       console.log('resolveItemBarcodes: fetching catalog for', vendor, p.branchId);
@@ -1364,33 +1415,16 @@ exports.resolveItemBarcodes = onCall(
       catalogsByVendor[vendor] = items2;
       promoPricesByVendor[vendor] = promoSnap.data() || {};
     }));
-
-    // Used to widen fuzzy-match scoring by pulling in every OTHER vendor's
-    // full catalog (thousands of docs each) on every search — but results
-    // are filtered below to only candidates priced at one of the caller's
-    // own vendorIds anyway, so that cost bought almost nothing and was a
-    // major source of search latency. Dropped: search only the vendor(s)
-    // the caller actually asked about.
-    const searchCatalogsByVendor = catalogsByVendor;
-    const searchedVendors = Object.keys(searchCatalogsByVendor);
+    const searchedVendors = [...neededVendors];
 
     const results = {};
-    for (const rawName of items) {
-      const name = String(rawName || '').trim();
-      if (!name) continue;
-      const cachedDoc = force ? null : await db.collection('itemBarcodes').doc(itemNameKey(name)).get();
-      const cached = cachedDoc && cachedDoc.exists ? cachedDoc.data() : null;
-      const barcodes = {};
-      if (cached) vendorIds.forEach(v => { if (cached[v]) barcodes[v] = cached[v]; });
-      const missingVendors = vendorIds.filter(v => !barcodes[v]);
+    for (const name of names) {
+      const { barcodes, missingVendors } = cacheByName[name];
       if (missingVendors.length === 0) { results[name] = { barcodes, missingVendors: [] }; continue; }
-      // extraCatalogsByVendor widens the pool fuzzyMatchCatalogs scores
-      // against (helps it find the right barcode even when the caller's own
-      // vendor's naming is a weak match), but a result only the caller can
-      // actually act on if it's priced at one of the vendors they searched
-      // for — otherwise it's just an unpickable "not sold here" row from an
-      // unrelated vendor's catalog.
-      const candidates = fuzzyMatchCatalogs(name, searchCatalogsByVendor, promoPricesByVendor)
+      // A result only the caller can actually act on if it's priced at one
+      // of the vendors they searched for — otherwise it's just an
+      // unpickable "not sold here" row from an unrelated vendor's catalog.
+      const candidates = fuzzyMatchCatalogs(name, catalogsByVendor, promoPricesByVendor)
         .filter(c => vendorIds.some(v => c.prices[v] != null));
       console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length);
       results[name] = { barcodes, missingVendors, searchedVendors, candidates };
@@ -1550,19 +1584,41 @@ exports.lookupItemByBarcode = onCall(
 );
 
 exports.confirmItemBarcode = onCall(
-  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION, enforceAppCheck: true },
   async (request) => {
     requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'confirmItemBarcode');
     const { name, barcode, matchedName, vendors } = request.data || {};
     if (!name || !barcode) throw new HttpsError('invalid-argument', 'name and barcode required');
-    const vendorList = (Array.isArray(vendors) ? vendors : VENDOR_IDS).filter(v => VENDOR_IDS.includes(v));
-    if (vendorList.length === 0) throw new HttpsError('invalid-argument', 'no valid vendors');
-    const entry = { barcode: String(barcode), name: String(matchedName || name).trim(), matchedAt: Date.now() };
+    const requestedVendors = (Array.isArray(vendors) ? vendors : VENDOR_IDS).filter(v => VENDOR_IDS.includes(v));
+    if (requestedVendors.length === 0) throw new HttpsError('invalid-argument', 'no valid vendors');
+
+    // itemBarcodes is a shared, server-only cache every user's future name
+    // search relies on (firestore.rules denies any client read/write on it
+    // directly) — so a (name -> barcode) pairing only ever gets written here
+    // for a vendor where that exact barcode genuinely exists in the
+    // CALLER'S OWN active catalog for that vendor, never taken on the
+    // client's word alone. Otherwise anyone signed in could quietly point a
+    // common item name at the wrong product for everyone.
+    const bc = String(barcode);
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const repProfileByVendor = {};
+    activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
+    const candidateVendors = requestedVendors.filter(v => repProfileByVendor[v]);
+    const checked = await Promise.all(candidateVendors.map(async (v) => {
+      const p = repProfileByVendor[v];
+      const items = await readCatalogItemsBatch(docKey(v, p.branchId), [bc]);
+      return items[bc] ? v : null;
+    }));
+    const vendorList = checked.filter(Boolean);
+    if (vendorList.length === 0) throw new HttpsError('invalid-argument', 'barcode not found for any requested vendor');
+
+    const entry = { barcode: bc, name: String(matchedName || name).trim(), matchedAt: Date.now() };
     const payload = {};
     vendorList.forEach(v => { payload[v] = entry; });
     const [, catSnap] = await Promise.all([
       db.collection('itemBarcodes').doc(itemNameKey(name)).set(payload, { merge: true }),
-      db.collection('productCategories').doc(String(barcode)).get(),
+      db.collection('productCategories').doc(bc).get(),
     ]);
     const cat = catSnap.exists ? catSnap.data() : null;
     return { ok: true, category: (cat && cat.category) || null, subcategory: (cat && cat.subcategory) || null };
@@ -1589,6 +1645,10 @@ exports.getBasketPrices = onCall(
     await enforceDailyCap(request.auth.uid, 'getBasketPrices');
     const { barcodesByVendor, force } = request.data || {};
     if (!barcodesByVendor || typeof barcodesByVendor !== 'object') throw new HttpsError('invalid-argument', 'barcodesByVendor required');
+    // Same reasoning as prewarmVendorCatalog's force gate: a real, live
+    // re-scrape of a vendor's feed shouldn't be triggerable ad hoc by every
+    // user, just because they passed a flag.
+    if (force) await requireEditorOrAdmin(request);
 
     const activeProfiles = await getUserActiveProfiles(request.auth.uid);
     const relevantProfiles = activeProfiles.filter(p => Array.isArray(barcodesByVendor[p.vendor]) && barcodesByVendor[p.vendor].length > 0);

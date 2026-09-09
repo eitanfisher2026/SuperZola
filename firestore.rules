@@ -32,7 +32,20 @@ service cloud.firestore {
       // (vendorBranches/vendorCatalogs/etc., top-level collections) is
       // server-only — the client only ever sees it through callables.
       match /vendorProfiles/{profileId} {
-        allow read, write: if signedIn() && (request.auth.uid == uid || isAdmin());
+        allow read, update, delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+        // A new profile's branchId must be a real, currently-known branch
+        // for that vendor (vendorBranches/{vendor}.branches — populated
+        // server-side by getVendorBranches/ingestVendorBranches before any
+        // branch picker can show real options) — without this, any signed-
+        // in account (open sign-up, no allowlist) could write a fabricated
+        // branchId, which the daily refreshActiveVendorCatalogs job would
+        // then try to live-scrape from the vendor's real feed with no
+        // limit on how many fake pairs it's handed.
+        allow create: if signedIn() && (request.auth.uid == uid || isAdmin())
+          && request.resource.data.vendor is string
+          && request.resource.data.branchId is string
+          && exists(/databases/$(database)/documents/vendorBranches/$(request.resource.data.vendor))
+          && request.resource.data.branchId in get(/databases/$(database)/documents/vendorBranches/$(request.resource.data.vendor)).data.branches;
       }
     }
 
