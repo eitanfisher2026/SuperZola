@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.21";
+const VERSION = "v2.22";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -264,15 +264,28 @@ function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, sho
 }
 
 // Shown once, the first time a user's price preference includes online
-// comparison (first-time setup or switching the gear-menu toggle) — every
-// active vendor here defaults to selected up to the cap, but the user can
-// swap which ones before confirming. Replaces silently auto-provisioning
-// every configured online vendor for every user, which cost real money
-// (a shared daily catalog refresh, forever) for vendors most people never
-// actually looked at.
+// comparison (first-time setup or switching the gear-menu toggle), AND
+// retroactively for every existing account the first time it loads after
+// this shipped — replacing every configured online vendor getting silently
+// auto-provisioned and left active forever, which cost real money (a
+// shared daily catalog refresh, plus this user's own price-fetch reads)
+// for vendors most people never actually looked at. An account with
+// already-active online vendors defaults to exactly those, capped — so
+// confirming without changing anything trims existing excess down to the
+// limit instead of leaving it all running; a brand-new account defaults to
+// the admin's configured candidates instead, since it has nothing of its
+// own yet.
 function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnlineVendors, showToast, onDone }) {
   const candidates = Object.entries(onlineVendors).filter(([, cfg]) => cfg.active !== false);
-  const [selected, setSelected] = useState(() => new Set(candidates.slice(0, maxOnlineVendors).map(([key]) => key)));
+  const existingByKey = {};
+  (existingProfiles || []).forEach(p => {
+    if (p.mode === "online") existingByKey[onlineVendorKey(p.vendor, p.branchId)] = p;
+  });
+  const existingActiveKeys = Object.entries(existingByKey).filter(([, p]) => p.active).map(([key]) => key);
+  const [selected, setSelected] = useState(() => new Set(
+    (existingActiveKeys.length > 0 ? existingActiveKeys : candidates.map(([key]) => key)).slice(0, maxOnlineVendors)
+  ));
+  const hasExisting = existingActiveKeys.length > 0;
 
   function toggle(key) {
     setSelected(prev => {
@@ -283,13 +296,41 @@ function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnli
     });
   }
 
-  // The header button (closeLabel below) is the one confirm action — the
-  // selection is committed the moment it's tapped, so there's no separate
-  // "saving" state to show; provisioning itself continues in the
-  // background exactly like adding one vendor at a time already does.
+  // The header button (closeLabel below) is the one confirm action.
+  // Reconciles all three cases in one batch: a selected candidate with no
+  // profile yet gets created (active); an existing profile whose checked
+  // state changed gets activated/deactivated to match (this is what
+  // actually trims an over-provisioned existing account down to the cap —
+  // unchecking here doesn't just skip adding it, it turns an already-
+  // active one off); anything untouched is left alone.
   function confirm() {
-    db.collection("users").doc(uid).set({ onlineVendorsConfigured: true }, { merge: true }).then(() => {
-      provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, showToast, selected);
+    const batch = db.batch();
+    const toPrewarm = [];
+    candidates.forEach(([key, cfg]) => {
+      const existing = existingByKey[key];
+      const wantActive = selected.has(key);
+      if (existing) {
+        if (!!existing.active !== wantActive) {
+          batch.update(db.collection("users").doc(uid).collection("vendorProfiles").doc(existing.id), { active: wantActive });
+        }
+      } else if (wantActive) {
+        const ref = db.collection("users").doc(uid).collection("vendorProfiles").doc();
+        batch.set(ref, {
+          vendor: cfg.vendor, branchId: cfg.branchId, active: true, mode: "online",
+          label: cfg.label || vendorLabel(cfg.vendor), addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        toPrewarm.push(cfg);
+      }
+    });
+    batch.set(db.collection("users").doc(uid), { onlineVendorsConfigured: true }, { merge: true });
+    batch.commit().then(() => {
+      toPrewarm.forEach(cfg => {
+        const label = cfg.label || vendorLabel(cfg.vendor);
+        if (showToast) showToast(`מוסיפים את ${label} — טוען קטלוג, זה עשוי לקחת עד דקה...`);
+        fns.httpsCallable("prewarmVendorCatalog")({ vendor: cfg.vendor, branchId: cfg.branchId }).then(() => {
+          if (showToast) showToast(`הקטלוג של ${label} מוכן`);
+        }).catch(() => {});
+      });
     });
     onDone();
   }
@@ -298,7 +339,10 @@ function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnli
     <Modal onClose={confirm} disableClose closeLabel="אישור">
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>אילו רשתות אונליין להשוות?</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">
-        עד {maxOnlineVendors} רשתות בבת אחת — פחות רשתות פעילות טוען מהר יותר. אפשר לשנות בכל עת מ⚙️ ← "רשתות להשוואת מחירים".
+        {hasExisting
+          ? `עד ${maxOnlineVendors} רשתות בבת אחת — סומנו הרשתות הפעילות אצלכם כרגע. ביטול סימון יכבה רשת, לא רק ידלג עליה.`
+          : `עד ${maxOnlineVendors} רשתות בבת אחת — פחות רשתות פעילות טוען מהר יותר.`}
+        {" "}אפשר לשנות בכל עת מ⚙️ ← "רשתות להשוואת מחירים".
       </p>
       <div className="space-y-2 mb-2">
         {candidates.map(([key, cfg]) => {
@@ -1733,25 +1777,26 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // switching the gear-menu toggle away from "בחנות בלבד") and the user
   // hasn't been asked yet, show the picker instead of silently activating
   // every configured online vendor — that used to auto-provision all of
-  // them for everyone, which cost a shared daily catalog refresh forever
+  // them for everyone, and leave them all running, which cost a shared
+  // daily catalog refresh forever plus this user's own price-fetch reads
   // for vendors most people never actually looked at. Only fires once per
-  // account (userDoc.onlineVendorsConfigured), same waited-for-real-doc
-  // reasoning as the pricePreference default above. An account that
-  // already has online profiles from before this picker existed is
-  // grandfathered in silently — they've effectively already "configured"
-  // it the old way, and showing the picker with an empty existing-profile
-  // list would create duplicates of what they already have.
-  const alreadyHasOnlineProfiles = (allProfiles || []).some(p => p.mode === "online");
+  // account (userDoc.onlineVendorsConfigured) — but that field is new, so
+  // every EXISTING account sees this too, the first time it loads after
+  // this shipped, not just new ones: the picker defaults to exactly what
+  // they already have active (capped), so confirming as-is trims any
+  // existing excess down to the limit instead of leaving it running
+  // forever untouched. This is a one-time retroactive cleanup, not a
+  // repeating nag — once confirmed, it never shows again.
   const pricePrefersOnline = pricePreference !== "instoreOnly";
   const onlineSetupPending = userDoc !== null && !userDoc.onlineVendorsConfigured && profilesLoaded && pricePrefersOnline;
   const hasAnyOnlineCandidate = Object.values(onlineVendors).some(cfg => cfg.active !== false);
-  const needsOnlineVendorSetup = onlineSetupPending && !alreadyHasOnlineProfiles && hasAnyOnlineCandidate;
+  const needsOnlineVendorSetup = onlineSetupPending && hasAnyOnlineCandidate;
   useEffect(() => {
-    if (onlineSetupPending && (alreadyHasOnlineProfiles || !hasAnyOnlineCandidate)) {
+    if (onlineSetupPending && !hasAnyOnlineCandidate) {
       db.collection("users").doc(uid).set({ onlineVendorsConfigured: true }, { merge: true });
     }
     // eslint-disable-next-line
-  }, [onlineSetupPending, alreadyHasOnlineProfiles, hasAnyOnlineCandidate]);
+  }, [onlineSetupPending, hasAnyOnlineCandidate]);
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
