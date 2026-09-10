@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.17";
+const VERSION = "v2.18";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1598,6 +1598,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const [viewAsUser, setViewAsUser] = useState(isViewingAsUser());
   const simulatedIsAdmin = isAdmin && !viewAsUser;
   const hasUnreadFeedback = useHasUnreadFeedback(uid, simulatedIsAdmin);
+  // Only admin needs this listener — a regular user never sees the badge,
+  // so there's no reason to subscribe them to it too.
+  const maintenanceMode = useMaintenanceMode(isAdmin);
   const categories = useCategories();
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
@@ -1729,13 +1732,17 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
         <div className="flex-1" />
         <div className="relative">
           <button onClick={e => { e.stopPropagation(); setShowUserMenu(v => !v); }}
-            className="relative w-8 h-8 rounded-full overflow-hidden border border-[#DECBA1] bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0">
+            className={"relative w-8 h-8 rounded-full overflow-hidden bg-[#F3ECD9] text-[#5B5749] text-sm font-semibold flex items-center justify-center flex-shrink-0 " +
+              (isAdmin && maintenanceMode ? "border-2 border-[#B8462F]" : "border border-[#DECBA1]")}>
             ⚙️
             {isNewUser && (
               <span className="absolute top-0 left-0 w-2 h-2 rounded-full bg-[#E3A939]" />
             )}
             {hasUnreadFeedback && (
               <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#B8462F]" />
+            )}
+            {isAdmin && maintenanceMode && (
+              <span className="absolute -bottom-1 -left-1 text-[11px] leading-none">🚧</span>
             )}
           </button>
           {showUserMenu && (
@@ -1744,6 +1751,12 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
             // info button, so there's exactly one place to look.
             <div onClick={e => e.stopPropagation()}
               className="absolute left-0 top-10 bg-white rounded-xl shadow-xl border border-[#E5D8B5] z-20 min-w-56 overflow-hidden">
+              {isAdmin && maintenanceMode && (
+                <button onClick={() => { setShowUserMenu(false); onOpenAdminOptions(); }}
+                  className="w-full text-right px-4 py-2.5 text-xs font-bold text-[#B8462F] bg-[#FBEAE5] flex items-center gap-2 border-b border-[#E5D8B5]">
+                  <span>🚧</span><span>מצב תחזוקה פעיל — משתמשים רגילים חסומים</span>
+                </button>
+              )}
               <div className="px-4 pt-3 pb-2.5">
                 <div className="text-[11px] text-[#8A7F66] mb-1.5">השוואת מחירים</div>
                 <PricePreferenceToggle value={pricePreference} onChange={v => savePricePreference(uid, v)} />
