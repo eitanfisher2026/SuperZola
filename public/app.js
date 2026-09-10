@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.13";
+const VERSION = "v2.14";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1167,7 +1167,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
         return (
           <div className="space-y-2 mb-3">
             {candidates.list.length === 0 ? (
-              <p className="text-center text-[#A79A7C] text-sm py-6">{`לא נמצאו התאמות ל"${searchQuery || draft.name}"`}</p>
+              <div className="text-center py-6">
+                <p className="text-[#A79A7C] text-sm">{`לא נמצאו התאמות ל"${searchQuery || draft.name}"`}</p>
+                {/[A-Za-z]/.test(searchQuery || draft.name || "") && (
+                  <p className="text-[#A79A7C] text-xs mt-1.5">נסו בעברית, או רק אותיות ראשונות של שם המותג</p>
+                )}
+              </div>
             ) : candidates.list.map(c => {
               const vendorsForC = vendorsCoveredBy(c);
               // Checked = this exact candidate is what's currently matched
