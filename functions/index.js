@@ -1174,9 +1174,22 @@ async function ingestVendorPromotions(vendor, branchId) {
   const updatedAt = Date.now();
   const key = docKey(vendor, branchId);
   await Promise.all([
-    db.collection('vendorPromotions').doc(key).set({ promotions, updatedAt, sizeBytes }),
+    // The raw parsed promotions array (with nested groups/items) is never
+    // read anywhere — only its per-barcode summary (vendorPromoPrices,
+    // below) and this index doc's metadata are ever consumed — so it isn't
+    // written at all. A large chain's full promo set can run well past
+    // Firestore's 1MB document cap (real failure: ~1.57MB for one Rami Levy
+    // branch), and there's no reason to pay that cost for data nothing uses.
     db.collection('vendorPromotionsIndex').doc(key).set({ updatedAt, sizeBytes, promotionCount: promotions.length }),
-    db.collection('vendorPromoPrices').doc(key).set(promoPricesByBarcode(promotions)),
+    // Wrapped under one fixed field name (not written as the barcode map
+    // directly at the document root) so firestore.indexes.json can exempt
+    // it from Firestore's automatic per-field indexing — a chain with many
+    // promotions (Carrefour, Yohananof, Rami Levy all hit this) has
+    // thousands of dynamic barcode keys, each auto-indexed by default,
+    // which blows past Firestore's 20,000-index-entries-per-document cap.
+    // None of this is ever queried, only point-read by key, so indexing it
+    // at all was pure waste even before it started failing outright.
+    db.collection('vendorPromoPrices').doc(key).set({ byBarcode: promoPricesByBarcode(promotions) }),
   ]);
   return promotions;
 }
@@ -1210,6 +1223,13 @@ async function ensureFreshCatalog(vendor, branchId, force) {
 // the ONLY thing that keeps catalogs fresh. Once/day instead of the
 // original twice/day, to keep the Firestore-write cost down while there
 // are still few real users.
+// Also refreshes promotions for the same pairs, in the same pass — before
+// this, ingestVendorPromotions was only ever called from getBasketPrices'
+// force branch, which the client never actually invokes (force is
+// editor/admin-only and nothing calls it with promos in mind), so
+// vendorPromoPrices was never populated at all and no sale price ever
+// showed up anywhere, for any vendor. Real report: 2026-09-10, a known
+// in-store promotion at יוחננוף wasn't reflected in the app.
 exports.refreshActiveVendorCatalogs = onSchedule(
   { schedule: 'every 24 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
   async () => {
@@ -1225,7 +1245,10 @@ exports.refreshActiveVendorCatalogs = onSchedule(
     // is a second line of defense: even a legitimate, large fleet of
     // tracked branches shouldn't be able to open unlimited simultaneous
     // live FTP/HTTP connections to third-party price feeds in one run.
-    await runWithConcurrency(Object.values(pairs), 10, p => ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {}));
+    await runWithConcurrency(Object.values(pairs), 10, async p => {
+      await ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {});
+      await ingestVendorPromotions(p.vendor, String(p.branchId)).catch(() => {});
+    });
   }
 );
 
@@ -1352,7 +1375,8 @@ exports.prewarmVendorCatalog = onCall(
     if (force) await requireEditorOrAdmin(request);
     const key = docKey(vendor, String(branchId));
     const indexRef = db.collection('vendorCatalogIndex').doc(key);
-    const indexSnap = await indexRef.get();
+    const promoIndexRef = db.collection('vendorPromotionsIndex').doc(key);
+    const [indexSnap, promoIndexSnap] = await Promise.all([indexRef.get(), promoIndexRef.get()]);
     // Only actually ingest when there's no catalog yet or a forced refresh
     // was requested. Previously this always called ensureFreshCatalog(),
     // which — for a branch someone else already added — read back every
@@ -1360,6 +1384,12 @@ exports.prewarmVendorCatalog = onCall(
     // there was nothing left to "warm" once the index already exists.
     if (!indexSnap.exists || force) {
       await ingestVendorCatalog(vendor, String(branchId)).catch(() => {});
+    }
+    // Checked independently of the catalog index — a branch warmed before
+    // this line existed already has a catalog but was never warmed for
+    // promotions at all (see the matching note on refreshActiveVendorCatalogs).
+    if (!promoIndexSnap.exists || force) {
+      await ingestVendorPromotions(vendor, String(branchId)).catch(() => {});
     }
     const finalSnap = await indexRef.get();
     return { ok: true, updatedAt: (finalSnap.data() || {}).updatedAt || null };
@@ -1428,7 +1458,7 @@ exports.resolveItemBarcodes = onCall(
       ]);
       console.log('resolveItemBarcodes: catalog ready for', vendor, 'itemCount', Object.keys(items2 || {}).length);
       catalogsByVendor[vendor] = items2;
-      promoPricesByVendor[vendor] = promoSnap.data() || {};
+      promoPricesByVendor[vendor] = (promoSnap.data() || {}).byBarcode || {};
     }));
     const searchedVendors = [...neededVendors];
 
@@ -1585,7 +1615,7 @@ exports.lookupItemByBarcode = onCall(
       prices[vendor] = item.price;
       if (item.name) names.push(item.name);
       if (item.unit && !unit) unit = item.unit;
-      const promo = (promoSnap.data() || {})[bc];
+      const promo = ((promoSnap.data() || {}).byBarcode || {})[bc];
       const info = effectivePromoInfo(promo, item.price);
       if (info) promoPrices[vendor] = info;
     }));
@@ -1697,7 +1727,7 @@ exports.getBasketPrices = onCall(
               await ingestVendorPromotions(p.vendor, p.branchId).catch(() => {});
             }
             const snap = await db.collection('vendorPromoPrices').doc(dKey).get();
-            return snap.data() || {};
+            return (snap.data() || {}).byBarcode || {};
           })();
         }
         const items = await catalogByBranch[key];
@@ -1718,7 +1748,7 @@ exports.getBasketPrices = onCall(
         db.collection('vendorPromoPrices').doc(dKey).get(),
         readCatalogItemsBatch(dKey, barcodesByVendor[p.vendor]),
       ]);
-      const promoMap = promoSnap.data() || {};
+      const promoMap = (promoSnap.data() || {}).byBarcode || {};
       prices[p.id] = {}; promoPrices[p.id] = {};
       barcodesByVendor[p.vendor].forEach((barcode) => {
         const price = itemsByBarcode[barcode]?.price ?? null;
