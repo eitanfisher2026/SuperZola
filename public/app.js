@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.19";
+const VERSION = "v2.20";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -232,20 +232,25 @@ function useOnlineVendors() {
 // disclaimer shown alongside the list (Settings) pointing at that.
 function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, showToast) {
   if (existingProfiles === null) return;
-  const existingVendors = new Set(existingProfiles.filter(p => p.mode === "online").map(p => p.vendor));
-  Object.entries(onlineVendors).forEach(([vendor, cfg]) => {
-    if (existingVendors.has(vendor) || cfg.active === false) return;
+  // A vendor can have more than one online branch configured (see
+  // onlineVendorKey) — dedup per (vendor, branch), not per vendor, so a
+  // second online branch for an already-tracked vendor still gets added.
+  const existingKeys = new Set(existingProfiles.filter(p => p.mode === "online").map(p => onlineVendorKey(p.vendor, p.branchId)));
+  Object.values(onlineVendors).forEach(cfg => {
+    const key = onlineVendorKey(cfg.vendor, cfg.branchId);
+    if (existingKeys.has(key) || cfg.active === false) return;
+    const label = cfg.label || vendorLabel(cfg.vendor);
     db.collection("users").doc(uid).collection("vendorProfiles").add({
-      vendor, branchId: cfg.branchId, active: true, mode: "online",
+      vendor: cfg.vendor, branchId: cfg.branchId, active: true, mode: "online", label,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     // The very first time anyone activates a given online branch, its
     // catalog isn't cached yet and this real fetch can take up to ~100s —
     // after that it's already warm for everyone else. Without this, prices
     // for the new vendor would just silently not show up during that wait.
-    if (showToast) showToast(`מוסיפים את ${vendorLabel(vendor)} — טוען קטלוג, זה עשוי לקחת עד דקה...`);
-    fns.httpsCallable("prewarmVendorCatalog")({ vendor, branchId: cfg.branchId }).then(() => {
-      if (showToast) showToast(`הקטלוג של ${vendorLabel(vendor)} מוכן`);
+    if (showToast) showToast(`מוסיפים את ${label} — טוען קטלוג, זה עשוי לקחת עד דקה...`);
+    fns.httpsCallable("prewarmVendorCatalog")({ vendor: cfg.vendor, branchId: cfg.branchId }).then(() => {
+      if (showToast) showToast(`הקטלוג של ${label} מוכן`);
     }).catch(() => {});
   });
 }
@@ -310,6 +315,10 @@ function vendorLabel(id) {
   const v = VENDOR_LIST.find(x => x.id === id);
   return v ? v.label : id;
 }
+// onlineVendors doc id — a chain can have more than one online branch in
+// its own feed (e.g. a national one plus a separate Eilat/VAT-free one), so
+// this is keyed by (vendor, branch), not just vendor.
+function onlineVendorKey(vendor, branchId) { return vendor + "__" + String(branchId); }
 // These have no real multi-branch physical presence to pick from — wolt is
 // delivery-only, and quik's feed is actually Carrefour's own (reused for
 // its data only), so offering it in the physical-branch picker would show
@@ -435,7 +444,11 @@ function itemDisplayName(item) {
   return item.name;
 }
 function profileLabel(profile, allProfiles) {
-  let label = vendorLabel(profile.vendor);
+  // A vendor with multiple online branches denormalizes a distinguishing
+  // label onto the profile itself at provisioning time (see
+  // provisionOnlineVendorProfiles) — otherwise two online profiles of the
+  // same vendor would render as identical, unlabeled columns.
+  let label = profile.label || vendorLabel(profile.vendor);
   // A list's own profiles are always one mode or the other, never mixed —
   // so tagging "(אונליין)" on every vendor in an all-online list is just
   // noise repeated on every row. Only worth the tag when the profiles
@@ -2048,10 +2061,11 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
   // from the physical-branch picker: picking it as an in-store branch would
   // silently treat delivery-only prices as shelf prices.
   function excludeOnlineBranch(vendorId, branches) {
-    const onlineBranchId = onlineVendors && onlineVendors[vendorId] && String(onlineVendors[vendorId].branchId);
-    if (!onlineBranchId || !branches || typeof branches !== "object") return branches;
+    const onlineBranchIds = Object.values(onlineVendors || {})
+      .filter(cfg => cfg.vendor === vendorId).map(cfg => String(cfg.branchId));
+    if (onlineBranchIds.length === 0 || !branches || typeof branches !== "object") return branches;
     const filtered = Object.assign({}, branches);
-    delete filtered[onlineBranchId];
+    onlineBranchIds.forEach(id => delete filtered[id]);
     return filtered;
   }
   function pickVendor(vendorId) {
@@ -2256,7 +2270,7 @@ function VendorsScreen({ uid, onBack }) {
             {onlineProfiles.map(p => (
               <div key={p.id} className={"rounded-xl px-3 py-2.5 flex items-center gap-2 border " +
                 (p.active ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
-                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(p.vendor)} (אונליין)</span>
+                <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{p.label || vendorLabel(p.vendor)} (אונליין)</span>
                 <button onClick={() => toggleProfile(p)}
                   className={"text-xs border rounded-full px-2.5 py-1 flex-shrink-0 " +
                     (p.active ? "text-[#2E7D4F] border-[#B9D9B0] bg-white" : "text-[#A79A7C] border-[#DECBA1] bg-white")}>
@@ -2318,7 +2332,8 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [confirmClearUserData, setConfirmClearUserData] = useState(null); // user object | null
   const [confirmDeleteUserAccount, setConfirmDeleteUserAccount] = useState(null); // user object | null
   const [userActionBusy, setUserActionBusy] = useState(null); // uid currently running an action, or null
-  const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
+  const [newOnlineVendorDraft, setNewOnlineVendorDraft] = useState({ vendor: "", branchId: "", label: "", deliveryFee: "", minimumOrder: "" });
+  const [editingOnlineVendorKey, setEditingOnlineVendorKey] = useState(null); // onlineVendors doc id being edited, or null for a new entry
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
   const [corrections, setCorrections] = useState(null);
@@ -2440,28 +2455,40 @@ function AdminOptionsScreen({ uid, onBack }) {
     }, () => { setUserActionBusy(null); setToast("שגיאה בניתוק החשבון"); });
   }
 
-  function startEditOnlineVendor(vendor, cfg) {
+  function startEditOnlineVendor(key, cfg) {
+    setEditingOnlineVendorKey(key);
     setNewOnlineVendorDraft({
-      vendor, branchId: cfg.branchId || "",
+      vendor: cfg.vendor, branchId: cfg.branchId || "",
+      label: cfg.label || vendorLabel(cfg.vendor),
       deliveryFee: cfg.deliveryFee ?? "", minimumOrder: cfg.minimumOrder ?? "",
       active: cfg.active !== false,
     });
   }
   function resetOnlineVendorDraft() {
-    setNewOnlineVendorDraft({ vendor: "", branchId: "", deliveryFee: "", minimumOrder: "" });
+    setEditingOnlineVendorKey(null);
+    setNewOnlineVendorDraft({ vendor: "", branchId: "", label: "", deliveryFee: "", minimumOrder: "" });
   }
   function saveOnlineVendor() {
     const d = newOnlineVendorDraft;
     if (!d.vendor || !d.branchId) { setToast("נדרשים רשת ומספר סניף"); return; }
-    setSavingOnlineVendor(true);
     // Real branch ids from every vendor's feed are zero-padded to 3 digits
     // (e.g. "003", not "3") — matching that here is what lets
     // excludeOnlineBranch actually find and hide this branch from the
     // physical-branch picker; typing "3" would otherwise silently fail to
     // match and let it show up as a pickable in-store branch too.
     const normalizedBranchId = String(d.branchId).trim().padStart(3, "0");
-    db.collection("onlineVendors").doc(d.vendor).set({
-      branchId: normalizedBranchId, label: vendorLabel(d.vendor),
+    const key = onlineVendorKey(d.vendor, normalizedBranchId);
+    // A vendor can have more than one online branch (see onlineVendorKey),
+    // so picking an already-configured pair only overwrites it when that's
+    // the entry actually opened for editing — otherwise this would silently
+    // clobber a different admin's already-saved delivery terms.
+    if (onlineVendors[key] && editingOnlineVendorKey !== key) {
+      setToast("כבר קיימת רשת אונליין עם הרשת והסניף האלה — לחצו על ✏️ לעריכה");
+      return;
+    }
+    setSavingOnlineVendor(true);
+    db.collection("onlineVendors").doc(key).set({
+      vendor: d.vendor, branchId: normalizedBranchId, label: (d.label || "").trim() || vendorLabel(d.vendor),
       deliveryFee: parseFloat(d.deliveryFee) || 0, minimumOrder: parseFloat(d.minimumOrder) || 0,
       active: d.active !== false,
     }).then(() => {
@@ -2470,8 +2497,8 @@ function AdminOptionsScreen({ uid, onBack }) {
       resetOnlineVendorDraft();
     }, () => { setSavingOnlineVendor(false); setToast("שגיאה בשמירה"); });
   }
-  function deleteOnlineVendor(vendor) {
-    db.collection("onlineVendors").doc(vendor).delete().then(() => setToast("הרשת הוסרה"));
+  function deleteOnlineVendor(key) {
+    db.collection("onlineVendors").doc(key).delete().then(() => setToast("הרשת הוסרה"));
   }
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
@@ -3038,36 +3065,44 @@ function AdminOptionsScreen({ uid, onBack }) {
               {Object.keys(onlineVendors).length === 0 && (
                 <div className="text-[#8A7F66] text-sm">לא הוגדרו עדיין רשתות אונליין</div>
               )}
-              {Object.entries(onlineVendors).map(([vendor, cfg]) => (
-                <div key={vendor} className={"rounded-xl px-3 py-2.5 border " + (cfg.active !== false ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+              {Object.entries(onlineVendors).map(([key, cfg]) => (
+                <div key={key} className={"rounded-xl px-3 py-2.5 border " + (cfg.active !== false ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
                   <div className="flex items-center gap-2">
-                    <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{vendorLabel(vendor)}</span>
-                    <button onClick={() => startEditOnlineVendor(vendor, cfg)} className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm flex-shrink-0">✏️</button>
-                    <button onClick={() => setConfirmDeleteOnlineVendor(vendor)} className="w-7 h-7 flex items-center justify-center text-[#B8462F] text-base flex-shrink-0">🗑️</button>
+                    <span className="flex-1 text-sm text-[#2B2418] text-right min-w-0 font-semibold">{cfg.label || vendorLabel(cfg.vendor)}</span>
+                    <button onClick={() => startEditOnlineVendor(key, cfg)} className="w-7 h-7 flex items-center justify-center text-[#A79A7C] text-sm flex-shrink-0">✏️</button>
+                    <button onClick={() => setConfirmDeleteOnlineVendor(key)} className="w-7 h-7 flex items-center justify-center text-[#B8462F] text-base flex-shrink-0">🗑️</button>
                   </div>
                   <div className="text-[11px] text-[#A79A7C] mt-1">
-                    סניף {cfg.branchId} · משלוח ₪{cfg.deliveryFee} · מינימום ₪{cfg.minimumOrder}
+                    {vendorLabel(cfg.vendor)} · סניף {cfg.branchId} · משלוח ₪{cfg.deliveryFee} · מינימום ₪{cfg.minimumOrder}
                   </div>
                 </div>
               ))}
             </div>
             <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-              <div className="text-xs font-semibold text-[#8A7F66]">{newOnlineVendorDraft.vendor ? `עריכת ${vendorLabel(newOnlineVendorDraft.vendor)}` : "רשת אונליין חדשה"}</div>
-              <select value={newOnlineVendorDraft.vendor} disabled={!!onlineVendors[newOnlineVendorDraft.vendor]}
+              <div className="text-xs font-semibold text-[#8A7F66]">
+                {editingOnlineVendorKey ? `עריכת ${newOnlineVendorDraft.label || vendorLabel(newOnlineVendorDraft.vendor)}` : "רשת אונליין חדשה"}
+              </div>
+              {/* A chain can have more than one online branch (e.g. a national
+                  one plus a separate Eilat/VAT-free one) — so picking a vendor
+                  here just starts a fresh draft for it; editing an existing
+                  (vendor, branch) pair only happens via its own ✏️ above, never
+                  by re-picking the vendor, which is what makes adding a SECOND
+                  online branch for an already-configured vendor possible. */}
+              <select value={newOnlineVendorDraft.vendor}
                 onChange={e => {
                   const vendor = e.target.value;
-                  // Picking a vendor that's already configured needs to load
-                  // its real saved values first — without this, "שמירה" would
-                  // silently overwrite it with whatever was left in the blank
-                  // fields (real incident: wiped Carrefour's online branch to
-                  // 0/0 fees this way).
-                  if (vendor && onlineVendors[vendor]) startEditOnlineVendor(vendor, onlineVendors[vendor]);
-                  else setNewOnlineVendorDraft(prev => Object.assign({}, prev, { vendor }));
+                  setEditingOnlineVendorKey(null);
+                  setNewOnlineVendorDraft(prev => Object.assign({}, prev, {
+                    vendor, label: prev.label || (vendor ? vendorLabel(vendor) : ""),
+                  }));
                 }}
-                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none disabled:bg-[#F7F2E4]">
+                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
                 <option value="">בחירת רשת...</option>
                 {VENDOR_LIST.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
               </select>
+              <input value={newOnlineVendorDraft.label} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { label: e.target.value }))}
+                placeholder="שם לתצוגה — אפשר לשנות אם יש כמה סניפי אונליין לאותה רשת"
+                className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
               <input value={newOnlineVendorDraft.branchId} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { branchId: e.target.value }))}
                 placeholder="מספר הסניף האונליין (מקובץ המחירים)"
                 className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none text-sm" />
@@ -3175,7 +3210,7 @@ function AdminOptionsScreen({ uid, onBack }) {
           onConfirm={() => deleteCategory(confirmDeleteCat)} onClose={() => setConfirmDeleteCat(null)} />
       )}
       {confirmDeleteOnlineVendor && (
-        <ConfirmDialog message={`להסיר את ${vendorLabel(confirmDeleteOnlineVendor)} מרשתות האונליין?`}
+        <ConfirmDialog message={`להסיר את ${(onlineVendors[confirmDeleteOnlineVendor] || {}).label || vendorLabel((onlineVendors[confirmDeleteOnlineVendor] || {}).vendor)} מרשתות האונליין?`}
           onConfirm={() => deleteOnlineVendor(confirmDeleteOnlineVendor)} onClose={() => setConfirmDeleteOnlineVendor(null)} />
       )}
 
@@ -4048,7 +4083,7 @@ function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, 
             combo.forEach(p => {
               const vendorItems = byVendor[p.id];
               if (!vendorItems || vendorItems.length === 0) return;
-              const cfg = onlineVendors[p.vendor] || {};
+              const cfg = onlineVendors[onlineVendorKey(p.vendor, p.branchId)] || {};
               deliveryCost += cfg.deliveryFee || 0;
               const subtotal = vendorItems.reduce((s, e) => s + e.price * (e.item.quantity || 1), 0);
               if (cfg.minimumOrder && subtotal < cfg.minimumOrder) {
@@ -4179,10 +4214,10 @@ function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, 
                               <span>₪{entry.price.toFixed(2)}</span>
                             </div>
                           ))}
-                          {withDelivery && (onlineVendors[p.vendor] || {}).deliveryFee != null && (
+                          {withDelivery && (onlineVendors[onlineVendorKey(p.vendor, p.branchId)] || {}).deliveryFee != null && (
                             <div className="flex items-center justify-between text-xs text-[#8A7F66] pt-0.5 border-t border-[#E5D8B5] mt-1">
                               <span>משלוח</span>
-                              <span>₪{(onlineVendors[p.vendor].deliveryFee).toFixed(2)}</span>
+                              <span>₪{(onlineVendors[onlineVendorKey(p.vendor, p.branchId)].deliveryFee).toFixed(2)}</span>
                             </div>
                           )}
                         </div>
@@ -4190,7 +4225,7 @@ function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, 
                           <button
                             onClick={() => setOrderVendor({ vendor: p.vendor, entries: vendorItems.map(e => e.item) })}
                             className="w-full mt-2 bg-white border border-[#B9D9B0] text-[#256A3F] py-2 rounded-lg text-xs font-semibold">
-                            🛒 מעבר להזמנה ב{vendorLabel(p.vendor)}
+                            🛒 מעבר להזמנה ב{p.label || vendorLabel(p.vendor)}
                           </button>
                         )}
                       </div>
