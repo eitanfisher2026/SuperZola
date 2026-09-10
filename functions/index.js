@@ -1571,10 +1571,20 @@ exports.browseCategoryItems = onCall(
       results.push({ barcode: bc, name, unit, manufacturer, prices: candidatesByBarcode[bc].prices });
     }
     if (nameFilter) {
+      // Ranked by where the search text sits in the name, not just
+      // alphabetically — a plain alphabetical sort put a combo product with
+      // the query buried mid-name (e.g. "קינואה+טונה בשמן זית") ahead of the
+      // plain product itself ("שמן זית"), purely because ק sorts before ש,
+      // with nothing reflecting that the second is the more relevant match.
       const nf = normalizeItemName(nameFilter);
-      results = results.filter(r => normalizeItemName(r.name).includes(nf));
+      results = results
+        .map(r => ({ r, idx: normalizeItemName(r.name).indexOf(nf) }))
+        .filter(x => x.idx !== -1)
+        .sort((a, b) => a.idx - b.idx || a.r.name.localeCompare(b.r.name, 'he'))
+        .map(x => x.r);
+    } else {
+      results.sort((a, b) => a.name.localeCompare(b.name, 'he'));
     }
-    results.sort((a, b) => a.name.localeCompare(b.name, 'he'));
     return { items: results, truncated: snap.size === LIMIT };
   }
 );
