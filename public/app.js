@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.20";
+const VERSION = "v2.21";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -230,14 +230,22 @@ function useOnlineVendors() {
 // onlineVendors entry gets provisioned for every user, and the actual
 // "does this vendor deliver to me" question is left to the user, with a
 // disclaimer shown alongside the list (Settings) pointing at that.
-function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, showToast) {
+// onlyKeys (a Set of onlineVendorKey values), when given, restricts this to
+// just those entries — used both by the first-time picker (provisioning
+// exactly what the user picked) and by "add another online vendor" later
+// (provisioning exactly one). Without it, every configured active entry not
+// already tracked gets added — used nowhere anymore on its own, since
+// silently auto-adding every online vendor for every user is the exact
+// cost problem the picker exists to avoid; kept as the default for safety
+// only, never call this without onlyKeys for a real user action.
+function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, showToast, onlyKeys) {
   if (existingProfiles === null) return;
   // A vendor can have more than one online branch configured (see
   // onlineVendorKey) — dedup per (vendor, branch), not per vendor, so a
   // second online branch for an already-tracked vendor still gets added.
   const existingKeys = new Set(existingProfiles.filter(p => p.mode === "online").map(p => onlineVendorKey(p.vendor, p.branchId)));
-  Object.values(onlineVendors).forEach(cfg => {
-    const key = onlineVendorKey(cfg.vendor, cfg.branchId);
+  Object.entries(onlineVendors).forEach(([key, cfg]) => {
+    if (onlyKeys && !onlyKeys.has(key)) return;
     if (existingKeys.has(key) || cfg.active === false) return;
     const label = cfg.label || vendorLabel(cfg.vendor);
     db.collection("users").doc(uid).collection("vendorProfiles").add({
@@ -253,6 +261,63 @@ function provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, sho
       if (showToast) showToast(`הקטלוג של ${label} מוכן`);
     }).catch(() => {});
   });
+}
+
+// Shown once, the first time a user's price preference includes online
+// comparison (first-time setup or switching the gear-menu toggle) — every
+// active vendor here defaults to selected up to the cap, but the user can
+// swap which ones before confirming. Replaces silently auto-provisioning
+// every configured online vendor for every user, which cost real money
+// (a shared daily catalog refresh, forever) for vendors most people never
+// actually looked at.
+function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnlineVendors, showToast, onDone }) {
+  const candidates = Object.entries(onlineVendors).filter(([, cfg]) => cfg.active !== false);
+  const [selected, setSelected] = useState(() => new Set(candidates.slice(0, maxOnlineVendors).map(([key]) => key)));
+
+  function toggle(key) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else if (next.size < maxOnlineVendors) next.add(key);
+      return next;
+    });
+  }
+
+  // The header button (closeLabel below) is the one confirm action — the
+  // selection is committed the moment it's tapped, so there's no separate
+  // "saving" state to show; provisioning itself continues in the
+  // background exactly like adding one vendor at a time already does.
+  function confirm() {
+    db.collection("users").doc(uid).set({ onlineVendorsConfigured: true }, { merge: true }).then(() => {
+      provisionOnlineVendorProfiles(uid, onlineVendors, existingProfiles, showToast, selected);
+    });
+    onDone();
+  }
+
+  return (
+    <Modal onClose={confirm} disableClose closeLabel="אישור">
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>אילו רשתות אונליין להשוות?</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">
+        עד {maxOnlineVendors} רשתות בבת אחת — פחות רשתות פעילות טוען מהר יותר. אפשר לשנות בכל עת מ⚙️ ← "רשתות להשוואת מחירים".
+      </p>
+      <div className="space-y-2 mb-2">
+        {candidates.map(([key, cfg]) => {
+          const isChecked = selected.has(key);
+          const blocked = !isChecked && selected.size >= maxOnlineVendors;
+          return (
+            <button key={key} type="button" disabled={blocked} onClick={() => toggle(key)}
+              className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-3 border text-right " +
+                (isChecked ? "bg-[#EEF5EC] border-[#B9D9B0]" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45" : "bg-white border-[#E5D8B5]")}>
+              <span className="text-sm font-medium text-[#2B2418]">{cfg.label || vendorLabel(cfg.vendor)}</span>
+              <span className={"w-5 h-5 rounded-[5px] border-2 flex-shrink-0 flex items-center justify-center text-[11px] font-bold leading-none " +
+                (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>✓</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-[#A79A7C] text-center">{selected.size} מתוך {maxOnlineVendors} נבחרו</p>
+    </Modal>
+  );
 }
 
 function combinations(arr, k) {
@@ -319,6 +384,25 @@ function vendorLabel(id) {
 // its own feed (e.g. a national one plus a separate Eilat/VAT-free one), so
 // this is keyed by (vendor, branch), not just vendor.
 function onlineVendorKey(vendor, branchId) { return vendor + "__" + String(branchId); }
+
+// Admin-set ceilings on how many vendor profiles (online / physical,
+// counted separately) a user can have ACTIVE at once — every active
+// profile costs real money (its own price-fetch reads, plus a shared daily
+// catalog refresh for the first user to ever activate a given branch), so
+// this exists purely to stop that from growing unbounded per user.
+function useAppLimits() {
+  const [limits, setLimits] = useState({ maxOnlineVendors: 4, maxPhysicalVendors: 4 });
+  useEffect(() => {
+    return db.collection("appConfig").doc("limits").onSnapshot(snap => {
+      const d = snap.data() || {};
+      setLimits({
+        maxOnlineVendors: d.maxOnlineVendors > 0 ? d.maxOnlineVendors : 4,
+        maxPhysicalVendors: d.maxPhysicalVendors > 0 ? d.maxPhysicalVendors : 4,
+      });
+    });
+  }, []);
+  return limits;
+}
 // These have no real multi-branch physical presence to pick from — wolt is
 // delivery-only, and quik's feed is actually Carrefour's own (reused for
 // its data only), so offering it in the physical-branch picker would show
@@ -1617,6 +1701,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const categories = useCategories();
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
+  const limits = useAppLimits();
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
@@ -1644,25 +1729,29 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
     // eslint-disable-next-line
   }, [isNewUser, userDoc]);
 
-  // Fires once per app-open — every list now shows both price views, so
-  // online vendor profiles need to be ready before ANY list is opened
-  // rather than only when opening an "online" one. Home always mounts
-  // before a list or FindItemModal can be reached, so this is the one
-  // place this needs to happen. Skipped entirely for a user who's said
-  // they only ever shop in-store — no reason to silently create online
-  // profiles (and pay for warming their catalogs) for someone who's asked
-  // not to see them at all. Also waits for the real user doc to have
-  // loaded (not just its defaulted "both") — for a brand-new user,
-  // allProfiles can resolve to [] before userDoc's snapshot arrives, and
-  // provisioning on that default would permanently create online profiles
-  // moments before the real "instoreOnly" default gets saved, with no way
-  // to undo it.
+  // The moment online comparison becomes relevant (first-time setup or
+  // switching the gear-menu toggle away from "בחנות בלבד") and the user
+  // hasn't been asked yet, show the picker instead of silently activating
+  // every configured online vendor — that used to auto-provision all of
+  // them for everyone, which cost a shared daily catalog refresh forever
+  // for vendors most people never actually looked at. Only fires once per
+  // account (userDoc.onlineVendorsConfigured), same waited-for-real-doc
+  // reasoning as the pricePreference default above. An account that
+  // already has online profiles from before this picker existed is
+  // grandfathered in silently — they've effectively already "configured"
+  // it the old way, and showing the picker with an empty existing-profile
+  // list would create duplicates of what they already have.
+  const alreadyHasOnlineProfiles = (allProfiles || []).some(p => p.mode === "online");
+  const pricePrefersOnline = pricePreference !== "instoreOnly";
+  const onlineSetupPending = userDoc !== null && !userDoc.onlineVendorsConfigured && profilesLoaded && pricePrefersOnline;
+  const hasAnyOnlineCandidate = Object.values(onlineVendors).some(cfg => cfg.active !== false);
+  const needsOnlineVendorSetup = onlineSetupPending && !alreadyHasOnlineProfiles && hasAnyOnlineCandidate;
   useEffect(() => {
-    if (userDoc === null) return;
-    if (pricePreference === "instoreOnly") return;
-    provisionOnlineVendorProfiles(uid, onlineVendors, allProfiles, setToast);
+    if (onlineSetupPending && (alreadyHasOnlineProfiles || !hasAnyOnlineCandidate)) {
+      db.collection("users").doc(uid).set({ onlineVendorsConfigured: true }, { merge: true });
+    }
     // eslint-disable-next-line
-  }, [allProfiles, JSON.stringify(onlineVendors), pricePreference, userDoc === null]);
+  }, [onlineSetupPending, alreadyHasOnlineProfiles, hasAnyOnlineCandidate]);
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -1895,6 +1984,10 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
         סופר זולה {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
       </div>
 
+      {needsOnlineVendorSetup && (
+        <OnlineVendorPickerModal uid={uid} onlineVendors={onlineVendors} existingProfiles={allProfiles}
+          maxOnlineVendors={limits.maxOnlineVendors} showToast={setToast} onDone={() => {}} />
+      )}
       {showCheckPrice && (
         <FindItemModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} onOpenList={onOpenList} showToast={setToast} />
       )}
@@ -2040,10 +2133,12 @@ function savePricePreference(uid, value) {
 // Self-contained "pick a vendor, then a branch, then add it" flow — used
 // both in Settings and from a list's own vendor screen, so adding a branch
 // never requires a separate trip to Settings first.
-function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVendors }) {
+function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVendors, maxPhysicalVendors }) {
   const [branchCache, setBranchCache] = useState({});
   const [addingVendor, setAddingVendor] = useState("");
   const [branchId, setBranchId] = useState("");
+  const activePhysicalCount = (existingProfiles || []).filter(p => p.active && (p.mode || "instore") === "instore").length;
+  const atPhysicalCap = maxPhysicalVendors != null && activePhysicalCount >= maxPhysicalVendors;
 
   function loadBranches(vendorId) {
     setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
@@ -2077,6 +2172,7 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
     if (!addingVendor || !branchId) return;
     const already = (existingProfiles || []).some(p => p.vendor === addingVendor && String(p.branchId) === String(branchId));
     if (already) { showToast("הסניף כבר ברשימה שלך"); return; }
+    if (atPhysicalCap) { showToast(`ניתן להפעיל עד ${maxPhysicalVendors} סניפים פיזיים בו-זמנית — כבו סניף קיים כדי להוסיף אחר`); return; }
     db.collection("users").doc(uid).collection("vendorProfiles").add({
       vendor: addingVendor, branchId, active: true, mode: "instore", addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -2105,7 +2201,10 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
       {addingVendor && (
         <BranchPicker branches={addingBranches} branchId={branchId} onPick={setBranchId} />
       )}
-      <button onClick={addProfile} disabled={!addingVendor || !branchId}
+      {atPhysicalCap && (
+        <p className="text-[11px] text-[#B8462F]">הגעתם למספר המרבי של סניפים פעילים ({maxPhysicalVendors}) — כבו סניף קיים כדי להוסיף אחר.</p>
+      )}
+      <button onClick={addProfile} disabled={!addingVendor || !branchId || atPhysicalCap}
         className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
         + הוספת סניף
       </button>
@@ -2123,7 +2222,9 @@ function VendorsScreen({ uid, onBack }) {
   const [confirmRemoveProfile, setConfirmRemoveProfile] = useState(null);
   const [refreshingId, setRefreshingId] = useState(null);
   const [toast, setToast] = useState(null);
+  const [addingOnlineKey, setAddingOnlineKey] = useState("");
   const onlineVendors = useOnlineVendors();
+  const limits = useAppLimits();
   const isEditorOrAdmin = role === "editor" || role === "admin";
 
   useEffect(() => {
@@ -2135,20 +2236,8 @@ function VendorsScreen({ uid, onBack }) {
 
   const userDocRaw = useUserDoc(uid);
   const userDoc = userDocRaw || {};
-  const pricePreference = userDoc.pricePreference || "both";
 
   useEffect(() => { setRole(effectiveRole(userDoc.role || null)); }, [userDoc.role]);
-
-  // Waits for the real user doc before provisioning — see the matching
-  // comment in Home() for why: provisioning on the defaulted "both" before
-  // a brand-new user's real (likely "instoreOnly") preference has loaded
-  // would permanently create online profiles with no way to undo it.
-  useEffect(() => {
-    if (userDocRaw === null) return;
-    if (pricePreference === "instoreOnly") return;
-    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast);
-    // eslint-disable-next-line
-  }, [profiles, JSON.stringify(onlineVendors), pricePreference, userDocRaw === null]);
 
   function loadCatalogTimestamps() {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -2188,10 +2277,26 @@ function VendorsScreen({ uid, onBack }) {
   }, [profiles]);
 
   function toggleProfile(p) {
+    if (!p.active) {
+      const isOnline = p.mode === "online";
+      const currentActive = (isOnline ? onlineProfiles : instoreProfiles).filter(x => x.active).length;
+      const max = isOnline ? limits.maxOnlineVendors : limits.maxPhysicalVendors;
+      if (currentActive >= max) {
+        setToast(isOnline
+          ? `ניתן להפעיל עד ${max} רשתות אונליין בו-זמנית — כבו רשת קיימת קודם`
+          : `ניתן להפעיל עד ${max} סניפים פיזיים בו-זמנית — כבו סניף קיים קודם`);
+        return;
+      }
+    }
     db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).update({ active: !p.active });
   }
   function removeProfile(p) {
     db.collection("users").doc(uid).collection("vendorProfiles").doc(p.id).delete();
+  }
+  function addOnlineVendor() {
+    if (!addingOnlineKey) return;
+    provisionOnlineVendorProfiles(uid, onlineVendors, profiles, setToast, new Set([addingOnlineKey]));
+    setAddingOnlineKey("");
   }
   function branchLabel(vendorId, id) {
     const b = branchCache[vendorId];
@@ -2252,7 +2357,7 @@ function VendorsScreen({ uid, onBack }) {
             ))}
           </div>
 
-          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} onlineVendors={onlineVendors} />
+          <AddBranchWidget uid={uid} existingProfiles={profiles} showToast={setToast} onlineVendors={onlineVendors} maxPhysicalVendors={limits.maxPhysicalVendors} />
         </div>
 
         <div>
@@ -2279,6 +2384,33 @@ function VendorsScreen({ uid, onBack }) {
               </div>
             ))}
           </div>
+          {(() => {
+            const availableOnline = Object.entries(onlineVendors).filter(([key, cfg]) =>
+              cfg.active !== false && !onlineProfiles.some(p => onlineVendorKey(p.vendor, p.branchId) === key));
+            if (availableOnline.length === 0) return null;
+            const activeOnlineCount = onlineProfiles.filter(p => p.active).length;
+            const atOnlineCap = activeOnlineCount >= limits.maxOnlineVendors;
+            return (
+              <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 mt-2 space-y-2">
+                {atOnlineCap ? (
+                  <p className="text-xs text-[#8A7F66]">הגעתם למספר המרבי של רשתות אונליין פעילות ({limits.maxOnlineVendors}) — כבו רשת קיימת כדי להוסיף אחרת.</p>
+                ) : (
+                  <React.Fragment>
+                    <div className="text-xs font-semibold text-[#8A7F66]">הוספת רשת אונליין</div>
+                    <select value={addingOnlineKey} onChange={e => setAddingOnlineKey(e.target.value)}
+                      className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 text-right bg-white outline-none">
+                      <option value="">בחירת רשת...</option>
+                      {availableOnline.map(([key, cfg]) => <option key={key} value={key}>{cfg.label || vendorLabel(cfg.vendor)}</option>)}
+                    </select>
+                    <button onClick={addOnlineVendor} disabled={!addingOnlineKey}
+                      className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+                      + הוספת רשת
+                    </button>
+                  </React.Fragment>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -2339,7 +2471,23 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [corrections, setCorrections] = useState(null);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [confirmMaintenanceOn, setConfirmMaintenanceOn] = useState(false);
+  const limits = useAppLimits();
+  const [limitsDraft, setLimitsDraft] = useState(null); // null until first synced from limits, then user-editable
+  const [savingLimits, setSavingLimits] = useState(false);
   const onlineVendors = useOnlineVendors();
+
+  useEffect(() => {
+    if (limitsDraft === null) setLimitsDraft({ maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors) });
+    // eslint-disable-next-line
+  }, [limits]);
+  function saveLimits() {
+    const maxOnlineVendors = parseInt(limitsDraft.maxOnlineVendors, 10);
+    const maxPhysicalVendors = parseInt(limitsDraft.maxPhysicalVendors, 10);
+    if (!(maxOnlineVendors > 0) || !(maxPhysicalVendors > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
+    setSavingLimits(true);
+    db.collection("appConfig").doc("limits").set({ maxOnlineVendors, maxPhysicalVendors }, { merge: true })
+      .then(() => { setSavingLimits(false); setToast("נשמר"); }, () => { setSavingLimits(false); setToast("שגיאה בשמירה"); });
+  }
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }
@@ -2821,6 +2969,33 @@ function AdminOptionsScreen({ uid, onBack }) {
               <span className={"text-xs font-bold flex-shrink-0 " + (maintenanceMode ? "text-[#B8462F]" : "text-[#A79A7C]")}>
                 {maintenanceMode ? "פעיל" : "כבוי"}
               </span>
+            </button>
+          </div>
+        )}
+
+        {role === "admin" && limitsDraft && (
+          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
+            <div className="text-sm font-semibold text-[#2B2418]">מגבלת רשתות פעילות למשתמש</div>
+            <p className="text-xs text-[#8A7F66]">
+              כל רשת פעילה עולה כסף (טעינת מחירים שוטפת) — הגבלה מונעת ממשתמש להשאיר רשתות פעילות שהוא לא באמת משתמש בהן.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11px] text-[#8A7F66] block mb-1">מקסימום רשתות אונליין</label>
+                <input type="number" min="1" value={limitsDraft.maxOnlineVendors}
+                  onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxOnlineVendors: e.target.value }))}
+                  className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+              </div>
+              <div>
+                <label className="text-[11px] text-[#8A7F66] block mb-1">מקסימום סניפים פיזיים</label>
+                <input type="number" min="1" value={limitsDraft.maxPhysicalVendors}
+                  onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxPhysicalVendors: e.target.value }))}
+                  className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+              </div>
+            </div>
+            <button onClick={saveLimits} disabled={savingLimits}
+              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+              {savingLimits ? <Spinner /> : "שמירה"}
             </button>
           </div>
         )}
@@ -3531,24 +3706,33 @@ function loadHtml5Qrcode() {
 
 function BarcodeScanModal({ onDetected, onClose }) {
   const [error, setError] = useState(null);
+  const [fileError, setFileError] = useState(null);
+  const [scanningFile, setScanningFile] = useState(false);
+  const [libReady, setLibReady] = useState(false);
   const activeRef = useRef(false); // true once .start() resolved and not yet stopped
   const detectedRef = useRef(false);
   const readerRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  function scannerConfig() {
+    const config = { verbose: false };
+    if (window.Html5QrcodeSupportedFormats) {
+      config.formatsToSupport = [
+        window.Html5QrcodeSupportedFormats.EAN_13,
+        window.Html5QrcodeSupportedFormats.EAN_8,
+        window.Html5QrcodeSupportedFormats.UPC_A,
+        window.Html5QrcodeSupportedFormats.UPC_E,
+      ];
+    }
+    return config;
+  }
 
   useEffect(() => {
     let cancelled = false;
     loadHtml5Qrcode().then(() => {
       if (cancelled) return;
-      const config = { verbose: false };
-      if (window.Html5QrcodeSupportedFormats) {
-        config.formatsToSupport = [
-          window.Html5QrcodeSupportedFormats.EAN_13,
-          window.Html5QrcodeSupportedFormats.EAN_8,
-          window.Html5QrcodeSupportedFormats.UPC_A,
-          window.Html5QrcodeSupportedFormats.UPC_E,
-        ];
-      }
-      const reader = new window.Html5Qrcode("barcode-scan-region", config);
+      setLibReady(true);
+      const reader = new window.Html5Qrcode("barcode-scan-region", scannerConfig());
       readerRef.current = reader;
       reader.start(
         { facingMode: "environment" },
@@ -3561,7 +3745,9 @@ function BarcodeScanModal({ onDetected, onClose }) {
         },
         () => {} // per-frame "nothing found in this frame" — expected continuously, not an error
       ).then(() => { if (!cancelled) activeRef.current = true; }, () => {
-        if (!cancelled) setError("לא ניתן לגשת למצלמה — ודאו שניתנה הרשאה למצלמה בדפדפן");
+        // Camera access failing doesn't block the photo-upload path below —
+        // the same reader instance still works for scanFile() either way.
+        if (!cancelled) setError("לא ניתן לגשת למצלמה — ודאו שניתנה הרשאה למצלמה בדפדפן, או העלו תמונה במקום");
       });
     }, () => {
       if (!cancelled) setError("סריקת ברקוד לא נטענה — בדקו את החיבור לאינטרנט ונסו שוב");
@@ -3573,16 +3759,52 @@ function BarcodeScanModal({ onDetected, onClose }) {
     // eslint-disable-next-line
   }, []);
 
+  // Decoding a static image needs the same reader instance to not be mid-
+  // camera-scan (scanFile and a running start() can't overlap), so an
+  // active camera session is stopped first — if the photo doesn't decode,
+  // it's left stopped rather than silently racing a fresh start() with
+  // whatever scanFile() is still cleaning up internally; closing and
+  // reopening this screen gets the camera back.
+  function handleFilePicked(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file || !readerRef.current) return;
+    setFileError(null);
+    setScanningFile(true);
+    const wasActive = activeRef.current;
+    activeRef.current = false;
+    (wasActive ? readerRef.current.stop().catch(() => {}) : Promise.resolve())
+      .then(() => readerRef.current.scanFile(file, true))
+      .then(decodedText => {
+        if (detectedRef.current) return;
+        detectedRef.current = true;
+        onDetected(decodedText);
+      }, () => {
+        setScanningFile(false);
+        setFileError("לא נמצא ברקוד בתמונה — נסו תמונה ברורה וממוקדת יותר, או תמונה אחרת");
+      });
+  }
+
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סריקת ברקוד</h3>
-      <p className="text-xs text-[#8A7F66] text-center mb-4">כוונו את המצלמה לברקוד שעל המוצר</p>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">כוונו את המצלמה לברקוד שעל המוצר, או העלו תמונה שלו</p>
       {error ? (
         <p className="text-center text-[#B8462F] text-sm py-6">{error}</p>
       ) : (
         <div id="barcode-scan-region" className="rounded-xl overflow-hidden bg-black" style={{ minHeight: 240 }} />
       )}
-      <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl border border-[#DECBA1] text-[#5B5749] font-medium text-sm">ביטול</button>
+      {fileError && <p className="text-center text-[#B8462F] text-xs mt-2">{fileError}</p>}
+      {libReady && (
+        <React.Fragment>
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFilePicked} />
+          <button onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={scanningFile}
+            className="w-full mt-4 py-3 rounded-2xl bg-[#F3ECD9] text-[#5B5749] font-medium text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+            {scanningFile ? <Spinner2 /> : "🖼️ העלאת תמונה מהגלריה"}
+          </button>
+        </React.Fragment>
+      )}
+      <button onClick={onClose} className="w-full mt-2 py-3 rounded-2xl border border-[#DECBA1] text-[#5B5749] font-medium text-sm">ביטול</button>
     </Modal>
   );
 }
@@ -3823,6 +4045,7 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
 function VendorVisibilityModal({ uid, activeProfiles, hiddenVendorIds, onToggle, onClose, showToast }) {
   const [catalogTimestamps, setCatalogTimestamps] = useState({}); // { profileId: updatedAt|null }
   const onlineVendors = useOnlineVendors();
+  const limits = useAppLimits();
 
   useEffect(() => {
     fns.httpsCallable("getActiveCatalogTimestamps")({}).then(res => {
@@ -3874,7 +4097,7 @@ function VendorVisibilityModal({ uid, activeProfiles, hiddenVendorIds, onToggle,
         </div>
       )}
       <div className="mt-4 pt-4 border-t border-[#E5D8B5]">
-        <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} onlineVendors={onlineVendors} />
+        <AddBranchWidget uid={uid} existingProfiles={activeProfiles} showToast={showToast} onlineVendors={onlineVendors} maxPhysicalVendors={limits.maxPhysicalVendors} />
       </div>
       <button onClick={onClose} className="w-full mt-4 py-3 rounded-2xl bg-[#2E4A3B] text-white font-semibold text-sm">סגירה</button>
     </Modal>

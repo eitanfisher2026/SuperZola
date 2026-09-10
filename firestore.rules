@@ -177,6 +177,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // How many active vendor profiles (online / physical, counted
+    // separately) a user can have at once — every signed-in user needs to
+    // read this to enforce the cap client-side; only admin sets it.
+    match /appConfig/limits {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
     // AI spend ledger — a user can see their own usage, never edit it.
     // Cloud Functions (Admin SDK) write it; nested by month so quota checks
     // read one small document instead of the user's whole history.
