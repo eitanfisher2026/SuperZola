@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.15";
+const VERSION = "v2.16";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -170,6 +170,23 @@ function useUserDoc(uid) {
     return db.collection("users").doc(uid).onSnapshot(snap => setData(snap.data() || {}));
   }, [uid]);
   return data;
+}
+// One shared on/off switch (appConfig/maintenance.enabled) so the admin can
+// take the app offline for everyone else while still using their own
+// account to test — there's no separate staging environment, so this is
+// the only way to make changes live without regular users seeing them
+// mid-deploy. Only read once signed in (`active`) since the Firestore rule
+// requires signedIn(); a signed-out visitor just sees the normal sign-in
+// screen either way.
+function useMaintenanceMode(active) {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    return db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
+      setEnabled(!!(snap.data() || {}).enabled);
+    });
+  }, [active]);
+  return enabled;
 }
 // A single limit(1) live query rather than loading every thread (which
 // FeedbackDialog only does once it's actually open) — cheap enough to keep
@@ -742,6 +759,17 @@ function SignInScreen({ error }) {
       )}
       <button onClick={() => setShowPrivacy(true)} className="text-xs text-[#A79A7C] underline">מדיניות פרטיות</button>
       {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
+    </div>
+  );
+}
+
+function MaintenanceScreen({ onSignOut }) {
+  return (
+    <div className="min-h-dvh flex flex-col items-center justify-center gap-4 bg-[#FBF4E7] px-6 text-center" dir="rtl">
+      <div className="text-5xl">🚧</div>
+      <h1 className="text-2xl" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>רגע של תחזוקה</h1>
+      <p className="text-sm text-[#8A7F66] max-w-xs">אנחנו מעדכנים את האפליקציה. נחזור לפעילות בקרוב — נסו שוב בעוד כמה דקות.</p>
+      <button onClick={onSignOut} className="text-xs text-[#A79A7C] underline mt-2">התנתקות</button>
     </div>
   );
 }
@@ -2284,6 +2312,7 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
   const [corrections, setCorrections] = useState(null);
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
@@ -2441,6 +2470,15 @@ function AdminOptionsScreen({ uid, onBack }) {
     const data = snap.data() || {};
     setRole(effectiveRole(data.role || null));
   }), [uid]);
+
+  useEffect(() => db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
+    setMaintenanceMode(!!(snap.data() || {}).enabled);
+  }), []);
+  function toggleMaintenanceMode() {
+    const next = !maintenanceMode;
+    db.collection("appConfig").doc("maintenance").set({ enabled: next }, { merge: true })
+      .then(() => setToast(next ? "מצב תחזוקה הופעל" : "מצב תחזוקה כובה"), () => setToast("שגיאה בשמירה"));
+  }
 
   // Only reachable for an admin (see the Firestore rule) — a non-admin
   // simply gets an empty snapshot back, never an error, since they never
@@ -2708,6 +2746,26 @@ function AdminOptionsScreen({ uid, onBack }) {
           <div className="pt-2 border-t-2 border-[#C7B78E] flex items-center gap-2">
             <span className="text-[11px] font-bold text-[#8A5A15] uppercase tracking-wide">🛠️ ניהול מערכת</span>
             <span className="text-[10px] text-[#A79A7C]">(עורכים ומנהלים)</span>
+          </div>
+        )}
+
+        {role === "admin" && (
+          <div>
+            <button onClick={toggleMaintenanceMode}
+              className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (maintenanceMode ? "bg-[#FBEAE5] border-[#E0B0A5]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">🚧</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">מצב תחזוקה</div>
+                  <div className="text-xs text-[#A79A7C]">
+                    {maintenanceMode ? "פעיל — משתמשים רגילים רואים מסך תחזוקה, אתם ממשיכים לראות הכל" : "כבוי — האפליקציה פתוחה לכולם"}
+                  </div>
+                </div>
+              </div>
+              <span className={"text-xs font-bold flex-shrink-0 " + (maintenanceMode ? "text-[#B8462F]" : "text-[#A79A7C]")}>
+                {maintenanceMode ? "פעיל" : "כבוי"}
+              </span>
+            </button>
           </div>
         )}
 
@@ -5053,6 +5111,9 @@ function App() {
   const [user, setUser] = useState(undefined); // undefined = still resolving
   const [screen, setScreen] = useState({ view: "home" });
   const [signInError, setSignInError] = useState(null);
+  const userDoc = useUserDoc(user ? user.uid : null);
+  const maintenanceMode = useMaintenanceMode(!!user);
+  const isAdminUser = (userDoc || {}).role === "admin";
 
   useEffect(() => {
     return auth.onAuthStateChanged(setUser);
@@ -5080,6 +5141,10 @@ function App() {
     content = <Loading />;
   } else if (!user) {
     content = <SignInScreen error={signInError} />;
+  } else if (userDoc === null) {
+    content = <Loading />;
+  } else if (maintenanceMode && !isAdminUser) {
+    content = <MaintenanceScreen onSignOut={signOut} />;
   } else if (screen.view === "list") {
     content = (
       <ListScreen

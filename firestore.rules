@@ -167,6 +167,16 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    // Single on/off switch for maintenance mode (no separate staging
+    // environment — this lets the admin take the app offline for everyone
+    // else while still testing live under their own account). Every
+    // signed-in user needs read access to know whether to show the
+    // maintenance screen; only admin can flip it.
+    match /appConfig/maintenance {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
     // AI spend ledger — a user can see their own usage, never edit it.
     // Cloud Functions (Admin SDK) write it; nested by month so quota checks
     // read one small document instead of the user's whole history.
