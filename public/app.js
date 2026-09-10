@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.16";
+const VERSION = "v2.17";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2313,6 +2313,7 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
   const [corrections, setCorrections] = useState(null);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [confirmMaintenanceOn, setConfirmMaintenanceOn] = useState(false);
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
@@ -2474,11 +2475,29 @@ function AdminOptionsScreen({ uid, onBack }) {
   useEffect(() => db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
     setMaintenanceMode(!!(snap.data() || {}).enabled);
   }), []);
+  // Turning it off never disrupts anyone, so that happens immediately —
+  // only turning it ON (which boots every non-admin out mid-session) asks
+  // for confirmation first, with a headcount so the admin knows the blast
+  // radius before committing.
   function toggleMaintenanceMode() {
-    const next = !maintenanceMode;
-    db.collection("appConfig").doc("maintenance").set({ enabled: next }, { merge: true })
-      .then(() => setToast(next ? "מצב תחזוקה הופעל" : "מצב תחזוקה כובה"), () => setToast("שגיאה בשמירה"));
+    if (maintenanceMode) {
+      db.collection("appConfig").doc("maintenance").set({ enabled: false }, { merge: true })
+        .then(() => setToast("מצב תחזוקה כובה"), () => setToast("שגיאה בשמירה"));
+    } else {
+      setConfirmMaintenanceOn(true);
+    }
   }
+  function activateMaintenanceMode() {
+    db.collection("appConfig").doc("maintenance").set({ enabled: true }, { merge: true })
+      .then(() => setToast("מצב תחזוקה הופעל"), () => setToast("שגיאה בשמירה"));
+  }
+  // lastLoginAt is stamped once per app open, not a live heartbeat, so this
+  // is "opened the app recently" rather than a true "tab open right now"
+  // count — the closest signal available without adding a presence system.
+  const ACTIVE_WINDOW_MS = 30 * 60 * 1000;
+  const recentlyActiveUserCount = (allUsers || []).filter(u =>
+    u.id !== uid && u.lastLoginAt && (Date.now() - u.lastLoginAt.toMillis()) < ACTIVE_WINDOW_MS
+  ).length;
 
   // Only reachable for an admin (see the Firestore rule) — a non-admin
   // simply gets an empty snapshot back, never an error, since they never
@@ -3161,6 +3180,16 @@ function AdminOptionsScreen({ uid, onBack }) {
           message={`לנתק לצמיתות את חשבון ההתחברות של ${confirmDeleteUserAccount.displayName || confirmDeleteUserAccount.email || confirmDeleteUserAccount.id}? אם ישוב להתחבר, ייווצר עבורו חשבון חדש לגמרי, ללא קשר לחשבון הנוכחי. פעולה זו אינה ניתנת לביטול.`}
           confirmLabel="ניתוק לצמיתות"
           onConfirm={() => deleteUserAccountAction(confirmDeleteUserAccount)} onClose={() => setConfirmDeleteUserAccount(null)} />
+      )}
+      {confirmMaintenanceOn && (
+        <ConfirmDialog
+          message={
+            recentlyActiveUserCount > 0
+              ? `${recentlyActiveUserCount} משתמשים פתחו את האפליקציה ב-30 הדקות האחרונות ויועפו החוצה מיד למסך תחזוקה. להפעיל בכל זאת?`
+              : "לא נראה שמישהו השתמש באפליקציה ב-30 הדקות האחרונות. להפעיל מצב תחזוקה?"
+          }
+          confirmLabel="הפעלת תחזוקה"
+          onConfirm={activateMaintenanceMode} onClose={() => setConfirmMaintenanceOn(false)} />
       )}
 
       {toast && <Toast msg={toast} />}
