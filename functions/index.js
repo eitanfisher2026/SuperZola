@@ -731,7 +731,22 @@ function decodeXmlBuffer(buf) {
   const text = (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) ? buf.toString('utf16le') : buf.toString('utf8');
   return text.replace(/^﻿/, '');
 }
-function normalizeItemName(name) { return String(name || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+// "&" and the spelled-out Hebrew word for "and" ("אנד") are used
+// interchangeably across different vendors' catalogs for the exact same
+// brand (found via a real report: "הד&שולדרס" at most chains vs. "שמפו הד
+// אנד שולדרס" at one) — without normalizing them to the same thing, a
+// completely natural search only ever matches whichever convention
+// happens to appear in ONE vendor's data, silently hiding the identical
+// product everywhere else that spells it differently.
+function normalizeItemName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' ')
+    .replace(/(^|\s)אנד(?=\s|$)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 function itemNameKey(name) { return require('crypto').createHash('sha1').update(normalizeItemName(name)).digest('hex'); }
 
 // basic-ftp's own client timeout doesn't reliably abort every stuck TLS
