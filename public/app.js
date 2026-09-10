@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.22";
+const VERSION = "v2.23";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3834,11 +3834,16 @@ function BarcodeScanModal({ onDetected, onClose }) {
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סריקת ברקוד</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">כוונו את המצלמה לברקוד שעל המוצר, או העלו תמונה שלו</p>
-      {error ? (
-        <p className="text-center text-[#B8462F] text-sm py-6">{error}</p>
-      ) : (
-        <div id="barcode-scan-region" className="rounded-xl overflow-hidden bg-black" style={{ minHeight: 240 }} />
-      )}
+      {error && <p className="text-center text-[#B8462F] text-sm py-6">{error}</p>}
+      {/* Always mounted, never conditionally removed — html5-qrcode is
+          constructed against this exact DOM node and keeps a live reference
+          to it; swapping it out of the tree when `error` is set (as this
+          used to do) left the library trying to read its layout right after
+          on a node React had just detached, crashing with a null
+          clientWidth read. Hidden via CSS instead, so the node itself never
+          goes away. */}
+      <div id="barcode-scan-region" className="rounded-xl overflow-hidden bg-black"
+        style={error ? { display: "none" } : { minHeight: 240 }} />
       {fileError && <p className="text-center text-[#B8462F] text-xs mt-2">{fileError}</p>}
       {libReady && (
         <React.Fragment>
