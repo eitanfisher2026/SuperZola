@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.18";
+const VERSION = "v2.19";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1992,14 +1992,11 @@ function BranchPicker({ branches, branchId, onPick }) {
 // (Cloudflare-challenged from our old Belgium server) started working once
 // the backend moved to Tel Aviv (v1.97) — confirmed with repeated real
 // requests from the production server IP, not just a one-off. Victory and
-// מחסני השוק are a different, unrelated problem: their laibcatalog.co.il
-// feed responds normally (not blocked) but currently lists zero files for
-// either chain — the same empty result other unrelated chains on that same
-// hosting platform get too, so it looks like an outage on the EDI
-// provider's side rather than something fixable from our end. Shown in the
-// vendor picker (not hidden) so it's clear these exist and aren't just
-// missing, but disabled until that's resolved on their side.
-const UNSUPPORTED_VENDORS = new Set(["victory", "mahsaniAshuk"]);
+// מחסני השוק's laibcatalog.co.il feed had a similar outage on the EDI
+// provider's side (zero files for either chain, 2026-09-07 to sometime
+// before 2026-09-10) — re-confirmed fixed with a live check from the
+// production IP (954/642 real files, timestamped today) before re-enabling.
+const UNSUPPORTED_VENDORS = new Set([]);
 
 // A personal, cross-list default for whether a user wants to see online
 // vendors at all — separate from a list's own hiddenVendorIds (which
