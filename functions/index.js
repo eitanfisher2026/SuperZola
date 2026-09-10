@@ -101,10 +101,15 @@ const DAILY_CALL_CAPS = {
   submitFeedbackMessage: 50,
   createFeedbackThread: 5,
   confirmItemBarcode: 300,
-  getVendorBranches: 100,
+  getVendorBranches: 100, // default — admin can override via appConfig/limits.getVendorBranchesDailyCap
 };
 async function enforceDailyCap(uid, fnName) {
-  const cap = DAILY_CALL_CAPS[fnName];
+  let cap = DAILY_CALL_CAPS[fnName];
+  if (fnName === 'getVendorBranches') {
+    const limitsSnap = await db.collection('appConfig').doc('limits').get();
+    const configured = (limitsSnap.data() || {}).getVendorBranchesDailyCap;
+    if (configured > 0) cap = configured;
+  }
   const day = new Date().toISOString().slice(0, 10);
   const ref = db.collection('usageLedger').doc(uid).collection('days').doc(day);
   const allowed = await db.runTransaction(async (tx) => {

@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.23";
+const VERSION = "v2.24";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -435,13 +435,14 @@ function onlineVendorKey(vendor, branchId) { return vendor + "__" + String(branc
 // catalog refresh for the first user to ever activate a given branch), so
 // this exists purely to stop that from growing unbounded per user.
 function useAppLimits() {
-  const [limits, setLimits] = useState({ maxOnlineVendors: 4, maxPhysicalVendors: 4 });
+  const [limits, setLimits] = useState({ maxOnlineVendors: 4, maxPhysicalVendors: 4, getVendorBranchesDailyCap: 100 });
   useEffect(() => {
     return db.collection("appConfig").doc("limits").onSnapshot(snap => {
       const d = snap.data() || {};
       setLimits({
         maxOnlineVendors: d.maxOnlineVendors > 0 ? d.maxOnlineVendors : 4,
         maxPhysicalVendors: d.maxPhysicalVendors > 0 ? d.maxPhysicalVendors : 4,
+        getVendorBranchesDailyCap: d.getVendorBranchesDailyCap > 0 ? d.getVendorBranchesDailyCap : 100,
       });
     });
   }, []);
@@ -2189,9 +2190,12 @@ function AddBranchWidget({ uid, existingProfiles, showToast, onAdded, onlineVend
     setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
     fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
       setBranchCache(prev => Object.assign({}, prev, { [vendorId]: res.data.branches || {} }));
-    }).catch(() => {
+    }).catch(err => {
       setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
-      showToast("שגיאה בטעינת סניפים");
+      // The daily-quota message from the backend is specific and actionable
+      // ("try again tomorrow") — showing the generic fallback instead would
+      // hide the real reason and make it look like a bug to retry now.
+      showToast(err && err.code === "functions/resource-exhausted" ? err.message : "שגיאה בטעינת סניפים");
     });
   }
   // A chain's own government-mandated branch file often lists its online/
@@ -2309,9 +2313,11 @@ function VendorsScreen({ uid, onBack }) {
     setBranchCache(prev => Object.assign({}, prev, { [vendorId]: "loading" }));
     fns.httpsCallable("getVendorBranches")({ vendor: vendorId }).then(res => {
       setBranchCache(prev => Object.assign({}, prev, { [vendorId]: res.data.branches || {} }));
-    }).catch(() => {
+    }).catch(err => {
       setBranchCache(prev => Object.assign({}, prev, { [vendorId]: {} }));
-      setToast("שגיאה בטעינת סניפים");
+      // Same reasoning as AddBranchWidget's loadBranches — the daily-quota
+      // message is specific and actionable, the generic one would hide it.
+      setToast(err && err.code === "functions/resource-exhausted" ? err.message : "שגיאה בטעינת סניפים");
     });
   }
   useEffect(() => {
@@ -2522,15 +2528,19 @@ function AdminOptionsScreen({ uid, onBack }) {
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
-    if (limitsDraft === null) setLimitsDraft({ maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors) });
+    if (limitsDraft === null) setLimitsDraft({
+      maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors),
+      getVendorBranchesDailyCap: String(limits.getVendorBranchesDailyCap),
+    });
     // eslint-disable-next-line
   }, [limits]);
   function saveLimits() {
     const maxOnlineVendors = parseInt(limitsDraft.maxOnlineVendors, 10);
     const maxPhysicalVendors = parseInt(limitsDraft.maxPhysicalVendors, 10);
-    if (!(maxOnlineVendors > 0) || !(maxPhysicalVendors > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
+    const getVendorBranchesDailyCap = parseInt(limitsDraft.getVendorBranchesDailyCap, 10);
+    if (!(maxOnlineVendors > 0) || !(maxPhysicalVendors > 0) || !(getVendorBranchesDailyCap > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
     setSavingLimits(true);
-    db.collection("appConfig").doc("limits").set({ maxOnlineVendors, maxPhysicalVendors }, { merge: true })
+    db.collection("appConfig").doc("limits").set({ maxOnlineVendors, maxPhysicalVendors, getVendorBranchesDailyCap }, { merge: true })
       .then(() => { setSavingLimits(false); setToast("נשמר"); }, () => { setSavingLimits(false); setToast("שגיאה בשמירה"); });
   }
 
@@ -3020,7 +3030,7 @@ function AdminOptionsScreen({ uid, onBack }) {
 
         {role === "admin" && limitsDraft && (
           <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-            <div className="text-sm font-semibold text-[#2B2418]">מגבלת רשתות פעילות למשתמש</div>
+            <div className="text-sm font-semibold text-[#2B2418]">מגבלות שימוש</div>
             <p className="text-xs text-[#8A7F66]">
               כל רשת פעילה עולה כסף (טעינת מחירים שוטפת) — הגבלה מונעת ממשתמש להשאיר רשתות פעילות שהוא לא באמת משתמש בהן.
             </p>
@@ -3037,6 +3047,15 @@ function AdminOptionsScreen({ uid, onBack }) {
                   onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxPhysicalVendors: e.target.value }))}
                   className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
               </div>
+            </div>
+            <div className="pt-2 border-t border-[#F0E9D4]">
+              <label className="text-[11px] text-[#8A7F66] block mb-1">מכסת בדיקת סניפים ליום, למשתמש</label>
+              <p className="text-[11px] text-[#A79A7C] mb-1">
+                כל פתיחה של רשימת הסניפים של רשת (למשל בעת הוספת סניף חדש) נספרת — ההגבלה מונעת שימוש חריג שיעלה כסף בפניות לרשתות. יום פעילות רגיל לא מתקרב למספר הזה.
+              </p>
+              <input type="number" min="1" value={limitsDraft.getVendorBranchesDailyCap}
+                onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { getVendorBranchesDailyCap: e.target.value }))}
+                className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
             </div>
             <button onClick={saveLimits} disabled={savingLimits}
               className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
