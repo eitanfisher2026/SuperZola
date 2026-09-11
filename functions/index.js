@@ -90,6 +90,8 @@ async function monthlyCostSoFar(uid) {
 // still cost real Firestore/compute — a per-user, per-day call cap, cheap
 // to check (one tiny document per user per day) and set well above any
 // plausible genuine usage, so it only ever stops a scripted/abusive caller.
+// Defaults — admin can override any of these live via
+// appConfig/limits.{fnName}DailyCap, no redeploy needed (see enforceDailyCap).
 const DAILY_CALL_CAPS = {
   categorizeItemName: 300,
   resolveItemBarcodes: 500,
@@ -101,15 +103,13 @@ const DAILY_CALL_CAPS = {
   submitFeedbackMessage: 50,
   createFeedbackThread: 5,
   confirmItemBarcode: 300,
-  getVendorBranches: 100, // default — admin can override via appConfig/limits.getVendorBranchesDailyCap
+  getVendorBranches: 100,
 };
 async function enforceDailyCap(uid, fnName) {
   let cap = DAILY_CALL_CAPS[fnName];
-  if (fnName === 'getVendorBranches') {
-    const limitsSnap = await db.collection('appConfig').doc('limits').get();
-    const configured = (limitsSnap.data() || {}).getVendorBranchesDailyCap;
-    if (configured > 0) cap = configured;
-  }
+  const limitsSnap = await db.collection('appConfig').doc('limits').get();
+  const configured = (limitsSnap.data() || {})[fnName + 'DailyCap'];
+  if (configured > 0) cap = configured;
   const day = new Date().toISOString().slice(0, 10);
   const ref = db.collection('usageLedger').doc(uid).collection('days').doc(day);
   const allowed = await db.runTransaction(async (tx) => {

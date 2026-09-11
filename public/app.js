@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.25";
+const VERSION = "v2.26";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -434,16 +434,38 @@ function onlineVendorKey(vendor, branchId) { return vendor + "__" + String(branc
 // profile costs real money (its own price-fetch reads, plus a shared daily
 // catalog refresh for the first user to ever activate a given branch), so
 // this exists purely to stop that from growing unbounded per user.
+// Mirrors functions/index.js's DAILY_CALL_CAPS defaults — admin can
+// override any of these live via appConfig/limits.{fnName}DailyCap.
+const DEFAULT_DAILY_CAPS = {
+  categorizeItemName: 300,
+  resolveItemBarcodes: 500,
+  getBasketPrices: 800,
+  browseCategoryItems: 300,
+  lookupItemByBarcode: 300,
+  prewarmVendorCatalog: 50,
+  submitCategoryCorrection: 50,
+  submitFeedbackMessage: 50,
+  createFeedbackThread: 5,
+  confirmItemBarcode: 300,
+  getVendorBranches: 100,
+};
 function useAppLimits() {
-  const [limits, setLimits] = useState({ maxOnlineVendors: 4, maxPhysicalVendors: 4, getVendorBranchesDailyCap: 100 });
+  const [limits, setLimits] = useState(Object.assign(
+    { maxOnlineVendors: 4, maxPhysicalVendors: 4 },
+    Object.fromEntries(Object.entries(DEFAULT_DAILY_CAPS).map(([fn, v]) => [fn + "DailyCap", v]))
+  ));
   useEffect(() => {
     return db.collection("appConfig").doc("limits").onSnapshot(snap => {
       const d = snap.data() || {};
-      setLimits({
+      const merged = {
         maxOnlineVendors: d.maxOnlineVendors > 0 ? d.maxOnlineVendors : 4,
         maxPhysicalVendors: d.maxPhysicalVendors > 0 ? d.maxPhysicalVendors : 4,
-        getVendorBranchesDailyCap: d.getVendorBranchesDailyCap > 0 ? d.getVendorBranchesDailyCap : 100,
+      };
+      Object.entries(DEFAULT_DAILY_CAPS).forEach(([fn, defaultVal]) => {
+        const key = fn + "DailyCap";
+        merged[key] = d[key] > 0 ? d[key] : defaultVal;
       });
+      setLimits(merged);
     });
   }, []);
   return limits;
@@ -467,7 +489,12 @@ const DEFAULT_COST_ESTIMATES = {
   confirmItemBarcode: 0.0003,
   getVendorBranches: 0.0002,
 };
-const COST_ESTIMATE_LABELS = {
+// Shared display labels for every metered function — used both by the
+// cost-estimate section (which excludes categorizeItemName, tracked
+// exactly via AI cost instead) and the daily-quota section (which includes
+// it, since it has its own call cap regardless of how its cost is tracked).
+const FUNCTION_LABELS = {
+  categorizeItemName: "סיווג פריט ל-AI",
   resolveItemBarcodes: "התאמת פריט לברקוד (חיפוש)",
   getBasketPrices: "טעינת מחירים לרשימה",
   browseCategoryItems: "עיון וחיפוש בקטגוריה",
@@ -2569,27 +2596,40 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [savingOnlineVendor, setSavingOnlineVendor] = useState(false);
   const [confirmDeleteOnlineVendor, setConfirmDeleteOnlineVendor] = useState(null);
   const [corrections, setCorrections] = useState(null);
+  const [showCategories, setShowCategories] = useState(false);
+  const [showCorrections, setShowCorrections] = useState(false);
+  const [showStoreOrderSection, setShowStoreOrderSection] = useState(false);
+  const [showOnlineVendorsManagement, setShowOnlineVendorsManagement] = useState(false);
+  const [showUserManagement, setShowUserManagement] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [confirmMaintenanceOn, setConfirmMaintenanceOn] = useState(false);
   const limits = useAppLimits();
   const [limitsDraft, setLimitsDraft] = useState(null); // null until first synced from limits, then user-editable
   const [savingLimits, setSavingLimits] = useState(false);
+  const [showLimits, setShowLimits] = useState(false);
   const onlineVendors = useOnlineVendors();
 
   useEffect(() => {
-    if (limitsDraft === null) setLimitsDraft({
-      maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors),
-      getVendorBranchesDailyCap: String(limits.getVendorBranchesDailyCap),
-    });
+    if (limitsDraft === null) {
+      const draft = { maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors) };
+      Object.keys(DEFAULT_DAILY_CAPS).forEach(fn => { draft[fn + "DailyCap"] = String(limits[fn + "DailyCap"]); });
+      setLimitsDraft(draft);
+    }
     // eslint-disable-next-line
   }, [limits]);
   function saveLimits() {
     const maxOnlineVendors = parseInt(limitsDraft.maxOnlineVendors, 10);
     const maxPhysicalVendors = parseInt(limitsDraft.maxPhysicalVendors, 10);
-    const getVendorBranchesDailyCap = parseInt(limitsDraft.getVendorBranchesDailyCap, 10);
-    if (!(maxOnlineVendors > 0) || !(maxPhysicalVendors > 0) || !(getVendorBranchesDailyCap > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
+    if (!(maxOnlineVendors > 0) || !(maxPhysicalVendors > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
+    const toSave = { maxOnlineVendors, maxPhysicalVendors };
+    for (const fn of Object.keys(DEFAULT_DAILY_CAPS)) {
+      const key = fn + "DailyCap";
+      const v = parseInt(limitsDraft[key], 10);
+      if (!(v > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
+      toSave[key] = v;
+    }
     setSavingLimits(true);
-    db.collection("appConfig").doc("limits").set({ maxOnlineVendors, maxPhysicalVendors, getVendorBranchesDailyCap }, { merge: true })
+    db.collection("appConfig").doc("limits").set(toSave, { merge: true })
       .then(() => { setSavingLimits(false); setToast("נשמר"); }, () => { setSavingLimits(false); setToast("שגיאה בשמירה"); });
   }
 
@@ -3130,38 +3170,59 @@ function AdminOptionsScreen({ uid, onBack }) {
         )}
 
         {role === "admin" && limitsDraft && (
-          <div className="bg-white border border-[#E0D4B4] rounded-xl p-3 space-y-2">
-            <div className="text-sm font-semibold text-[#2B2418]">מגבלות שימוש</div>
-            <p className="text-xs text-[#8A7F66]">
-              כל רשת פעילה עולה כסף (טעינת מחירים שוטפת) — הגבלה מונעת ממשתמש להשאיר רשתות פעילות שהוא לא באמת משתמש בהן.
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[11px] text-[#8A7F66] block mb-1">מקסימום רשתות אונליין</label>
-                <input type="number" min="1" value={limitsDraft.maxOnlineVendors}
-                  onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxOnlineVendors: e.target.value }))}
-                  className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+          <div>
+            <button onClick={() => setShowLimits(v => !v)}
+              className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showLimits ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">🚦</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">מגבלות שימוש</div>
+                  <div className="text-xs text-[#A79A7C]">רשתות פעילות למשתמש, ומכסת קריאות יומית לכל פעולה</div>
+                </div>
               </div>
-              <div>
-                <label className="text-[11px] text-[#8A7F66] block mb-1">מקסימום סניפים פיזיים</label>
-                <input type="number" min="1" value={limitsDraft.maxPhysicalVendors}
-                  onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxPhysicalVendors: e.target.value }))}
-                  className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
-              </div>
-            </div>
-            <div className="pt-2 border-t border-[#F0E9D4]">
-              <label className="text-[11px] text-[#8A7F66] block mb-1">מכסת בדיקת סניפים ליום, למשתמש</label>
-              <p className="text-[11px] text-[#A79A7C] mb-1">
-                כל פתיחה של רשימת הסניפים של רשת (למשל בעת הוספת סניף חדש) נספרת — ההגבלה מונעת שימוש חריג שיעלה כסף בפניות לרשתות. יום פעילות רגיל לא מתקרב למספר הזה.
-              </p>
-              <input type="number" min="1" value={limitsDraft.getVendorBranchesDailyCap}
-                onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { getVendorBranchesDailyCap: e.target.value }))}
-                className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
-            </div>
-            <button onClick={saveLimits} disabled={savingLimits}
-              className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
-              {savingLimits ? <Spinner /> : "שמירה"}
+              <span className="text-[#A79A7C] text-xs flex-shrink-0">{showLimits ? "▲ הסתר" : "▼ הצג"}</span>
             </button>
+            {showLimits && (
+              <div className="mt-2 bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
+                <p className="text-xs text-[#8A7F66]">
+                  כל רשת פעילה עולה כסף (טעינת מחירים שוטפת) — הגבלה מונעת ממשתמש להשאיר רשתות פעילות שהוא לא באמת משתמש בהן.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] text-[#8A7F66] block mb-1">מקסימום רשתות אונליין</label>
+                    <input type="number" min="1" value={limitsDraft.maxOnlineVendors}
+                      onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxOnlineVendors: e.target.value }))}
+                      className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-[#8A7F66] block mb-1">מקסימום סניפים פיזיים</label>
+                    <input type="number" min="1" value={limitsDraft.maxPhysicalVendors}
+                      onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { maxPhysicalVendors: e.target.value }))}
+                      className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-[#F0E9D4]">
+                  <div className="text-xs font-semibold text-[#2B2418] mb-1">מכסת קריאות יומית, למשתמש</div>
+                  <p className="text-[11px] text-[#A79A7C] mb-2">
+                    כל פעולה כאן נספרת בנפרד ליום, למשתמש — ההגבלה מונעת שימוש חריג (תקלה או ניסיון ניצול לרעה) שיעלה כסף. יום פעילות רגיל לא מתקרב למספרים האלה; זה בדיוק מה שקרה כשאחד המשתמשים חרג ממכסת "בדיקת סניפי רשת" ביום עם הרבה בדיקות.
+                  </p>
+                  <div className="space-y-1.5">
+                    {Object.keys(DEFAULT_DAILY_CAPS).map(fn => (
+                      <div key={fn} className="flex items-center gap-2">
+                        <label className="flex-1 text-xs text-[#5B5749]">{FUNCTION_LABELS[fn] || fn}</label>
+                        <input type="number" min="1" value={limitsDraft[fn + "DailyCap"]}
+                          onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { [fn + "DailyCap"]: e.target.value }))}
+                          className="w-20 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center bg-white outline-none text-xs" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <button onClick={saveLimits} disabled={savingLimits}
+                  className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 mt-2">
+                  {savingLimits ? <Spinner /> : "שמירה"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -3185,7 +3246,7 @@ function AdminOptionsScreen({ uid, onBack }) {
                 </p>
                 {Object.keys(DEFAULT_COST_ESTIMATES).map(fn => (
                   <div key={fn} className="flex items-center gap-2">
-                    <label className="flex-1 text-xs text-[#5B5749]">{COST_ESTIMATE_LABELS[fn] || fn}</label>
+                    <label className="flex-1 text-xs text-[#5B5749]">{FUNCTION_LABELS[fn] || fn}</label>
                     <input type="number" min="0" step="0.0001" value={costEstimatesDraft[fn]}
                       onChange={e => setCostEstimatesDraft(prev => Object.assign({}, prev, { [fn]: e.target.value }))}
                       className="w-24 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center bg-white outline-none text-xs" />
@@ -3285,8 +3346,19 @@ function AdminOptionsScreen({ uid, onBack }) {
         {isEditorOrAdmin && (
         <React.Fragment>
         <div>
-          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>קטגוריות</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">סדר ברירת המחדל של הקטגוריות ברשימה</p>
+          <button onClick={() => setShowCategories(v => !v)}
+            className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showCategories ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+            <div className="flex items-center gap-3">
+              <span className="text-lg w-7 text-center">🗂️</span>
+              <div className="text-right">
+                <div className="text-sm font-semibold text-[#2B2418]">קטגוריות</div>
+                <div className="text-xs text-[#A79A7C]">סדר ברירת המחדל של הקטגוריות ברשימה</div>
+              </div>
+            </div>
+            <span className="text-[#A79A7C] text-xs flex-shrink-0">{showCategories ? "▲ הסתר" : "▼ הצג"}</span>
+          </button>
+          {showCategories && (
+          <div className="mt-2">
           <div className="flex flex-col gap-2 mb-3">
             {categories.map((cat, idx) => (
               <div key={cat.id} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5">
@@ -3362,15 +3434,26 @@ function AdminOptionsScreen({ uid, onBack }) {
               + הוספת קטגוריה
             </button>
           </div>
+          </div>
+          )}
         </div>
 
         <div>
-          <div className="flex items-center justify-between mb-1">
-            <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>תיקוני קטגוריה</h2>
-            {correctionGroups.length > 0 && (
-              <span className="text-xs text-[#8A7F66]">{correctionGroups.length} ממתינים</span>
-            )}
-          </div>
+          <button onClick={() => setShowCorrections(v => !v)}
+            className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showCorrections ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+            <div className="flex items-center gap-3">
+              <span className="text-lg w-7 text-center">🔧</span>
+              <div className="text-right">
+                <div className="text-sm font-semibold text-[#2B2418]">תיקוני קטגוריה</div>
+                <div className="text-xs text-[#A79A7C]">
+                  {correctionGroups.length > 0 ? `${correctionGroups.length} ממתינים` : "אין תיקונים ממתינים"}
+                </div>
+              </div>
+            </div>
+            <span className="text-[#A79A7C] text-xs flex-shrink-0">{showCorrections ? "▲ הסתר" : "▼ הצג"}</span>
+          </button>
+          {showCorrections && (
+          <div className="mt-2">
           <p className="text-xs text-[#8A7F66] mb-3">כשמישהו משנה קטגוריה לפריט מותאם, זה מופיע כאן — אפשר לעדכן בקטלוג המשותף כדי שזה יתוקן לכולם, או להתעלם.</p>
           <div className="flex flex-col gap-2">
             {corrections === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
@@ -3397,11 +3480,24 @@ function AdminOptionsScreen({ uid, onBack }) {
               </div>
             ))}
           </div>
+          </div>
+          )}
         </div>
 
         <div>
-          <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סידור בחנות 🏪</h2>
-          <p className="text-xs text-[#8A7F66] mb-3">סדר קטגוריות מותאם לכל רשת, לפי סדר המדפים בסניף</p>
+          <button onClick={() => setShowStoreOrderSection(v => !v)}
+            className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showStoreOrderSection ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+            <div className="flex items-center gap-3">
+              <span className="text-lg w-7 text-center">🏪</span>
+              <div className="text-right">
+                <div className="text-sm font-semibold text-[#2B2418]">סידור בחנות</div>
+                <div className="text-xs text-[#A79A7C]">סדר קטגוריות מותאם לכל רשת, לפי סדר המדפים בסניף</div>
+              </div>
+            </div>
+            <span className="text-[#A79A7C] text-xs flex-shrink-0">{showStoreOrderSection ? "▲ הסתר" : "▼ הצג"}</span>
+          </button>
+          {showStoreOrderSection && (
+          <div className="mt-2">
           <div className="flex flex-col gap-2 mb-3">
             {storeOrders === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
             {storeOrders && storeOrders.length === 0 && <div className="text-[#8A7F66] text-sm">אין עדיין סידורים</div>}
@@ -3427,16 +3523,27 @@ function AdminOptionsScreen({ uid, onBack }) {
               + הוספת סידור
             </button>
           </div>
+          </div>
+          )}
         </div>
         </React.Fragment>
         )}
 
         {isEditorOrAdmin && (
           <div>
-            <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול רשתות אונליין</h2>
-            <p className="text-xs text-[#8A7F66] mb-3">
-              רשתות עם סניף אונליין ידוע (נמצא בקובץ המחירים הרגיל שלהן), ופרטי המשלוח שלהן.
-            </p>
+            <button onClick={() => setShowOnlineVendorsManagement(v => !v)}
+              className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showOnlineVendorsManagement ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">🌐</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">ניהול רשתות אונליין</div>
+                  <div className="text-xs text-[#A79A7C]">רשתות עם סניף אונליין ידוע, ופרטי המשלוח שלהן</div>
+                </div>
+              </div>
+              <span className="text-[#A79A7C] text-xs flex-shrink-0">{showOnlineVendorsManagement ? "▲ הסתר" : "▼ הצג"}</span>
+            </button>
+            {showOnlineVendorsManagement && (
+            <div className="mt-2">
             <div className="flex flex-col gap-2 mb-3">
               {Object.keys(onlineVendors).length === 0 && (
                 <div className="text-[#8A7F66] text-sm">לא הוגדרו עדיין רשתות אונליין</div>
@@ -3504,14 +3611,28 @@ function AdminOptionsScreen({ uid, onBack }) {
                 )}
               </div>
             </div>
+            </div>
+            )}
           </div>
         )}
 
         {role === "admin" && (
           <div>
-            <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול משתמשים</h2>
-            <p className="text-xs text-[#8A7F66] mb-3">כל המשתמשים הרשומים, התפקיד שלהם והעלות המשוערת שלהם החודש</p>
-
+            <button onClick={() => setShowUserManagement(v => !v)}
+              className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showUserManagement ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">👥</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">ניהול משתמשים</div>
+                  <div className="text-xs text-[#A79A7C]">
+                    {allUsers ? `${allUsers.length} משתמשים · $${totalEstimatedCostThisMonth.toFixed(2)} משוער החודש` : "טוען..."}
+                  </div>
+                </div>
+              </div>
+              <span className="text-[#A79A7C] text-xs flex-shrink-0">{showUserManagement ? "▲ הסתר" : "▼ הצג"}</span>
+            </button>
+            {showUserManagement && (
+            <div className="mt-2">
             <div className="grid grid-cols-3 gap-2 mb-3">
               <div className="bg-white border border-[#E0D4B4] rounded-xl px-2 py-2 text-center">
                 <div className="text-[10px] text-[#A79A7C]">משתמשים</div>
@@ -3593,6 +3714,8 @@ function AdminOptionsScreen({ uid, onBack }) {
                 );
               })}
             </div>
+            </div>
+            )}
           </div>
         )}
       </div>
