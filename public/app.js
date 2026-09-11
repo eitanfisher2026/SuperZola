@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.24";
+const VERSION = "v2.25";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -447,6 +447,49 @@ function useAppLimits() {
     });
   }, []);
   return limits;
+}
+// Rough starting $/call estimates for the metered functions that DON'T
+// already have an exact cost (categorizeItemName is AI-billed and tracked
+// precisely in costLedger already — including it here would double-count
+// it). Firestore/Cloud Functions cost isn't billed per-user natively, so
+// these are calibratable approximations, not exact figures — admin-
+// editable in Settings specifically so they can be tuned against a real
+// monthly GCP bill instead of staying a one-time guess forever.
+const DEFAULT_COST_ESTIMATES = {
+  resolveItemBarcodes: 0.0010,
+  getBasketPrices: 0.0004,
+  browseCategoryItems: 0.0008,
+  lookupItemByBarcode: 0.0002,
+  prewarmVendorCatalog: 0.0003,
+  submitCategoryCorrection: 0.0001,
+  submitFeedbackMessage: 0.0002,
+  createFeedbackThread: 0.0002,
+  confirmItemBarcode: 0.0003,
+  getVendorBranches: 0.0002,
+};
+const COST_ESTIMATE_LABELS = {
+  resolveItemBarcodes: "התאמת פריט לברקוד (חיפוש)",
+  getBasketPrices: "טעינת מחירים לרשימה",
+  browseCategoryItems: "עיון וחיפוש בקטגוריה",
+  lookupItemByBarcode: "סריקת ברקוד",
+  prewarmVendorCatalog: "הכנת קטלוג לסניף חדש",
+  submitCategoryCorrection: "תיקון קטגוריה",
+  submitFeedbackMessage: "הודעת משוב",
+  createFeedbackThread: "פתיחת שיחת משוב",
+  confirmItemBarcode: "אישור התאמת ברקוד",
+  getVendorBranches: "בדיקת סניפי רשת",
+};
+function useCostEstimates() {
+  const [estimates, setEstimates] = useState(DEFAULT_COST_ESTIMATES);
+  useEffect(() => {
+    return db.collection("appConfig").doc("costEstimates").onSnapshot(snap => {
+      const d = snap.data() || {};
+      const merged = {};
+      Object.keys(DEFAULT_COST_ESTIMATES).forEach(fn => { merged[fn] = d[fn] >= 0 ? d[fn] : DEFAULT_COST_ESTIMATES[fn]; });
+      setEstimates(merged);
+    });
+  }, []);
+  return estimates;
 }
 // These have no real multi-branch physical presence to pick from — wolt is
 // delivery-only, and quik's feed is actually Carrefour's own (reused for
@@ -2511,7 +2554,13 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [stopRequested, setStopRequested] = useState(false);
   const isEditorOrAdmin = role === "editor" || role === "admin";
   const [allUsers, setAllUsers] = useState(null);
-  const [userStats, setUserStats] = useState({}); // { [uid]: { costThisMonth, callsToday } }
+  const [userStats, setUserStats] = useState({}); // { [uid]: { costThisMonth, callsToday, estimatedInfraCost, estimatedTotalCost } }
+  const [userSearch, setUserSearch] = useState("");
+  const [userSort, setUserSort] = useState("cost"); // "cost" | "lastLogin" | "name"
+  const costEstimates = useCostEstimates();
+  const [costEstimatesDraft, setCostEstimatesDraft] = useState(null);
+  const [savingCostEstimates, setSavingCostEstimates] = useState(false);
+  const [showCostEstimates, setShowCostEstimates] = useState(false);
   const [confirmClearUserData, setConfirmClearUserData] = useState(null); // user object | null
   const [confirmDeleteUserAccount, setConfirmDeleteUserAccount] = useState(null); // user object | null
   const [userActionBusy, setUserActionBusy] = useState(null); // uid currently running an action, or null
@@ -2542,6 +2591,26 @@ function AdminOptionsScreen({ uid, onBack }) {
     setSavingLimits(true);
     db.collection("appConfig").doc("limits").set({ maxOnlineVendors, maxPhysicalVendors, getVendorBranchesDailyCap }, { merge: true })
       .then(() => { setSavingLimits(false); setToast("נשמר"); }, () => { setSavingLimits(false); setToast("שגיאה בשמירה"); });
+  }
+
+  useEffect(() => {
+    if (costEstimatesDraft === null) {
+      const draft = {};
+      Object.keys(DEFAULT_COST_ESTIMATES).forEach(fn => { draft[fn] = String(costEstimates[fn]); });
+      setCostEstimatesDraft(draft);
+    }
+    // eslint-disable-next-line
+  }, [costEstimates]);
+  function saveCostEstimates() {
+    const toSave = {};
+    for (const fn of Object.keys(DEFAULT_COST_ESTIMATES)) {
+      const v = parseFloat(costEstimatesDraft[fn]);
+      if (!(v >= 0)) { setToast("יש להזין מספרים 0 ומעלה"); return; }
+      toSave[fn] = v;
+    }
+    setSavingCostEstimates(true);
+    db.collection("appConfig").doc("costEstimates").set(toSave, { merge: true })
+      .then(() => { setSavingCostEstimates(false); setToast("נשמר"); }, () => { setSavingCostEstimates(false); setToast("שגיאה בשמירה"); });
   }
 
   useEffect(() => {
@@ -2606,9 +2675,13 @@ function AdminOptionsScreen({ uid, onBack }) {
     });
   }, [role]);
 
-  // Per-user AI cost (this month) and call volume (today) — the safety-net
-  // view for keeping sign-up open to anyone without flying blind on who's
-  // actually costing money, and the basis for deciding a future paid tier.
+  // Per-user AI cost (exact, this month), non-AI call volume (today +
+  // summed for this month), and — combining the two with the admin's own
+  // $/call estimates — a total estimated cost this month per user. This is
+  // the whole "am I breaking even" picture: AI cost is metered precisely,
+  // Firestore/Cloud Functions cost isn't billed per-user natively so it's
+  // approximated from call counts, calibratable in the estimates section
+  // below against a real monthly GCP bill.
   useEffect(() => {
     if (role !== "admin") return;
     const thisMonth = new Date().toISOString().slice(0, 7);
@@ -2626,11 +2699,21 @@ function AdminOptionsScreen({ uid, onBack }) {
       (usageRes.data.users || []).forEach(u => {
         const dayEntry = u.days.find(d => d.day === today);
         const callsToday = dayEntry ? Object.keys(dayEntry).filter(k => k !== "day").reduce((s, k) => s + (dayEntry[k] || 0), 0) : 0;
-        stats[u.uid] = Object.assign({}, stats[u.uid], { callsToday });
+        const monthCallsByFn = {};
+        u.days.filter(d => d.day.startsWith(thisMonth)).forEach(d => {
+          Object.keys(d).forEach(k => { if (k !== "day") monthCallsByFn[k] = (monthCallsByFn[k] || 0) + (d[k] || 0); });
+        });
+        const estimatedInfraCost = Object.entries(monthCallsByFn)
+          .reduce((s, [fn, count]) => s + count * (costEstimates[fn] || 0), 0);
+        stats[u.uid] = Object.assign({}, stats[u.uid], { callsToday, monthCallsByFn, estimatedInfraCost });
+      });
+      Object.keys(stats).forEach(uidKey => {
+        const s = stats[uidKey];
+        stats[uidKey] = Object.assign({}, s, { estimatedTotalCost: (s.costThisMonth || 0) + (s.estimatedInfraCost || 0) });
       });
       setUserStats(stats);
     }).catch(() => {});
-  }, [role]);
+  }, [role, costEstimates]);
 
   function changeUserRole(userId, newRole) {
     db.collection("users").doc(userId).update({ role: newRole }).then(() => setToast("התפקיד עודכן"), () => setToast("שגיאה בעדכון תפקיד"));
@@ -2945,6 +3028,24 @@ function AdminOptionsScreen({ uid, onBack }) {
     db.collection("vendorCategoryOrder").doc(editStoreOrder.vendor).update({ categoryOrder: order });
   }
 
+  // Filter + sort computed fresh each render — cheap at any realistic admin
+  // user count, and keeps this in sync with search/sort state without a
+  // separate effect.
+  const visibleUsers = (allUsers || [])
+    .filter(u => {
+      if (!userSearch.trim()) return true;
+      const q = userSearch.trim().toLowerCase();
+      return (u.displayName || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q);
+    })
+    .slice()
+    .sort((a, b) => {
+      if (userSort === "cost") return (userStats[b.id]?.estimatedTotalCost || 0) - (userStats[a.id]?.estimatedTotalCost || 0);
+      if (userSort === "name") return (a.displayName || a.email || a.id).localeCompare(b.displayName || b.email || b.id, "he");
+      return (b.lastLoginAt?.toMillis?.() || 0) - (a.lastLoginAt?.toMillis?.() || 0); // "lastLogin"
+    });
+  const totalEstimatedCostThisMonth = Object.values(userStats).reduce((s, u) => s + (u.estimatedTotalCost || 0), 0);
+  const totalAiCostThisMonth = Object.values(userStats).reduce((s, u) => s + (u.costThisMonth || 0), 0);
+
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
@@ -3061,6 +3162,42 @@ function AdminOptionsScreen({ uid, onBack }) {
               className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
               {savingLimits ? <Spinner /> : "שמירה"}
             </button>
+          </div>
+        )}
+
+        {role === "admin" && costEstimatesDraft && (
+          <div>
+            <button onClick={() => setShowCostEstimates(v => !v)}
+              className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showCostEstimates ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">💰</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">הערכת עלות תפעולית</div>
+                  <div className="text-xs text-[#A79A7C]">משמש לחישוב "עלות משוערת החודש" ברשימת המשתמשים למטה</div>
+                </div>
+              </div>
+              <span className="text-[#A79A7C] text-xs flex-shrink-0">{showCostEstimates ? "▲ הסתר" : "▼ הצג"}</span>
+            </button>
+            {showCostEstimates && (
+              <div className="mt-2 bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
+                <p className="text-xs text-[#8A7F66] mb-2">
+                  עלות ה-AI מוצגת תמיד באופן מדויק (זו הוצאה מדודה). כל השאר (קריאות לפיירבייס, זמן ריצה) אינו מחויב לפי משתמש בפועל אצל גוגל, ולכן זו הערכה בלבד — מומלץ להשוות מדי פעם את הסכום הכולל למטה מול החשבון האמיתי מגוגל, ולעדכן את המספרים כאן בהתאם.
+                </p>
+                {Object.keys(DEFAULT_COST_ESTIMATES).map(fn => (
+                  <div key={fn} className="flex items-center gap-2">
+                    <label className="flex-1 text-xs text-[#5B5749]">{COST_ESTIMATE_LABELS[fn] || fn}</label>
+                    <input type="number" min="0" step="0.0001" value={costEstimatesDraft[fn]}
+                      onChange={e => setCostEstimatesDraft(prev => Object.assign({}, prev, { [fn]: e.target.value }))}
+                      className="w-24 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center bg-white outline-none text-xs" />
+                    <span className="text-[10px] text-[#A79A7C] flex-shrink-0">$/קריאה</span>
+                  </div>
+                ))}
+                <button onClick={saveCostEstimates} disabled={savingCostEstimates}
+                  className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 mt-2">
+                  {savingCostEstimates ? <Spinner /> : "שמירה"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -3373,30 +3510,70 @@ function AdminOptionsScreen({ uid, onBack }) {
         {role === "admin" && (
           <div>
             <h2 className="text-lg mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>ניהול משתמשים</h2>
-            <p className="text-xs text-[#8A7F66] mb-3">כל המשתמשים הרשומים, התפקיד שלהם וזמן ההתחברות האחרון</p>
+            <p className="text-xs text-[#8A7F66] mb-3">כל המשתמשים הרשומים, התפקיד שלהם והעלות המשוערת שלהם החודש</p>
+
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              <div className="bg-white border border-[#E0D4B4] rounded-xl px-2 py-2 text-center">
+                <div className="text-[10px] text-[#A79A7C]">משתמשים</div>
+                <div className="text-sm font-bold text-[#2B2418]">{allUsers ? allUsers.length : "…"}</div>
+              </div>
+              <div className="bg-white border border-[#E0D4B4] rounded-xl px-2 py-2 text-center">
+                <div className="text-[10px] text-[#A79A7C]">עלות AI מדויקת החודש</div>
+                <div className="text-sm font-bold text-[#2B2418]">${totalAiCostThisMonth.toFixed(2)}</div>
+              </div>
+              <div className="bg-white border border-[#E0D4B4] rounded-xl px-2 py-2 text-center">
+                <div className="text-[10px] text-[#A79A7C]">עלות משוערת כוללת החודש</div>
+                <div className="text-sm font-bold text-[#8A5A15]">${totalEstimatedCostThisMonth.toFixed(2)}</div>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mb-3">
+              <input value={userSearch} onChange={e => setUserSearch(e.target.value)}
+                placeholder="חיפוש לפי שם או אימייל..."
+                className="flex-1 min-w-0 border border-[#C7B78E] rounded-lg px-3 py-2 text-sm bg-white outline-none" />
+              <select value={userSort} onChange={e => setUserSort(e.target.value)}
+                className="text-xs border border-[#C7B78E] rounded-lg px-2 py-2 bg-white outline-none flex-shrink-0">
+                <option value="cost">מיון: עלות (גבוה לנמוך)</option>
+                <option value="lastLogin">מיון: התחברות אחרונה</option>
+                <option value="name">מיון: שם</option>
+              </select>
+            </div>
+
             <div className="flex flex-col gap-2">
               {allUsers === null && <div className="text-[#8A7F66] text-sm">טוען...</div>}
-              {allUsers && allUsers.map(u => (
+              {allUsers && visibleUsers.length === 0 && (
+                <div className="text-[#8A7F66] text-sm">אין משתמשים תואמים לחיפוש</div>
+              )}
+              {allUsers && visibleUsers.map(u => {
+                const s = userStats[u.id] || {};
+                return (
                 <div key={u.id} className="bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418] truncate">{u.displayName || u.email || u.id}</div>
                       {u.displayName && u.email && <div className="text-[11px] text-[#A79A7C] truncate">{u.email}</div>}
                     </div>
+                    <span className={"text-[10px] font-bold px-2 py-0.5 rounded-full flex-shrink-0 " +
+                      (u.role === "admin" ? "bg-[#2E4A3B] text-[#FBF4E7]" : u.role === "editor" ? "bg-[#8A5A15] text-[#FBF0D9]" : "bg-[#F3ECD9] text-[#8A7F66]")}>
+                      {u.role === "admin" ? "מנהל" : u.role === "editor" ? "עורך" : "משתמש"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-1.5">
+                    <div className="text-[11px] text-[#A79A7C]">
+                      התחברות אחרונה: {formatRelativeUpdatedAt(u.lastLoginAt?.toMillis?.(), "מעולם לא התחבר")}
+                    </div>
                     <select value={u.role || "user"} disabled={u.id === uid}
                       onChange={e => changeUserRole(u.id, e.target.value)}
-                      className="text-xs border border-[#C7B78E] rounded-lg px-2 py-1.5 bg-white outline-none disabled:opacity-50 flex-shrink-0">
+                      className="text-[11px] border border-[#C7B78E] rounded-lg px-1.5 py-1 bg-white outline-none disabled:opacity-50 flex-shrink-0">
                       <option value="user">משתמש</option>
                       <option value="editor">עורך</option>
                       <option value="admin">מנהל</option>
                     </select>
                   </div>
-                  <div className="text-[11px] text-[#A79A7C] mt-1">
-                    התחברות אחרונה: {formatRelativeUpdatedAt(u.lastLoginAt?.toMillis?.(), "מעולם לא התחבר")}
-                  </div>
-                  {(userStats[u.id]?.costThisMonth > 0 || userStats[u.id]?.callsToday > 0) && (
-                    <div className="text-[11px] text-[#8A5A15] mt-0.5">
-                      עלות AI החודש: ${(userStats[u.id]?.costThisMonth || 0).toFixed(4)} · קריאות היום: {userStats[u.id]?.callsToday || 0}
+                  {(s.estimatedTotalCost > 0 || s.callsToday > 0) && (
+                    <div className="text-[11px] text-[#8A5A15] bg-[#FBF0D9] rounded-lg px-2 py-1 mt-1.5">
+                      עלות משוערת החודש: <span className="font-bold">${(s.estimatedTotalCost || 0).toFixed(4)}</span>
+                      {" "}(AI: ${(s.costThisMonth || 0).toFixed(4)} · תשתית: ${(s.estimatedInfraCost || 0).toFixed(4)}) · קריאות היום: {s.callsToday || 0}
                     </div>
                   )}
                   {u.id !== uid && (
@@ -3413,7 +3590,8 @@ function AdminOptionsScreen({ uid, onBack }) {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

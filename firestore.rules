@@ -185,6 +185,15 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Admin's own editable estimate of $/call for each non-AI metered
+    // function (Firestore reads/writes, Cloud Functions compute aren't
+    // billed per-user natively, so this is a calibratable approximation
+    // used only by the admin cost dashboard) — nobody but admin has any use
+    // for it, so it's admin-only in both directions, unlike appConfig/limits.
+    match /appConfig/costEstimates {
+      allow read, write: if isAdmin();
+    }
+
     // AI spend ledger — a user can see their own usage, never edit it.
     // Cloud Functions (Admin SDK) write it; nested by month so quota checks
     // read one small document instead of the user's whole history.
