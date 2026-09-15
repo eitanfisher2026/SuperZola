@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.27";
+const VERSION = "v2.28";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -5245,7 +5245,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
                 reaction ("looks nice, but a lot of effort") and Eitan's
                 reply to her. */}
             <p className="text-[#A79A7C] text-xs mt-1.5 max-w-xs mx-auto leading-relaxed">
-              בניית הרשימה הראשונה לוקחת כמה דקות — בפעם הבאה פשוט משכפלים אותה ומוסיפים רק מה שהשתנה. ההבדל במחיר יכול להיות משמעותי.
+              בניית הרשימה הראשונה תיקח זמן, צריך סבלנות, אבל בפעם הבאה פשוט משכפלים אותה ומוסיפים רק מה שהשתנה. ההשקעה ביצירת רשימה מלאה תשתלם לכם — ההבדלים בתמחור הסל בין הרשתות יכולים להיות משמעותיים.
+            </p>
+            <p className="text-[#A79A7C] text-xs mt-2 max-w-xs mx-auto leading-relaxed">
+              טיפ: השתמשו ב"עיון לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
             </p>
           </div>
         )}
