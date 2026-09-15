@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.26";
+const VERSION = "v2.27";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -5237,7 +5237,17 @@ function ListScreen({ uid, listId, listName, onBack }) {
       <div className="flex-1 px-3 pt-3 pb-40 print-items-area">
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
         {items !== null && items.length === 0 && (
-          <div className="text-[#8A7F66] text-sm py-6 text-center">הרשימה ריקה</div>
+          <div className="text-center py-6 px-4">
+            <p className="text-[#8A7F66] text-sm">הרשימה ריקה</p>
+            {/* Sets expectations up front, before the effort of building a
+                first real list — otherwise someone who gives up midway
+                never sees the payoff. Real wording from a beta user's own
+                reaction ("looks nice, but a lot of effort") and Eitan's
+                reply to her. */}
+            <p className="text-[#A79A7C] text-xs mt-1.5 max-w-xs mx-auto leading-relaxed">
+              בניית הרשימה הראשונה לוקחת כמה דקות — בפעם הבאה פשוט משכפלים אותה ומוסיפים רק מה שהשתנה. ההבדל במחיר יכול להיות משמעותי.
+            </p>
+          </div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
           <PriceComparisonTable items={enrichedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem} />
