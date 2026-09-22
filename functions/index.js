@@ -1270,21 +1270,74 @@ exports.refreshVendorBranches = onSchedule(
   }
 );
 
+// Bounded edit distance — returns the real distance if it's <= maxDist,
+// otherwise just "more than maxDist" (exact overshoot value doesn't
+// matter, callers only ever compare against maxDist). The early-exit per
+// row keeps this cheap even though it runs per query-token per catalog-
+// item-token, which matters since scoreCatalogName is called once per item
+// in a vendor's whole catalog on every search.
+function boundedEditDistance(a, b, maxDist) {
+  if (Math.abs(a.length - b.length) > maxDist) return maxDist + 1;
+  let prevRow = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prevRow[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    const curRow = new Array(b.length + 1);
+    curRow[0] = i;
+    let rowMin = curRow[0];
+    for (let j = 1; j <= b.length; j++) {
+      curRow[j] = a[i - 1] === b[j - 1] ? prevRow[j - 1] : 1 + Math.min(prevRow[j - 1], prevRow[j], curRow[j - 1]);
+      if (curRow[j] < rowMin) rowMin = curRow[j];
+    }
+    if (rowMin > maxDist) return maxDist + 1;
+    prevRow = curRow;
+  }
+  return prevRow[b.length];
+}
+// A single inserted/dropped/swapped letter is the single most common
+// Hebrew transliteration-spelling divergence (e.g. אלוויז vs אולוויז for
+// "Always" — different vendor feeds, both "correct" spellings, off by one
+// letter) — this is a general tolerance, not a hardcoded word pair, so it
+// also incidentally catches plenty of real one-letter typos for free.
+// Scoped to tokens of 4+ letters: on a 2-3 letter word, a 1-edit tolerance
+// would treat many genuinely unrelated words as "close enough".
+function tokensNearMatch(a, b) {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  return boundedEditDistance(a, b, 1) <= 1;
+}
 // Tiers are spaced 100+ apart on purpose — fuzzyMatchCatalogs adds a small
 // (+20 max) bonus for a barcode priced at every searched vendor, and that
 // bonus must never be able to push a weaker match above a stronger one
 // (e.g. a "contains the word" hit at 3 vendors outranking an exact-name hit
 // at 1 vendor). Exact name, then starts-with, then same-lead-word, then
 // "has every query word somewhere", then a loose single-word substring.
+// A near-match (not identical) token anywhere in the chain costs a flat
+// 50-point penalty within its tier, so identical wording always outranks
+// a one-letter-off variant scored at the same tier.
 function scoreCatalogName(name, q, qTokens) {
   const nameTokens = name.split(' ').filter(Boolean);
   if (name === q) return 1000;
-  if (qTokens.length > 1 && !nameTokens.includes(qTokens[0])) return null;
-  const overlap = qTokens.filter(t => nameTokens.includes(t)).length;
-  if (overlap > 0 && overlap === qTokens.length) {
-    if (nameTokens.slice(0, qTokens.length).join(' ') === q) return 900;
-    if (nameTokens[0] === qTokens[0]) return 800;
-    return 700;
+
+  function matchToken(t) {
+    if (nameTokens.includes(t)) return 'exact';
+    if (t.length >= 4 && nameTokens.some(nt => tokensNearMatch(nt, t))) return 'near';
+    return null;
+  }
+
+  const firstMatch = matchToken(qTokens[0]);
+  if (qTokens.length > 1 && !firstMatch) return null;
+
+  let overlapCount = 0, anyNear = false;
+  for (const t of qTokens) {
+    const m = matchToken(t);
+    if (m) overlapCount++;
+    if (m === 'near') anyNear = true;
+  }
+  const penalty = anyNear ? 50 : 0;
+  if (overlapCount > 0 && overlapCount === qTokens.length) {
+    if (nameTokens.slice(0, qTokens.length).join(' ') === q) return 900 - penalty;
+    if (nameTokens[0] === qTokens[0]) return 800 - penalty;
+    return 700 - penalty;
   }
   if (qTokens.length > 1) return null;
   if (name.includes(q) || q.includes(name)) return 100;
@@ -1331,6 +1384,78 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
   });
   list.sort((a, b) => b.score - a.score);
   return list.slice(0, 40);
+}
+
+// Character-bigram Dice coefficient — a whole-name similarity measure,
+// tolerant of a typo or spelling difference anywhere in the string (not
+// just at a token boundary, unlike scoreCatalogName's tokensNearMatch).
+// This is intentionally the LOOSER, more expensive-to-trust layer: only
+// ever called as an admin-gated fallback (see resolveItemBarcodes) when
+// the normal matching above found too few results, never on the default
+// search path.
+function bigramSet(s) {
+  const map = new Map();
+  for (let i = 0; i < s.length - 1; i++) {
+    const bg = s.slice(i, i + 2);
+    map.set(bg, (map.get(bg) || 0) + 1);
+  }
+  return map;
+}
+function diceSimilarity(a, b) {
+  if (a === b) return 1;
+  const ba = bigramSet(a), bb = bigramSet(b);
+  let totalA = 0, totalB = 0, overlap = 0;
+  for (const c of ba.values()) totalA += c;
+  for (const c of bb.values()) totalB += c;
+  if (totalA === 0 || totalB === 0) return 0;
+  for (const [bg, count] of ba) { if (bb.has(bg)) overlap += Math.min(count, bb.get(bg)); }
+  return (2 * overlap) / (totalA + totalB);
+}
+// Runs over the SAME already-in-memory catalogsByVendor the normal search
+// just scanned — no extra Firestore reads, only extra CPU time on an
+// already-running request, and only for the (admin-controlled, rare)
+// case where the normal pass came up too empty to be useful on its own.
+// Results are marked approx:true and scored low enough to always sort
+// below every real tier scoreCatalogName can produce.
+function fuzzyFallbackMatches(query, catalogsByVendor, promoPricesByVendor, excludeBarcodes) {
+  const SIMILARITY_THRESHOLD = 0.5;
+  const q = normalizeItemName(query);
+  const vendorNames = Object.keys(catalogsByVendor);
+  const byBarcode = {};
+  for (const vendor of vendorNames) {
+    for (const [barcode, item] of Object.entries(catalogsByVendor[vendor] || {})) {
+      if (excludeBarcodes.has(barcode)) continue;
+      const name = normalizeItemName(item.name);
+      if (!name) continue;
+      const sim = diceSimilarity(q, name);
+      if (sim < SIMILARITY_THRESHOLD) continue;
+      if (!byBarcode[barcode] || sim > byBarcode[barcode].sim) {
+        byBarcode[barcode] = Object.assign({}, byBarcode[barcode], {
+          barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', sim,
+        });
+      }
+      const entry = byBarcode[barcode];
+      entry.prices = entry.prices || {};
+      entry.prices[vendor] = item.price;
+    }
+  }
+  const list = Object.values(byBarcode).map(entry => {
+    const promoPrices = {};
+    for (const vendor of vendorNames) {
+      const promo = promoPricesByVendor && promoPricesByVendor[vendor] && promoPricesByVendor[vendor][entry.barcode];
+      const info = effectivePromoInfo(promo, entry.prices[vendor]);
+      if (info) promoPrices[vendor] = info;
+    }
+    // Capped at 50 — well under scoreCatalogName's lowest real tier (90),
+    // so an approximate match can never outrank a genuine one if the two
+    // lists are ever merged and re-sorted by score.
+    return {
+      barcode: entry.barcode, name: entry.name, unit: entry.unit, manufacturer: entry.manufacturer,
+      score: Math.round(entry.sim * 50), prices: entry.prices, promoPrices, approx: true,
+    };
+  });
+  list.sort((a, b) => b.score - a.score);
+  return list.slice(0, 10);
 }
 
 async function getUserActiveProfiles(uid) {
@@ -1467,6 +1592,14 @@ exports.resolveItemBarcodes = onCall(
     }));
     const searchedVendors = [...neededVendors];
 
+    // Layer 2 (broader fuzzy fallback) is admin-gated and off by default —
+    // a new, less-proven matching path shouldn't silently activate for
+    // everyone the moment it ships. One small config read, not per name.
+    const limitsSnap = await db.collection('appConfig').doc('limits').get();
+    const limitsData = limitsSnap.data() || {};
+    const fuzzySearchEnabled = limitsData.fuzzySearchEnabled === true;
+    const fuzzySearchThreshold = limitsData.fuzzySearchThreshold >= 0 ? limitsData.fuzzySearchThreshold : 0;
+
     const results = {};
     for (const name of names) {
       const { barcodes, missingVendors } = cacheByName[name];
@@ -1474,8 +1607,14 @@ exports.resolveItemBarcodes = onCall(
       // A result only the caller can actually act on if it's priced at one
       // of the vendors they searched for — otherwise it's just an
       // unpickable "not sold here" row from an unrelated vendor's catalog.
-      const candidates = fuzzyMatchCatalogs(name, catalogsByVendor, promoPricesByVendor)
+      let candidates = fuzzyMatchCatalogs(name, catalogsByVendor, promoPricesByVendor)
         .filter(c => vendorIds.some(v => c.prices[v] != null));
+      if (fuzzySearchEnabled && candidates.length <= fuzzySearchThreshold) {
+        const excludeBarcodes = new Set(candidates.map(c => c.barcode));
+        const fuzzyExtra = fuzzyFallbackMatches(name, catalogsByVendor, promoPricesByVendor, excludeBarcodes)
+          .filter(c => vendorIds.some(v => c.prices[v] != null));
+        candidates = candidates.concat(fuzzyExtra);
+      }
       console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length);
       results[name] = { barcodes, missingVendors, searchedVendors, candidates };
     }

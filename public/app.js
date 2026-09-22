@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.28";
+const VERSION = "v2.29";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -451,7 +451,7 @@ const DEFAULT_DAILY_CAPS = {
 };
 function useAppLimits() {
   const [limits, setLimits] = useState(Object.assign(
-    { maxOnlineVendors: 4, maxPhysicalVendors: 4 },
+    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0 },
     Object.fromEntries(Object.entries(DEFAULT_DAILY_CAPS).map(([fn, v]) => [fn + "DailyCap", v]))
   ));
   useEffect(() => {
@@ -460,6 +460,12 @@ function useAppLimits() {
       const merged = {
         maxOnlineVendors: d.maxOnlineVendors > 0 ? d.maxOnlineVendors : 4,
         maxPhysicalVendors: d.maxPhysicalVendors > 0 ? d.maxPhysicalVendors : 4,
+        // Off by default — a new, less-proven matching path shouldn't
+        // silently activate the moment this ships; admin turns it on
+        // deliberately once ready. Threshold: launch the broader fuzzy
+        // fallback when the normal search found <= this many results.
+        fuzzySearchEnabled: d.fuzzySearchEnabled === true,
+        fuzzySearchThreshold: d.fuzzySearchThreshold >= 0 ? d.fuzzySearchThreshold : 0,
       };
       Object.entries(DEFAULT_DAILY_CAPS).forEach(([fn, defaultVal]) => {
         const key = fn + "DailyCap";
@@ -1384,7 +1390,11 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       </div>
       {hasSearched && !isResolving && candidates && (
         <React.Fragment>
-          <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
+          {candidates.list.length > 0 && candidates.list.every(c => c.approx) ? (
+            <p className="text-xs text-[#A79A7C] mb-1">לא נמצאה התאמה מדויקת ל"{searchQuery}" — הנה תוצאות דומות:</p>
+          ) : (
+            <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
+          )}
           {candidates.list.length > 0 && (candidates.vendors || []).length > 1 && (
             <p className="text-[11px] text-[#8A7F66] mb-2">סמנו התאמה מכל רשת בנפרד — הכל יתמזג לפריט אחד; רשת שכבר נבחרה תיחסם מבחירות אחרות.</p>
           )}
@@ -1427,7 +1437,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                     (isChecked ? "bg-[#EEF5EC] border-[#B9D9B0]" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45 cursor-default" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-sm font-medium text-[#2B2418]">{c.name}</div>
+                      <div className="text-sm font-medium text-[#2B2418] flex items-center gap-1.5">
+                        {c.name}
+                        {c.approx && (
+                          <span className="text-[9px] font-bold text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-full px-1.5 py-0.5 flex-shrink-0">התאמה מקורבת</span>
+                        )}
+                      </div>
                       <div className="text-[11px] text-[#A79A7C] mt-0.5">
                         ברקוד {c.barcode}{c.unit ? ` · ${c.unit}` : ""}
                       </div>
@@ -2611,7 +2626,10 @@ function AdminOptionsScreen({ uid, onBack }) {
 
   useEffect(() => {
     if (limitsDraft === null) {
-      const draft = { maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors) };
+      const draft = {
+        maxOnlineVendors: String(limits.maxOnlineVendors), maxPhysicalVendors: String(limits.maxPhysicalVendors),
+        fuzzySearchEnabled: limits.fuzzySearchEnabled, fuzzySearchThreshold: String(limits.fuzzySearchThreshold),
+      };
       Object.keys(DEFAULT_DAILY_CAPS).forEach(fn => { draft[fn + "DailyCap"] = String(limits[fn + "DailyCap"]); });
       setLimitsDraft(draft);
     }
@@ -2620,8 +2638,10 @@ function AdminOptionsScreen({ uid, onBack }) {
   function saveLimits() {
     const maxOnlineVendors = parseInt(limitsDraft.maxOnlineVendors, 10);
     const maxPhysicalVendors = parseInt(limitsDraft.maxPhysicalVendors, 10);
+    const fuzzySearchThreshold = parseInt(limitsDraft.fuzzySearchThreshold, 10);
     if (!(maxOnlineVendors > 0) || !(maxPhysicalVendors > 0)) { setToast("יש להזין מספרים גדולים מ-0"); return; }
-    const toSave = { maxOnlineVendors, maxPhysicalVendors };
+    if (!(fuzzySearchThreshold >= 0)) { setToast("סף חיפוש דומה חייב להיות 0 ומעלה"); return; }
+    const toSave = { maxOnlineVendors, maxPhysicalVendors, fuzzySearchEnabled: !!limitsDraft.fuzzySearchEnabled, fuzzySearchThreshold };
     for (const fn of Object.keys(DEFAULT_DAILY_CAPS)) {
       const key = fn + "DailyCap";
       const v = parseInt(limitsDraft[key], 10);
@@ -3215,6 +3235,24 @@ function AdminOptionsScreen({ uid, onBack }) {
                           className="w-20 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center bg-white outline-none text-xs" />
                       </div>
                     ))}
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-[#F0E9D4]">
+                  <div className="text-xs font-semibold text-[#2B2418] mb-1">חיפוש דומה (כשלא נמצאה התאמה מדויקת)</div>
+                  <p className="text-[11px] text-[#A79A7C] mb-2">
+                    כשחיפוש רגיל מוצא מעט מדי תוצאות, המערכת יכולה לנסות גם התאמה מקורבת (טעויות כתיב, איות שונה של שם מותג באנגלית) — פחות מדויק מהחיפוש הרגיל, ולכן מסומן בתוצאות בתור "התאמה מקורבת". כבוי כברירת מחדל.
+                  </p>
+                  <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                    <input type="checkbox" checked={!!limitsDraft.fuzzySearchEnabled}
+                      onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { fuzzySearchEnabled: e.target.checked }))}
+                      className="w-4 h-4" />
+                    <span className="text-xs text-[#5B5749]">הפעלת חיפוש דומה</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <label className="flex-1 text-xs text-[#5B5749]">הפעלה כאשר מספר התוצאות הרגילות ≤</label>
+                    <input type="number" min="0" value={limitsDraft.fuzzySearchThreshold}
+                      onChange={e => setLimitsDraft(prev => Object.assign({}, prev, { fuzzySearchThreshold: e.target.value }))}
+                      className="w-20 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center bg-white outline-none text-xs" />
                   </div>
                 </div>
                 <button onClick={saveLimits} disabled={savingLimits}
