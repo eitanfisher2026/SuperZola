@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.34";
+const VERSION = "v2.35";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1765,6 +1765,13 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
           <div>
             <label className="text-xs text-[#8A7F66] block mb-1">שם</label>
             <input autoFocus={!isEdit} value={draft.name} onChange={e => set({ name: e.target.value })}
+              onKeyDown={e => {
+                if (e.key !== "Enter" || !draft.name.trim()) return;
+                e.preventDefault();
+                if (isEdit) { if (!saving) finish(); }
+                else if (pricingEnabled) setStep(2);
+                else if (!saving) finish();
+              }}
               className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
           </div>
           <div className="grid grid-cols-2 gap-2">
