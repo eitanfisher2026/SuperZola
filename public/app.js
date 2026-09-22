@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.29";
+const VERSION = "v2.30";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1390,8 +1390,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       </div>
       {hasSearched && !isResolving && candidates && (
         <React.Fragment>
-          {candidates.list.length > 0 && candidates.list.every(c => c.approx) ? (
-            <p className="text-xs text-[#A79A7C] mb-1">לא נמצאה התאמה מדויקת ל"{searchQuery}" — הנה תוצאות דומות:</p>
+          {candidates.list.length > 0 && candidates.list.every(c => c.fuzzyLayer) ? (
+            <p className="text-xs text-[#A79A7C] mb-1">
+              {candidates.list.some(c => c.fuzzyLayer === 2)
+                ? `לא נמצאה התאמה מדויקת ל"${searchQuery}" — הנה תוצאות דומות בחיפוש מעמיק`
+                : `לא נמצאה התאמה מדויקת ל"${searchQuery}" — הנה תוצאות דומות`}
+            </p>
           ) : (
             <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
           )}
@@ -1439,7 +1443,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418] flex items-center gap-1.5">
                         {c.name}
-                        {c.approx && (
+                        {c.fuzzyLayer && (
                           <span className="text-[9px] font-bold text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-full px-1.5 py-0.5 flex-shrink-0">התאמה מקורבת</span>
                         )}
                       </div>

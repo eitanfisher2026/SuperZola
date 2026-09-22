@@ -1388,7 +1388,13 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
     return {
       barcode: entry.barcode, name: entry.name, unit: entry.unit, manufacturer: entry.manufacturer,
       score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
-      prices: entry.prices, promoPrices, approx: entry.approx,
+      prices: entry.prices, promoPrices,
+      // 1 = found only via the always-on letter-tolerance match, undefined
+      // = a real exact/substring hit. Layer 2 (fuzzyFallbackMatches, below)
+      // sets this to 2 instead — kept distinct so admin can tell from real
+      // usage how often each layer is actually the one doing the work,
+      // even though both render the same "approximate" badge to the user.
+      fuzzyLayer: entry.approx ? 1 : undefined,
     };
   });
   list.sort((a, b) => b.score - a.score);
@@ -1424,8 +1430,10 @@ function diceSimilarity(a, b) {
 // just scanned — no extra Firestore reads, only extra CPU time on an
 // already-running request, and only for the (admin-controlled, rare)
 // case where the normal pass came up too empty to be useful on its own.
-// Results are marked approx:true and scored low enough to always sort
-// below every real tier scoreCatalogName can produce.
+// Results are marked fuzzyLayer:2 (distinct from scoreCatalogName's own
+// fuzzyLayer:1 near-matches, so admin can tell which layer actually found
+// a given result) and scored low enough to always sort below every real
+// tier scoreCatalogName can produce.
 function fuzzyFallbackMatches(query, catalogsByVendor, promoPricesByVendor, excludeBarcodes) {
   const SIMILARITY_THRESHOLD = 0.5;
   const q = normalizeItemName(query);
@@ -1460,7 +1468,7 @@ function fuzzyFallbackMatches(query, catalogsByVendor, promoPricesByVendor, excl
     // lists are ever merged and re-sorted by score.
     return {
       barcode: entry.barcode, name: entry.name, unit: entry.unit, manufacturer: entry.manufacturer,
-      score: Math.round(entry.sim * 50), prices: entry.prices, promoPrices, approx: true,
+      score: Math.round(entry.sim * 50), prices: entry.prices, promoPrices, fuzzyLayer: 2,
     };
   });
   list.sort((a, b) => b.score - a.score);
@@ -1618,13 +1626,23 @@ exports.resolveItemBarcodes = onCall(
       // unpickable "not sold here" row from an unrelated vendor's catalog.
       let candidates = fuzzyMatchCatalogs(name, catalogsByVendor, promoPricesByVendor)
         .filter(c => vendorIds.some(v => c.prices[v] != null));
+      let layer2Count = 0;
       if (fuzzySearchEnabled && candidates.length <= fuzzySearchThreshold) {
         const excludeBarcodes = new Set(candidates.map(c => c.barcode));
         const fuzzyExtra = fuzzyFallbackMatches(name, catalogsByVendor, promoPricesByVendor, excludeBarcodes)
           .filter(c => vendorIds.some(v => c.prices[v] != null));
+        layer2Count = fuzzyExtra.length;
         candidates = candidates.concat(fuzzyExtra);
       }
-      console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length);
+      // layer1Count: exact/substring hits from the always-on matcher.
+      // layer1ApproxCount: hits from that same matcher that only worked via
+      // its letter-tolerance path. layer2Count: from the admin-gated
+      // fallback. Logged specifically so real usage can answer "does
+      // Layer 2 actually find anything Layer 1 doesn't" over time, not just
+      // in a one-off manual test.
+      const layer1ApproxCount = candidates.filter(c => c.fuzzyLayer === 1).length;
+      console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length,
+        'layer1Exact', candidates.length - layer1ApproxCount - layer2Count, 'layer1Approx', layer1ApproxCount, 'layer2', layer2Count);
       results[name] = { barcodes, missingVendors, searchedVendors, candidates };
     }
     console.log('resolveItemBarcodes: done', Object.keys(results).length, 'names processed');
