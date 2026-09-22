@@ -1314,9 +1314,15 @@ function tokensNearMatch(a, b) {
 // A near-match (not identical) token anywhere in the chain costs a flat
 // 50-point penalty within its tier, so identical wording always outranks
 // a one-letter-off variant scored at the same tier.
+// Returns { score, approx } — approx is true whenever the match only
+// worked because of tokensNearMatch's letter tolerance, never for an
+// identical-wording hit. Callers (fuzzyMatchCatalogs) propagate this all
+// the way to the client so an approximate hit is never presented as if it
+// were an exact one, even though it's found via the same always-on code
+// path as exact matches, not the separate opt-in Layer 2 fallback.
 function scoreCatalogName(name, q, qTokens) {
   const nameTokens = name.split(' ').filter(Boolean);
-  if (name === q) return 1000;
+  if (name === q) return { score: 1000, approx: false };
 
   function matchToken(t) {
     if (nameTokens.includes(t)) return 'exact';
@@ -1335,12 +1341,12 @@ function scoreCatalogName(name, q, qTokens) {
   }
   const penalty = anyNear ? 50 : 0;
   if (overlapCount > 0 && overlapCount === qTokens.length) {
-    if (nameTokens.slice(0, qTokens.length).join(' ') === q) return 900 - penalty;
-    if (nameTokens[0] === qTokens[0]) return 800 - penalty;
-    return 700 - penalty;
+    if (nameTokens.slice(0, qTokens.length).join(' ') === q) return { score: 900 - penalty, approx: anyNear };
+    if (nameTokens[0] === qTokens[0]) return { score: 800 - penalty, approx: anyNear };
+    return { score: 700 - penalty, approx: anyNear };
   }
   if (qTokens.length > 1) return null;
-  if (name.includes(q) || q.includes(name)) return 100;
+  if (name.includes(q) || q.includes(name)) return { score: 100, approx: false };
   return null;
 }
 
@@ -1353,12 +1359,15 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
     for (const [barcode, item] of Object.entries(catalogsByVendor[vendor] || {})) {
       const name = normalizeItemName(item.name);
       if (!name) continue;
-      const score = scoreCatalogName(name, q, qTokens);
-      if (score === null) continue;
-      if (!byBarcode[barcode]) byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', bestScore: -1, prices: {} };
+      const result = scoreCatalogName(name, q, qTokens);
+      if (result === null) continue;
+      if (!byBarcode[barcode]) byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', bestScore: -1, approx: false, prices: {} };
       const entry = byBarcode[barcode];
       entry.prices[vendor] = item.price;
-      if (score > entry.bestScore) { entry.bestScore = score; entry.name = item.name; entry.unit = item.unit; entry.manufacturer = item.manufacturer || ''; }
+      if (result.score > entry.bestScore) {
+        entry.bestScore = result.score; entry.approx = result.approx;
+        entry.name = item.name; entry.unit = item.unit; entry.manufacturer = item.manufacturer || '';
+      }
     }
   }
   for (const entry of Object.values(byBarcode)) {
@@ -1379,7 +1388,7 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
     return {
       barcode: entry.barcode, name: entry.name, unit: entry.unit, manufacturer: entry.manufacturer,
       score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
-      prices: entry.prices, promoPrices,
+      prices: entry.prices, promoPrices, approx: entry.approx,
     };
   });
   list.sort((a, b) => b.score - a.score);
