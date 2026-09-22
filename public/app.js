@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.32";
+const VERSION = "v2.33";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -285,7 +285,6 @@ function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnli
   const [selected, setSelected] = useState(() => new Set(
     (existingActiveKeys.length > 0 ? existingActiveKeys : candidates.map(([key]) => key)).slice(0, maxOnlineVendors)
   ));
-  const hasExisting = existingActiveKeys.length > 0;
 
   function toggle(key) {
     setSelected(prev => {
@@ -296,7 +295,9 @@ function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnli
     });
   }
 
-  // The header button (closeLabel below) is the one confirm action.
+  // The footer "אישור" button is the one confirm action — no header close
+  // button at all (hideHeaderClose below), since a "×" reads as cancel
+  // even next to a label, and there's no real "cancel" concept here.
   // Reconciles all three cases in one batch: a selected candidate with no
   // profile yet gets created (active); an existing profile whose checked
   // state changed gets activated/deactivated to match (this is what
@@ -336,12 +337,14 @@ function OnlineVendorPickerModal({ uid, onlineVendors, existingProfiles, maxOnli
   }
 
   return (
-    <Modal onClose={confirm} disableClose closeLabel="אישור">
+    <Modal onClose={confirm} disableClose hideHeaderClose footer={
+      <button onClick={confirm} className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">
+        אישור
+      </button>
+    }>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>אילו רשתות אונליין להשוות?</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">
-        {hasExisting
-          ? `עד ${maxOnlineVendors} רשתות בבת אחת — סומנו הרשתות הפעילות אצלכם כרגע. ביטול סימון יכבה רשת, לא רק ידלג עליה.`
-          : `עד ${maxOnlineVendors} רשתות בבת אחת — פחות רשתות פעילות טוען מהר יותר.`}
+        עד {maxOnlineVendors} רשתות בבת אחת — סמנו את הרשתות שבהן תרצו להשוות מחירים אונליין.
         {" "}אפשר לשנות בכל עת מ⚙️ ← "רשתות להשוואת מחירים".
       </p>
       <div className="space-y-2 mb-2">
@@ -795,7 +798,7 @@ function Toast({ msg }) {
 // Bottom sheet used for every dialog in the app — drag the handle down (or
 // tap the scrim) to dismiss, matching the native "sheet" feel instead of a
 // centered popup box.
-function Modal({ onClose, children, disableClose, footer, closeLabel }) {
+function Modal({ onClose, children, disableClose, footer, closeLabel, hideHeaderClose }) {
   const [dragY, setDragY] = useState(0);
   const startYRef = useRef(null);
   const handleRef = useRef(null);
@@ -833,8 +836,13 @@ function Modal({ onClose, children, disableClose, footer, closeLabel }) {
           {/* Shown even when disableClose suppresses swipe/backdrop-dismiss
               (the add-item wizard) — those are only disabled to prevent
               *accidental* loss while filling a form, not to remove the
-              ability to close it at all. */}
-          {closeLabel ? (
+              ability to close it at all. hideHeaderClose is the deliberate
+              exception: a "×" reads as cancel/exit even with a label next
+              to it (real feedback — a picker whose only real action is a
+              bottom "אישור" button, not a header pill, shouldn't have a ×
+              anywhere near it). Only opt in when the footer already gives
+              the modal its own real action button. */}
+          {hideHeaderClose ? null : closeLabel ? (
             <button onClick={onClose} className="absolute top-2 left-4 flex items-center gap-1 bg-[#2E4A3B] text-[#FBF4E7] text-xs font-bold px-3 py-2 rounded-full hover:bg-[#243D30]">
               <span className="text-base leading-none">×</span> {closeLabel}
             </button>
