@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.31";
+const VERSION = "v2.32";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1689,7 +1689,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   });
 
   return (
-    <Modal onClose={onClose} disableClose={!isEdit} closeLabel={!isEdit ? (closeLabel || "סיום וחזרה לרשימה") : undefined} footer={
+    <Modal onClose={onClose} disableClose={!isEdit} closeLabel={!isEdit ? (closeLabel || "חזרה לרשימה") : undefined} footer={
       step === 1 ? (
         isEdit ? (
           <button onClick={finish} disabled={!draft.name.trim() || saving}
