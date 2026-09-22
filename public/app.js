@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.33";
+const VERSION = "v2.34";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -4397,7 +4397,7 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
   // Home, same as closing without having opened a list at all; something
   // added → straight into that list, exactly like finishing "+ הוספת פריט"
   // from inside the list itself.
-  const finishLabel = destList ? "סיום וחזרה לרשימה" : "סיום וחזרה";
+  const finishLabel = destList ? "חזרה לרשימה" : "חזרה";
   function finishAndReturn() {
     if (destList) onOpenList(destList.id, destList.name);
     else onClose();
