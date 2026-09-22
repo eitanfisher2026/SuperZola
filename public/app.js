@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.30";
+const VERSION = "v2.31";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1369,15 +1369,19 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       )}
 
       <div className="mb-1.5">
-        <div className="flex gap-2">
+        {/* A real <form onSubmit> instead of relying only on onKeyDown's
+            Enter check — many mobile keyboards' "go"/"search" action button
+            don't reliably fire a keydown with key:"Enter" (a well-known gap,
+            especially on Android), but they do reliably submit a form. */}
+        <form onSubmit={e => { e.preventDefault(); if (searchQuery.trim() && !isResolving) runSearch(searchScope); }} className="flex gap-2">
           <input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); if (onQueryChange) onQueryChange(e.target.value); }}
-            onKeyDown={e => { if (e.key === "Enter") runSearch(searchScope); }} autoFocus={replacing || !!searchScope}
+            autoFocus={replacing || !!searchScope}
             className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
-          <button onClick={() => runSearch(searchScope)} disabled={!searchQuery.trim() || isResolving}
+          <button type="submit" disabled={!searchQuery.trim() || isResolving}
             className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
             {isResolving ? <Spinner /> : "חיפוש"}
           </button>
-        </div>
+        </form>
         {(replacing || searchScope) && (
           <div className="flex items-center gap-2 mt-1.5">
             <span className="text-xs text-[#8A7F66]">
@@ -1659,6 +1663,24 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
     });
   }
 
+  // Adds the current pick as its own list item, same as finish(), but
+  // deliberately never touches `step` — PriceMatchStep stays mounted with
+  // its own already-loaded search results untouched, instead of finish()'s
+  // usual trip back to step 1 (which unmounts it and loses them). Only
+  // draft.barcodes/matchedNames clear, so every candidate's checkbox
+  // unchecks and the same list is immediately ready for the next pick —
+  // exactly the "search once, add several different products" flow that
+  // finish() can't offer without re-searching from scratch each time.
+  function finishAndAddAnother() {
+    if (!draft.name.trim() || saving) return;
+    setSaving(true);
+    onInsert(toPayload(draft), () => {
+      showToast(`${draft.name.trim()} נוסף לרשימה — בוחרים את הבא`);
+      setDraft(prev => Object.assign({}, blankDraft(), { name: prev.name }));
+      setSaving(false);
+    });
+  }
+
   const matchedVendorIds = Object.keys(draft.barcodes || {});
   let cheapest = null;
   itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
@@ -1694,11 +1716,27 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
             )}
           </div>
         )
-      ) : (
+      ) : isEdit ? (
         <button onClick={finish} disabled={!draft.name.trim() || saving}
           className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-          {saving ? <Spinner /> : (isEdit ? "שמירת שינויים" : "סיום והוספה לרשימה")}
+          {saving ? <Spinner /> : "שמירת שינויים"}
         </button>
+      ) : (
+        <div className="space-y-2">
+          <button onClick={finish} disabled={!draft.name.trim() || saving}
+            className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+            {saving ? <Spinner /> : "סיום והוספה לרשימה"}
+          </button>
+          {/* For picking several different products out of the same search
+              results (e.g. two different garbage-bag types both showing up
+              for "שקיות אשפה") without re-searching from scratch each time —
+              adds the current pick and stays right here, same results,
+              checkboxes cleared. */}
+          <button onClick={finishAndAddAnother} disabled={!draft.name.trim() || saving}
+            className="w-full text-center text-xs text-[#8A7F66] underline disabled:opacity-40">
+            {saving ? "שומר..." : "הוספה + בחירת פריט נוסף מאותה רשימה"}
+          </button>
+        </div>
       )
     }>
       <div className="flex items-center gap-2 mb-4">
