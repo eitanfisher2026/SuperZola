@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.35";
+const VERSION = "v2.36";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -94,6 +94,29 @@ const DEFAULT_CATEGORIES = [
   { id: "other",       label: "שונות (ציוד/אוכל לחיות מחמד, סוללות ומוצרי בית)",                         emoji: "🛍️", order: 11 },
 ];
 const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופסה", "חבילה", "צרור"];
+
+// A curated common-household set for the "טען רשימת דוגמה" empty-list
+// shortcut — no barcodes, exactly like any item added via "הוספה בלי
+// השוואת מחירים": price-matching still happens per item afterward,
+// this only removes the blank-page cold start of a first list.
+const STARTER_LIST_ITEMS = [
+  { name: "חלב 3%", category: "מוצרי חלב וביצים", categoryEmoji: "🥛", quantity: 2, unit: "ליטר" },
+  { name: "ביצים L", category: "מוצרי חלב וביצים", categoryEmoji: "🥛", quantity: 1, unit: "חבילה" },
+  { name: "גבינה צהובה", category: "מוצרי חלב וביצים", categoryEmoji: "🥛", quantity: 1, unit: "חבילה" },
+  { name: "חזה עוף", category: "בשר, עוף ודגים (כולל קפואים)", categoryEmoji: "🥩", quantity: 1, unit: "ק\"ג" },
+  { name: "עגבניות", category: "פירות וירקות (טריים)", categoryEmoji: "🥦", quantity: 1, unit: "ק\"ג" },
+  { name: "מלפפונים", category: "פירות וירקות (טריים)", categoryEmoji: "🥦", quantity: 1, unit: "ק\"ג" },
+  { name: "בננות", category: "פירות וירקות (טריים)", categoryEmoji: "🥦", quantity: 1, unit: "ק\"ג" },
+  { name: "לחם פרוס", category: "מוצרי מאפה ולחם", categoryEmoji: "🍞", quantity: 1, unit: "יחידות" },
+  { name: "פסטה", category: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", categoryEmoji: "🥫", quantity: 2, unit: "יחידות" },
+  { name: "אורז", category: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", categoryEmoji: "🥫", quantity: 1, unit: "ק\"ג" },
+  { name: "שמן קנולה", category: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", categoryEmoji: "🥫", quantity: 1, unit: "יחידות" },
+  { name: "קפה נמס", category: "משקאות (קלים, מים, קפה ותה, אלכוהול)", categoryEmoji: "🥤", quantity: 1, unit: "יחידות" },
+  { name: "מים מינרליים", category: "משקאות (קלים, מים, קפה ותה, אלכוהול)", categoryEmoji: "🥤", quantity: 1, unit: "חבילה" },
+  { name: "נוזל כלים", category: "חומרי ניקוי ותחזוקת בית", categoryEmoji: "🧹", quantity: 1, unit: "יחידות" },
+  { name: "נייר טואלט", category: "מוצרי נייר וחד־פעמי", categoryEmoji: "🧻", quantity: 1, unit: "חבילה" },
+  { name: "שקיות אשפה", category: "מוצרי נייר וחד־פעמי", categoryEmoji: "🧻", quantity: 1, unit: "חבילה" },
+];
 
 // One shared AI provider for the whole app, configured once by an admin
 // (AdminOptionsScreen) — every user gets AI features (bulk add, auto-category)
@@ -1876,6 +1899,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const isInstalled = window.matchMedia("(display-mode: standalone)").matches || !!window.navigator.standalone;
   const [canInstall, setCanInstall] = useState(!isInstalled);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const [installBannerDismissed, setInstallBannerDismissed] = useState(() => {
+    try { return localStorage.getItem("sz_install_banner_dismissed") === "1"; } catch (e) { return false; }
+  });
   // Deliberately the REAL admin status, never overridden by the simulation
   // below — otherwise the toggle that turns the simulation off would hide
   // itself the moment it's turned on.
@@ -2099,6 +2125,23 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           )}
         </div>
       </div>
+
+      {isIOS && canInstall && !isInstalled && !installBannerDismissed && (
+        // iOS Safari never fires beforeinstallprompt, so canInstall here
+        // just means "not already installed" — this is the one proactive
+        // nudge for it, since the real install option otherwise sits
+        // quietly inside the gear menu where a first-time user has no
+        // reason to look. Dismissed once, it stays gone for that browser.
+        <div className="mx-4 mb-3 bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2.5 flex items-center gap-2">
+          <span className="text-lg flex-shrink-0">📲</span>
+          <p className="flex-1 text-xs text-[#3F5A38] leading-snug">
+            טיפ: הוסיפו את סופר זולה למסך הבית — היא תיפתח כמו אפליקציה רגילה, בלי סרגלי הדפדפן.
+          </p>
+          <button onClick={installApp} className="text-xs font-bold text-[#2E4A3B] underline flex-shrink-0">איך?</button>
+          <button onClick={() => { localStorage.setItem("sz_install_banner_dismissed", "1"); setInstallBannerDismissed(true); }}
+            className="text-[#8A7F66] text-lg leading-none flex-shrink-0">×</button>
+        </div>
+      )}
 
       {viewAsUser && (
         <div className="mx-4 mb-3 bg-[#E3A939]/20 border border-[#E3A939] rounded-xl px-3 py-2 flex items-center justify-between gap-2">
@@ -5234,6 +5277,21 @@ function ListScreen({ uid, listId, listName, onBack }) {
     })).then(() => done());
   }
 
+  const [loadingStarter, setLoadingStarter] = useState(false);
+  function loadStarterList() {
+    if (loadingStarter) return;
+    setLoadingStarter(true);
+    const batch = db.batch();
+    const itemsCol = db.collection("lists").doc(listId).collection("items");
+    STARTER_LIST_ITEMS.forEach(it => {
+      batch.set(itemsCol.doc(), Object.assign({}, it, {
+        note: "", barcodes: {}, matchedNames: {},
+        addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }));
+    });
+    batch.commit().then(() => setLoadingStarter(false));
+  }
+
   function saveEdit(payload) {
     db.collection("lists").doc(listId).collection("items").doc(editItem.id).update(payload).then(() => setEditItem(null));
   }
@@ -5345,6 +5403,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
             <p className="text-[#A79A7C] text-xs mt-2 max-w-xs mx-auto leading-relaxed">
               טיפ: השתמשו ב"עיון לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
             </p>
+            <button onClick={loadStarterList} disabled={loadingStarter}
+              className="mt-3 text-xs font-bold text-[#2E4A3B] underline disabled:opacity-50">
+              {loadingStarter ? "טוען..." : "או: טענו רשימת מוצרים בסיסית להתחלה"}
+            </button>
           </div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
@@ -5843,6 +5905,9 @@ function HelpScreen({ onBack }) {
             </HelpCard>
             <HelpCard icon="🔍" title="6. התאמת מחיר לפריט">
               האפליקציה מחפשת את הפריט בכל רשת פעילה. לפעמים לרשתות שונות יש ברקוד שונה לאותו מוצר — כשהחיפוש מכסה כמה רשתות אפשר לסמן (☑) כמה התאמות בבת אחת, אחת לכל רשת, ולשמור הכול יחד.
+            </HelpCard>
+            <HelpCard icon="💳" title="על אילו מחירים מבוססת ההשוואה?">
+              המחירים מגיעים מקבצי המחירים הרשמיים שכל רשת מחויבת בחוק לפרסם — אותם מחירי מדף שרואים בסניף. מבצעי מועדון אישיים או מחירים ייחודיים לאתר ההזמנות המקוון של הרשת (לדוגמה "שופרסל שלי" מול "שופרסל דיל") לא כלולים, כי הם לא מתפרסמים באופן פומבי.
             </HelpCard>
             <HelpCard icon="📊" title="7. תצוגת רשימה מול טבלה">
               בכל רשימה יש שני מצבי תצוגה, מתחלפים מכפתור בראש המסך: 📋 רשימה — פריט אחר פריט עם המחירים לצדו. 📊 טבלה — כל הפריטים והרשתות יחד כמו גיליון, כולל שורת סיכום.
