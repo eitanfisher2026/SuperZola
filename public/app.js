@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.36";
+const VERSION = "v2.37";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -94,29 +94,6 @@ const DEFAULT_CATEGORIES = [
   { id: "other",       label: "שונות (ציוד/אוכל לחיות מחמד, סוללות ומוצרי בית)",                         emoji: "🛍️", order: 11 },
 ];
 const UNITS = ["יחידות", "ק\"ג", "גרם", "ליטר", "מ\"ל", "קופסה", "חבילה", "צרור"];
-
-// A curated common-household set for the "טען רשימת דוגמה" empty-list
-// shortcut — no barcodes, exactly like any item added via "הוספה בלי
-// השוואת מחירים": price-matching still happens per item afterward,
-// this only removes the blank-page cold start of a first list.
-const STARTER_LIST_ITEMS = [
-  { name: "חלב 3%", category: "מוצרי חלב וביצים", categoryEmoji: "🥛", quantity: 2, unit: "ליטר" },
-  { name: "ביצים L", category: "מוצרי חלב וביצים", categoryEmoji: "🥛", quantity: 1, unit: "חבילה" },
-  { name: "גבינה צהובה", category: "מוצרי חלב וביצים", categoryEmoji: "🥛", quantity: 1, unit: "חבילה" },
-  { name: "חזה עוף", category: "בשר, עוף ודגים (כולל קפואים)", categoryEmoji: "🥩", quantity: 1, unit: "ק\"ג" },
-  { name: "עגבניות", category: "פירות וירקות (טריים)", categoryEmoji: "🥦", quantity: 1, unit: "ק\"ג" },
-  { name: "מלפפונים", category: "פירות וירקות (טריים)", categoryEmoji: "🥦", quantity: 1, unit: "ק\"ג" },
-  { name: "בננות", category: "פירות וירקות (טריים)", categoryEmoji: "🥦", quantity: 1, unit: "ק\"ג" },
-  { name: "לחם פרוס", category: "מוצרי מאפה ולחם", categoryEmoji: "🍞", quantity: 1, unit: "יחידות" },
-  { name: "פסטה", category: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", categoryEmoji: "🥫", quantity: 2, unit: "יחידות" },
-  { name: "אורז", category: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", categoryEmoji: "🥫", quantity: 1, unit: "ק\"ג" },
-  { name: "שמן קנולה", category: "מזון יבש ושימורים (קטניות, אורז, פסטה, שימורים, תבלינים, שמנים, קמח וחומרי אפייה)", categoryEmoji: "🥫", quantity: 1, unit: "יחידות" },
-  { name: "קפה נמס", category: "משקאות (קלים, מים, קפה ותה, אלכוהול)", categoryEmoji: "🥤", quantity: 1, unit: "יחידות" },
-  { name: "מים מינרליים", category: "משקאות (קלים, מים, קפה ותה, אלכוהול)", categoryEmoji: "🥤", quantity: 1, unit: "חבילה" },
-  { name: "נוזל כלים", category: "חומרי ניקוי ותחזוקת בית", categoryEmoji: "🧹", quantity: 1, unit: "יחידות" },
-  { name: "נייר טואלט", category: "מוצרי נייר וחד־פעמי", categoryEmoji: "🧻", quantity: 1, unit: "חבילה" },
-  { name: "שקיות אשפה", category: "מוצרי נייר וחד־פעמי", categoryEmoji: "🧻", quantity: 1, unit: "חבילה" },
-];
 
 // One shared AI provider for the whole app, configured once by an admin
 // (AdminOptionsScreen) — every user gets AI features (bulk add, auto-category)
@@ -477,7 +454,7 @@ const DEFAULT_DAILY_CAPS = {
 };
 function useAppLimits() {
   const [limits, setLimits] = useState(Object.assign(
-    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0 },
+    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0, defaultListId: null },
     Object.fromEntries(Object.entries(DEFAULT_DAILY_CAPS).map(([fn, v]) => [fn + "DailyCap", v]))
   ));
   useEffect(() => {
@@ -492,6 +469,9 @@ function useAppLimits() {
         // fallback when the normal search found <= this many results.
         fuzzySearchEnabled: d.fuzzySearchEnabled === true,
         fuzzySearchThreshold: d.fuzzySearchThreshold >= 0 ? d.fuzzySearchThreshold : 0,
+        // The one list (owned by an admin) offered to brand-new users as a
+        // starter — null/empty means the option is off entirely.
+        defaultListId: d.defaultListId || null,
       };
       Object.entries(DEFAULT_DAILY_CAPS).forEach(([fn, defaultVal]) => {
         const key = fn + "DailyCap";
@@ -1869,7 +1849,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
 // ── LIST CARD (home row) ─────────────────────────────────────────────────────
 // List actions (rename, duplicate, delete) live inside the list itself now
 // (its own ☰ menu) — this is just a tappable row, no per-card menu.
-function ListCard({ list, onOpen }) {
+function ListCard({ list, onOpen, isAdmin }) {
   return (
     <div
       onClick={onOpen}
@@ -1878,6 +1858,11 @@ function ListCard({ list, onOpen }) {
       <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate text-[#2B2418]">
         {list.name}
       </span>
+      {/* Visible only to the admin who set it — regular users never see
+          which list (if any) is the starter template. */}
+      {isAdmin && list.isDefaultTemplate && (
+        <span className="text-[10px] font-bold text-[#8A5A15] bg-[#E3A939]/25 rounded-full px-2 py-0.5 flex-shrink-0">⭐ ברירת מחדל</span>
+      )}
       <span className="text-[#DECBA1] text-lg flex-shrink-0">‹</span>
     </div>
   );
@@ -2189,7 +2174,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           <div className="text-[#8A7F66] text-sm py-6 text-center">אין עדיין רשימות. צרו את הראשונה!</div>
         )}
         {(lists || []).map(list => (
-          <ListCard key={list.id} list={list} onOpen={() => onOpenList(list.id, list.name)} />
+          <ListCard key={list.id} list={list} isAdmin={simulatedIsAdmin} onOpen={() => onOpenList(list.id, list.name)} />
         ))}
       </div>
 
@@ -2722,7 +2707,47 @@ function AdminOptionsScreen({ uid, onBack }) {
   const [limitsDraft, setLimitsDraft] = useState(null); // null until first synced from limits, then user-editable
   const [savingLimits, setSavingLimits] = useState(false);
   const [showLimits, setShowLimits] = useState(false);
+  const [showDefaultList, setShowDefaultList] = useState(false);
+  const [myLists, setMyLists] = useState(null);
+  const [savingDefaultList, setSavingDefaultList] = useState(false);
   const onlineVendors = useOnlineVendors();
+
+  useEffect(() => {
+    return db.collection("lists").where("ownerId", "==", uid).onSnapshot(snap => {
+      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => (a.name || "").localeCompare(b.name || "", "he"));
+      setMyLists(rows);
+    });
+  }, [uid]);
+
+  // Only one list can be the default at a time — swapping clears the flag
+  // off whichever list held it before. A regular signed-in user can READ a
+  // list flagged isDefaultTemplate (firestore.rules), so this write must
+  // stay admin-only.
+  async function setDefaultList(newListId) {
+    setSavingDefaultList(true);
+    const prevId = limits.defaultListId;
+    if (newListId) {
+      const itemsSnap = await db.collection("lists").doc(newListId).collection("items").limit(1).get();
+      if (itemsSnap.empty) { setToast("אי אפשר לבחור רשימה ריקה"); setSavingDefaultList(false); return; }
+    }
+    // Best-effort, outside the batch: if the previous default was deleted
+    // without clearing this flag first, this update fails (doc gone) —
+    // that must never block setting a new default below.
+    if (prevId && prevId !== newListId) {
+      db.collection("lists").doc(prevId).update({ isDefaultTemplate: false }).catch(() => {});
+    }
+    try {
+      const batch = db.batch();
+      if (newListId) batch.update(db.collection("lists").doc(newListId), { isDefaultTemplate: true });
+      batch.set(db.collection("appConfig").doc("limits"), { defaultListId: newListId || null }, { merge: true });
+      await batch.commit();
+      setToast(newListId ? "נשמר" : "בוטל");
+    } catch (e) {
+      setToast("שגיאה בשמירה");
+    }
+    setSavingDefaultList(false);
+  }
 
   useEffect(() => {
     if (limitsDraft === null) {
@@ -3359,6 +3384,39 @@ function AdminOptionsScreen({ uid, onBack }) {
                   className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 mt-2">
                   {savingLimits ? <Spinner /> : "שמירה"}
                 </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {role === "admin" && (
+          <div>
+            <button onClick={() => setShowDefaultList(v => !v)}
+              className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showDefaultList ? "bg-white border-[#C7B78E]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">⭐</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">רשימת ברירת מחדל למשתמשים חדשים</div>
+                  <div className="text-xs text-[#A79A7C]">רשימה משלך שמוצעת כנקודת התחלה במקום דף ריק</div>
+                </div>
+              </div>
+              <span className="text-[#A79A7C] text-xs flex-shrink-0">{showDefaultList ? "▲ הסתר" : "▼ הצג"}</span>
+            </button>
+            {showDefaultList && (
+              <div className="mt-2 bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
+                <p className="text-xs text-[#8A7F66] mb-2">
+                  בחר אחת מהרשימות שלך (עם פריטים אמיתיים ומחירים מותאמים). משתמש חדש עם 2 רשתות פעילות ומעלה, שעדיין לא השתמש באפשרות הזו, יוכל להעתיק אותה כשהרשימה שלו ריקה — הרשתות שלו שלא הותאמו ברשימה המקורית יושלמו אוטומטית במידת האפשר, ואם לא, יסומנו להתאמה ידנית.
+                </p>
+                {myLists === null ? (
+                  <div className="flex justify-center py-4"><Spinner2 /></div>
+                ) : (
+                  <select value={limits.defaultListId || ""} disabled={savingDefaultList}
+                    onChange={e => setDefaultList(e.target.value || null)}
+                    className="w-full border border-[#C7B78E] rounded-lg px-3 py-2.5 bg-white outline-none text-sm">
+                    <option value="">ללא — האפשרות כבויה למשתמשים</option>
+                    {myLists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                  </select>
+                )}
               </div>
             )}
           </div>
@@ -5121,13 +5179,17 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const activeProfiles = useActiveVendorProfiles(uid);
   const onlineVendors = useOnlineVendors();
   const categories = useCategories();
+  const userDoc = useUserDoc(uid);
+  const isAdmin = (userDoc || {}).role === "admin";
+  const starterListUsed = !!(userDoc || {}).starterListUsed;
+  const limits = useAppLimits();
   // A personal, cross-list preference (set in the gear menu / first-time
   // banner) — distinct from hiddenVendorIds below, which answers "which of
   // my vendors matter for THIS list", not "do I ever want to see online at
   // all". Folding it in here means everything downstream (the toggle's
   // visibility, the optimizer's pools, the on-demand online fetch) treats
   // the disabled side exactly as if the user had zero active vendors there.
-  const pricePreference = (useUserDoc(uid) || {}).pricePreference || "both";
+  const pricePreference = (userDoc || {}).pricePreference || "both";
   const preferenceFilteredProfiles = pricePreference === "instoreOnly"
     ? activeProfiles.filter(p => (p.mode || "instore") === "instore")
     : pricePreference === "onlineOnly"
@@ -5277,19 +5339,94 @@ function ListScreen({ uid, listId, listName, onBack }) {
     })).then(() => done());
   }
 
+  // Copies an admin-curated list (appConfig/limits.defaultListId) into this
+  // one, then tries to fill in prices for vendors the admin didn't use when
+  // building it — barcodes are vendor-specific, so a user with different
+  // active vendors than the admin would otherwise see blanks in those
+  // columns. Only ever offered once we know it can actually pay off (see
+  // the button's own gating below): a default is configured, this account
+  // hasn't used it before, and there are enough active vendors for a
+  // comparison to mean anything.
   const [loadingStarter, setLoadingStarter] = useState(false);
-  function loadStarterList() {
-    if (loadingStarter) return;
+  const [starterStatus, setStarterStatus] = useState("");
+  async function loadStarterList() {
+    if (loadingStarter || !limits.defaultListId) return;
     setLoadingStarter(true);
-    const batch = db.batch();
-    const itemsCol = db.collection("lists").doc(listId).collection("items");
-    STARTER_LIST_ITEMS.forEach(it => {
-      batch.set(itemsCol.doc(), Object.assign({}, it, {
-        note: "", barcodes: {}, matchedNames: {},
-        addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      }));
-    });
-    batch.commit().then(() => setLoadingStarter(false));
+    setStarterStatus("טוען...");
+    try {
+      const srcSnap = await db.collection("lists").doc(limits.defaultListId).collection("items").get();
+      if (srcSnap.empty) { setToast("רשימת ברירת המחדל ריקה או לא נמצאה"); setLoadingStarter(false); setStarterStatus(""); return; }
+
+      const itemsCol = db.collection("lists").doc(listId).collection("items");
+      const batch = db.batch();
+      const copiedRefs = [];
+      srcSnap.docs.forEach(d => {
+        const src = d.data();
+        const ref = itemsCol.doc();
+        batch.set(ref, {
+          name: src.name, category: src.category, categoryEmoji: src.categoryEmoji,
+          quantity: src.quantity, unit: src.unit, note: src.note || "",
+          barcodes: Object.assign({}, src.barcodes || {}),
+          matchedNames: Object.assign({}, src.matchedNames || {}),
+          addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        copiedRefs.push({ ref, name: src.name, barcodes: Object.assign({}, src.barcodes || {}), matchedNames: Object.assign({}, src.matchedNames || {}) });
+      });
+      await batch.commit();
+      db.collection("users").doc(uid).set({ starterListUsed: true }, { merge: true });
+
+      // Best-effort gap-fill — a failure here still leaves the list loaded,
+      // just with some vendors blank until the user matches them by hand
+      // (exactly like any item added without pricing).
+      const vendorIds = [...new Set(activeProfiles.map(p => p.vendor))];
+      const namesNeedingWork = copiedRefs.filter(it => vendorIds.some(v => !it.barcodes[v]));
+      let gapCount = 0;
+      if (namesNeedingWork.length > 0) {
+        setStarterStatus("מתאים מחירים לרשתות שלך...");
+        const uniqueNames = [...new Set(namesNeedingWork.map(it => it.name))];
+        const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({
+          items: uniqueNames, profileIds: activeProfiles.map(p => p.id),
+        });
+        const results = (res.data || {}).results || {};
+        const updateBatch = db.batch();
+        namesNeedingWork.forEach(it => {
+          const r = results[it.name];
+          if (!r) return;
+          const missing = vendorIds.filter(v => !it.barcodes[v]);
+          let changed = false;
+          missing.forEach(v => {
+            // Prefer a previously-confirmed mapping (server cache, keyed by
+            // exact name — filled whenever anyone actually picks a match for
+            // that name) over a fresh guess. Only fall back to this call's
+            // own candidates when nothing confirmed exists yet, and only at
+            // a score high enough to mean "same wording", never an
+            // approximate/fuzzy hit — a wrong silent price is worse than a
+            // blank one.
+            if (r.barcodes && r.barcodes[v]) {
+              it.barcodes[v] = r.barcodes[v];
+              changed = true;
+              return;
+            }
+            const best = (r.candidates || []).find(c => !c.fuzzyLayer && c.score >= 800 && c.prices[v] != null);
+            if (best) {
+              it.barcodes[v] = best.barcode;
+              it.matchedNames[v] = best.name;
+              changed = true;
+            }
+          });
+          if (changed) updateBatch.update(it.ref, { barcodes: it.barcodes, matchedNames: it.matchedNames });
+          if (vendorIds.some(v => !it.barcodes[v])) gapCount++;
+        });
+        await updateBatch.commit();
+      }
+      setToast(gapCount > 0
+        ? `הרשימה נטענה — ${gapCount} פריטים דורשים התאמה ידנית לרשת אחת או יותר`
+        : "הרשימה נטענה בהצלחה!");
+    } catch (e) {
+      setToast("שגיאה בטעינת הרשימה");
+    }
+    setLoadingStarter(false);
+    setStarterStatus("");
   }
 
   function saveEdit(payload) {
@@ -5336,6 +5473,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
       <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2 no-print">
         <BackButton onClick={onBack} />
         <h1 className="text-xl flex-1 min-w-0 truncate" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>{list.name}</h1>
+        {isAdmin && list.isDefaultTemplate && (
+          <span className="text-[10px] font-bold text-[#8A5A15] bg-[#E3A939]/25 rounded-full px-2 py-0.5 flex-shrink-0">⭐ ברירת מחדל</span>
+        )}
         {visibleProfiles.length > 0 && (
           <div className="flex bg-white/10 rounded-full p-0.5 flex-shrink-0">
             <button onClick={() => setViewMode("list")}
@@ -5403,10 +5543,12 @@ function ListScreen({ uid, listId, listName, onBack }) {
             <p className="text-[#A79A7C] text-xs mt-2 max-w-xs mx-auto leading-relaxed">
               טיפ: השתמשו ב"עיון לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
             </p>
-            <button onClick={loadStarterList} disabled={loadingStarter}
-              className="mt-3 text-xs font-bold text-[#2E4A3B] underline disabled:opacity-50">
-              {loadingStarter ? "טוען..." : "או: טענו רשימת מוצרים בסיסית להתחלה"}
-            </button>
+            {!!limits.defaultListId && !starterListUsed && new Set(activeProfiles.map(p => p.vendor)).size >= 2 && (
+              <button onClick={loadStarterList} disabled={loadingStarter}
+                className="mt-3 text-xs font-bold text-[#2E4A3B] underline disabled:opacity-50">
+                {loadingStarter ? (starterStatus || "טוען...") : "או: טענו רשימת מוצרים בסיסית להתחלה"}
+              </button>
+            )}
           </div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
