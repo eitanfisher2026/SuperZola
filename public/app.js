@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.37";
+const VERSION = "v2.38";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1394,12 +1394,15 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
           </button>
         </form>
         {(replacing || searchScope) && (
-          <div className="flex items-center gap-2 mt-1.5">
+          <div className="flex items-center justify-between gap-2 mt-1.5">
             <span className="text-xs text-[#8A7F66]">
               {replacing ? "מחפש בכל הרשתות" : `מחפש עבור ${scopeLabel} בלבד`}
             </span>
+            {/* Was labeled "ביטול" — reads as "cancel/discard", but this
+                actually just returns to the settled match summary without
+                losing anything, so it needs to read like a back action. */}
             <button onClick={replacing ? cancelReplace : () => { setSearchScope(null); setCandidates(null); }}
-              className="text-xs text-[#8A7F66] underline">ביטול</button>
+              className="text-xs font-bold text-[#2E4A3B] underline flex-shrink-0">‹ חזרה</button>
           </div>
         )}
       </div>
@@ -1784,7 +1787,10 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
                 <button type="button"
                   onClick={() => set({ quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })}
                   className="w-10 h-11 rounded-xl bg-[#EFE4C6] text-[#8A7F66] text-xl font-bold flex items-center justify-center flex-shrink-0">−</button>
-                <input type="number" min="0.1" step="0.1" value={draft.quantity}
+                {/* inputMode="decimal" — plain type="number" makes iOS show a
+                    numeric keypad with NO decimal point at all, so a fraction
+                    like 1.5 can't be typed on a touch keyboard without it. */}
+                <input type="number" inputMode="decimal" min="0.1" step="0.1" value={draft.quantity}
                   onChange={e => set({ quantity: e.target.value })}
                   className="w-full min-w-0 border border-[#C7B78E] bg-white rounded-xl px-1 py-3 text-center outline-none" />
                 <button type="button"
@@ -3443,7 +3449,7 @@ function AdminOptionsScreen({ uid, onBack }) {
                 {Object.keys(DEFAULT_COST_ESTIMATES).map(fn => (
                   <div key={fn} className="flex items-center gap-2">
                     <label className="flex-1 text-xs text-[#5B5749]">{FUNCTION_LABELS[fn] || fn}</label>
-                    <input type="number" min="0" step="0.0001" value={costEstimatesDraft[fn]}
+                    <input type="number" inputMode="decimal" min="0" step="0.0001" value={costEstimatesDraft[fn]}
                       onChange={e => setCostEstimatesDraft(prev => Object.assign({}, prev, { [fn]: e.target.value }))}
                       className="w-24 border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center bg-white outline-none text-xs" />
                     <span className="text-[10px] text-[#A79A7C] flex-shrink-0">$/קריאה</span>
@@ -3788,12 +3794,12 @@ function AdminOptionsScreen({ uid, onBack }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[11px] text-[#8A7F66] block mb-1">משלוח (₪)</label>
-                  <input type="number" value={newOnlineVendorDraft.deliveryFee} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { deliveryFee: e.target.value }))}
+                  <input type="number" inputMode="decimal" value={newOnlineVendorDraft.deliveryFee} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { deliveryFee: e.target.value }))}
                     className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
                 </div>
                 <div>
                   <label className="text-[11px] text-[#8A7F66] block mb-1">מינימום (₪)</label>
-                  <input type="number" value={newOnlineVendorDraft.minimumOrder} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { minimumOrder: e.target.value }))}
+                  <input type="number" inputMode="decimal" value={newOnlineVendorDraft.minimumOrder} onChange={e => setNewOnlineVendorDraft(prev => Object.assign({}, prev, { minimumOrder: e.target.value }))}
                     className="w-full border border-[#C7B78E] rounded-lg px-2 py-2 text-center bg-white outline-none text-sm" />
                 </div>
               </div>
@@ -5625,16 +5631,16 @@ function ListScreen({ uid, listId, listName, onBack }) {
         </Modal>
       )}
       {showAdd && (
-        <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
+        <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
       {showBrowse && (
-        <CategoryBrowseModal categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowBrowse(false)} showToast={setToast} />
+        <CategoryBrowseModal categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowBrowse(false)} showToast={setToast} />
       )}
       {showBarcodeAdd && (
-        <BarcodeAddFlow categories={categories} activeProfiles={viewProfiles} onInsert={insertItem} onClose={() => setShowBarcodeAdd(false)} showToast={setToast} />
+        <BarcodeAddFlow categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowBarcodeAdd(false)} showToast={setToast} />
       )}
       {editItem && (
-        <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={viewProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
+        <ItemWizard uid={uid} mode="edit" item={editItem} categories={categories} activeProfiles={visibleProfiles} onSave={saveEdit} onClose={() => setEditItem(null)} showToast={setToast} />
       )}
 
       {showMenu && (
