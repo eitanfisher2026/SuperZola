@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.38";
+const VERSION = "v2.39";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1787,11 +1787,14 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
                 <button type="button"
                   onClick={() => set({ quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })}
                   className="w-10 h-11 rounded-xl bg-[#EFE4C6] text-[#8A7F66] text-xl font-bold flex items-center justify-center flex-shrink-0">−</button>
-                {/* inputMode="decimal" — plain type="number" makes iOS show a
-                    numeric keypad with NO decimal point at all, so a fraction
-                    like 1.5 can't be typed on a touch keyboard without it. */}
-                <input type="number" inputMode="decimal" min="0.1" step="0.1" value={draft.quantity}
-                  onChange={e => set({ quantity: e.target.value })}
+                {/* type="text", not "number" — a native number input's
+                    decimal point is locale-dependent (some Windows/browser
+                    regional settings expect "," not "."), and iOS's number
+                    keypad omits a decimal point entirely — both silently
+                    block typing "1.5". A text field with light manual
+                    filtering sidesteps both, desktop and mobile alike. */}
+                <input type="text" inputMode="decimal" value={draft.quantity}
+                  onChange={e => { const v = e.target.value; if (v === "" || /^\d*\.?\d*$/.test(v)) set({ quantity: v }); }}
                   className="w-full min-w-0 border border-[#C7B78E] bg-white rounded-xl px-1 py-3 text-center outline-none" />
                 <button type="button"
                   onClick={() => set({ quantity: Math.round(((parseFloat(draft.quantity) || 0) + 1) * 10) / 10 })}
