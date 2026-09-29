@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.52";
+const VERSION = "v2.53";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -454,7 +454,7 @@ const DEFAULT_DAILY_CAPS = {
 };
 function useAppLimits() {
   const [limits, setLimits] = useState(Object.assign(
-    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0, defaultListId: null, onboardingWizardEnabled: false },
+    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0, defaultListId: null, onboardingWizardEnabled: true },
     Object.fromEntries(Object.entries(DEFAULT_DAILY_CAPS).map(([fn, v]) => [fn + "DailyCap", v]))
   ));
   useEffect(() => {
@@ -472,9 +472,10 @@ function useAppLimits() {
         // The one list (owned by an admin) offered to brand-new users as a
         // starter — null/empty means the option is off entirely.
         defaultListId: d.defaultListId || null,
-        // Off until the admin has previewed it and switched it on — while
-        // off, only the admin's own preview can open the wizard.
-        onboardingWizardEnabled: d.onboardingWizardEnabled === true,
+        // On unless the admin explicitly switched it off (approved after
+        // preview, 2026-09-29) — while off, only the admin's own preview
+        // can open the wizard.
+        onboardingWizardEnabled: d.onboardingWizardEnabled !== false,
       };
       Object.entries(DEFAULT_DAILY_CAPS).forEach(([fn, defaultVal]) => {
         const key = fn + "DailyCap";
@@ -3287,9 +3288,9 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
                 className="flex-1 bg-[#2E4A3B] text-white rounded-xl py-2.5 text-sm font-semibold">
                 ➕ הוספת סניפים
               </button>
-              <button onClick={onOpenHelp}
+              <button onClick={guideAvailable ? openGuide : onOpenHelp}
                 className="flex-1 bg-white border border-[#B9D9B0] text-[#2E4A3B] rounded-xl py-2.5 text-sm font-semibold">
-                📖 מדריך שימוש
+                {guideAvailable ? "▶ איך מתחילים" : "📖 מדריך שימוש"}
               </button>
             </div>
           </div>
