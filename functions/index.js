@@ -1636,7 +1636,16 @@ exports.resolveItemBarcodes = onCall(
         const doc = cacheDocs[i];
         const cached = doc && doc.exists ? doc.data() : null;
         const barcodes = {};
-        if (cached) vendorIds.forEach(v => { if (cached[v]) barcodes[v] = cached[v]; });
+        // A cache entry is { barcode, name, matchedAt } (see
+        // confirmItemBarcode) — only the barcode string itself is ever
+        // returned here. Returning the whole entry once got saved into
+        // items as if it were a barcode, and every later price lookup for
+        // that list crashed on it.
+        if (cached) vendorIds.forEach(v => {
+          const e = cached[v];
+          const bc = e && typeof e === 'object' ? e.barcode : e;
+          if (bc) barcodes[v] = String(bc);
+        });
         cacheByName[name] = { barcodes, missingVendors: vendorIds.filter(v => !barcodes[v]) };
       });
     }
@@ -1920,8 +1929,20 @@ exports.getBasketPrices = onCall(
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'getBasketPrices');
-    const { barcodesByVendor, force } = request.data || {};
-    if (!barcodesByVendor || typeof barcodesByVendor !== 'object') throw new HttpsError('invalid-argument', 'barcodesByVendor required');
+    const { barcodesByVendor: rawBarcodesByVendor, force } = request.data || {};
+    if (!rawBarcodesByVendor || typeof rawBarcodesByVendor !== 'object') throw new HttpsError('invalid-argument', 'barcodesByVendor required');
+    // One malformed value (empty, an object, a path-like string) used to
+    // throw inside the per-barcode document lookup and fail the WHOLE
+    // request — the entire list then showed no prices at all. Anything
+    // that isn't a usable barcode is dropped instead.
+    const barcodesByVendor = {};
+    Object.entries(rawBarcodesByVendor).forEach(([v, list]) => {
+      if (!Array.isArray(list)) return;
+      barcodesByVendor[v] = [...new Set(list
+        .map(x => (x && typeof x === 'object' ? x.barcode : x))
+        .filter(x => (typeof x === 'string' || typeof x === 'number') && String(x).trim() && !String(x).includes('/'))
+        .map(x => String(x).trim()))];
+    });
     // Same reasoning as prewarmVendorCatalog's force gate: a real, live
     // re-scrape of a vendor's feed shouldn't be triggerable ad hoc by every
     // user, just because they passed a flag.

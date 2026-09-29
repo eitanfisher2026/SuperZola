@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.46";
+const VERSION = "v2.47";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -613,8 +613,15 @@ function compressFeedbackImage(file, maxSizeKB) {
     reader.readAsDataURL(file);
   });
 }
+// A saved barcode is normally a plain string. v2.37-v2.46 could also save
+// a shared-cache entry object ({ barcode, name, matchedAt }) in its place
+// (see the self-repair in ListScreen) — accept both, always hand back text.
+function barcodeValue(x) {
+  const v = x && typeof x === "object" ? x.barcode : x;
+  return v ? String(v) : null;
+}
 function itemVendorBarcode(item, vendorId) {
-  return (item.barcodes && item.barcodes[vendorId]) || null;
+  return barcodeValue(item.barcodes && item.barcodes[vendorId]);
 }
 function itemVendorMatchedName(item, vendorId) {
   return (item.matchedNames && item.matchedNames[vendorId]) || null;
@@ -1880,8 +1887,10 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   };
   const [draft, setDraft] = useState(() => {
     if (!isEdit || !item) return Object.assign({}, blankDraft(), initialDraft || {});
+    const cleanBarcodes = {};
+    Object.entries(item.barcodes || {}).forEach(([v, raw]) => { const bc = barcodeValue(raw); if (bc) cleanBarcodes[v] = bc; });
     return Object.assign({}, blankDraft(), item, {
-      barcodes: Object.assign({}, item.barcodes || {}),
+      barcodes: cleanBarcodes,
       matchedNames: Object.assign({}, item.matchedNames || {}),
     });
   });
@@ -1902,7 +1911,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
     if (!activeProfiles || activeProfiles.length === 0) return;
     const payload = {};
     activeProfiles.forEach(p => {
-      const bc = item.barcodes[p.vendor];
+      const bc = barcodeValue(item.barcodes[p.vendor]);
       if (bc) { payload[p.vendor] = payload[p.vendor] || []; if (payload[p.vendor].indexOf(bc) === -1) payload[p.vendor].push(bc); }
     });
     if (Object.keys(payload).length === 0) return;
@@ -6111,7 +6120,8 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
         const r = results[name] || {};
         // Barcodes already confirmed for this exact name (by anyone) come
         // back ready-made; only the vendors still missing get auto-picked.
-        const barcodes = Object.assign({}, r.barcodes || {});
+        const barcodes = {};
+        Object.entries(r.barcodes || {}).forEach(([v, raw]) => { const bc = barcodeValue(raw); if (bc) barcodes[v] = bc; });
         const matchedNames = {};
         const picks = autoPickByVendor(r.candidates, vendorIds.filter(v => !barcodes[v]));
         Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; });
@@ -6326,8 +6336,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const preferenceVendorNames = new Set(preferenceFilteredProfiles.map(p => p.vendor));
   const barcodesByVendor = {};
   (items || []).forEach(it => {
-    Object.entries(it.barcodes || {}).forEach(([v, bc]) => {
-      if (!preferenceVendorNames.has(v)) return;
+    Object.entries(it.barcodes || {}).forEach(([v, raw]) => {
+      const bc = barcodeValue(raw);
+      if (!bc || !preferenceVendorNames.has(v)) return;
       if (!barcodesByVendor[v]) barcodesByVendor[v] = new Set();
       barcodesByVendor[v].add(bc);
     });
@@ -6336,16 +6347,23 @@ function ListScreen({ uid, listId, listName, onBack }) {
     .map(v => v + ":" + Array.from(barcodesByVendor[v]).sort().join(","))
     .join("|");
 
+  // Only the newest request's answer is applied. Two fetches can overlap
+  // (an item added while the automatic gap fill also changes barcodes), and
+  // an older answer arriving last used to overwrite the newer one — leaving
+  // a just-matched item with no prices shown at all.
+  const priceRequestSeq = useRef(0);
   function fetchPrices() {
-    if (!barcodeKey || activeProfiles.length === 0) { setPriceMap({}); setPromoMap({}); return; }
+    const seq = ++priceRequestSeq.current;
+    if (!barcodeKey || activeProfiles.length === 0) { setPriceMap({}); setPromoMap({}); setPricesLoading(false); return; }
     setPricesLoading(true);
     const payload = {};
     Object.keys(barcodesByVendor).forEach(v => { payload[v] = Array.from(barcodesByVendor[v]); });
     fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
+      if (seq !== priceRequestSeq.current) return;
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
       setPricesLoading(false);
-    }).catch(() => { setPricesLoading(false); });
+    }).catch(() => { if (seq === priceRequestSeq.current) setPricesLoading(false); });
   }
 
   useEffect(() => { fetchPrices(); }, [barcodeKey, activeProfiles.length]);
@@ -6370,15 +6388,18 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [onlinePricesLoading, setOnlinePricesLoading] = useState(false);
   const onlineProfilesVisible = activeProfiles.filter(p => p.mode === "online" && hiddenVendorIds.indexOf(p.id) === -1);
   const wantsOnline = pricePreference !== "instoreOnly" && (effectivePriceView === "online" || showOptimizer);
-  const knownBarcodesKey = [...new Set((items || []).flatMap(it => Object.values(it.barcodes || {})))].sort().join(",");
+  const knownBarcodesKey = [...new Set((items || []).flatMap(it => Object.values(it.barcodes || {}).map(barcodeValue).filter(Boolean)))].sort().join(",");
 
+  const onlineRequestSeq = useRef(0);
   useEffect(() => {
     if (!wantsOnline || onlineProfilesVisible.length === 0 || !knownBarcodesKey) return;
+    const seq = ++onlineRequestSeq.current;
     const knownBarcodes = knownBarcodesKey.split(",");
     setOnlinePricesLoading(true);
     const payload = {};
     onlineProfilesVisible.forEach(p => { payload[p.vendor] = knownBarcodes; });
     fns.httpsCallable("getBasketPrices", { timeout: 180000 })({ barcodesByVendor: payload }).then(res => {
+      if (seq !== onlineRequestSeq.current) return;
       const prices = res.data.prices || {};
       const promoPrices = res.data.promoPrices || {};
       const overlay = {};
@@ -6386,7 +6407,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         onlineProfilesVisible.forEach(p => {
           const vendorPrices = prices[p.id];
           if (!vendorPrices) return;
-          Object.values(it.barcodes || {}).forEach(bc => {
+          Object.values(it.barcodes || {}).map(barcodeValue).filter(Boolean).forEach(bc => {
             // A key existing just means the server checked this barcode at
             // this vendor — it explicitly stores null for "checked, not
             // sold there", which must NOT count as an online match.
@@ -6400,7 +6421,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
       setOnlinePriceMap(prices);
       setOnlinePromoMap(promoPrices);
       setOnlinePricesLoading(false);
-    }).catch(() => { setOnlinePricesLoading(false); });
+    }).catch(() => { if (seq === onlineRequestSeq.current) setOnlinePricesLoading(false); });
     // eslint-disable-next-line
   }, [wantsOnline, knownBarcodesKey, JSON.stringify(onlineProfilesVisible.map(p => p.id))]);
 
@@ -6419,6 +6440,32 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }), [items, onlineOverlay]);
   const effectivePriceMap = useMemo(() => Object.assign({}, priceMap, onlinePriceMap), [priceMap, onlinePriceMap]);
   const effectivePromoMap = useMemo(() => Object.assign({}, promoMap, onlinePromoMap), [promoMap, onlinePromoMap]);
+
+  // Self-repair: v2.37-v2.46 could save a shared-cache entry object
+  // ({ barcode, name, matchedAt }) in place of a barcode string, which made
+  // every price lookup for the list fail. Rewritten to the plain barcode
+  // (keeping the product name) as soon as the list is opened.
+  useEffect(() => {
+    if (!items) return;
+    const broken = items.filter(it => Object.values(it.barcodes || {}).some(x => x && typeof x === "object"));
+    if (broken.length === 0) return;
+    const batch = db.batch();
+    broken.forEach(it => {
+      const upd = {};
+      Object.entries(it.barcodes).forEach(([v, x]) => {
+        if (!x || typeof x !== "object") return;
+        if (x.barcode) {
+          upd["barcodes." + v] = String(x.barcode);
+          if (x.name && !(it.matchedNames || {})[v]) upd["matchedNames." + v] = x.name;
+        } else {
+          upd["barcodes." + v] = firebase.firestore.FieldValue.delete();
+        }
+      });
+      batch.update(db.collection("lists").doc(listId).collection("items").doc(it.id), upd);
+    });
+    batch.commit().catch(() => {});
+    // eslint-disable-next-line
+  }, [items]);
 
   // Every chain the list shows right now was already searched when an item
   // is added, so each still-empty chain is recorded as "tried" on the item
@@ -6476,7 +6523,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         const r = results[(it.name || "").trim()] || {};
         const upd = {};
         const got = new Set();
-        vendors.forEach(v => { if (r.barcodes && r.barcodes[v]) { upd["barcodes." + v] = r.barcodes[v]; got.add(v); } });
+        vendors.forEach(v => { const bc = barcodeValue(r.barcodes && r.barcodes[v]); if (bc) { upd["barcodes." + v] = bc; got.add(v); } });
         const picks = autoPickByVendor(r.candidates, vendors.filter(v => !got.has(v)));
         Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; got.add(v); });
         vendors.forEach(v => { upd["gapTried." + v] = true; });
@@ -6520,14 +6567,22 @@ function ListScreen({ uid, listId, listName, onBack }) {
       srcSnap.docs.forEach(d => {
         const src = d.data();
         const ref = itemsCol.doc();
+        const cleanBarcodes = {};
+        const cleanNames = Object.assign({}, src.matchedNames || {});
+        Object.entries(src.barcodes || {}).forEach(([v, raw]) => {
+          const bc = barcodeValue(raw);
+          if (!bc) return;
+          cleanBarcodes[v] = bc;
+          if (raw && typeof raw === "object" && raw.name && !cleanNames[v]) cleanNames[v] = raw.name;
+        });
         batch.set(ref, {
           name: src.name, category: src.category, categoryEmoji: src.categoryEmoji,
           quantity: src.quantity, unit: src.unit, note: src.note || "",
-          barcodes: Object.assign({}, src.barcodes || {}),
-          matchedNames: Object.assign({}, src.matchedNames || {}),
+          barcodes: cleanBarcodes,
+          matchedNames: cleanNames,
           addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
-        copiedRefs.push({ ref, name: src.name, barcodes: Object.assign({}, src.barcodes || {}), matchedNames: Object.assign({}, src.matchedNames || {}) });
+        copiedRefs.push({ ref, name: src.name, barcodes: Object.assign({}, cleanBarcodes), matchedNames: Object.assign({}, cleanNames) });
       });
       await batch.commit();
       db.collection("users").doc(uid).set({ starterListUsed: true }, { merge: true });
@@ -6559,8 +6614,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
             // a score high enough to mean "same wording", never an
             // approximate/fuzzy hit — a wrong silent price is worse than a
             // blank one.
-            if (r.barcodes && r.barcodes[v]) {
-              it.barcodes[v] = r.barcodes[v];
+            if (barcodeValue(r.barcodes && r.barcodes[v])) {
+              it.barcodes[v] = barcodeValue(r.barcodes[v]);
               changed = true;
               return;
             }
@@ -6632,6 +6687,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }
 
   const groups = groupByCategory(enrichedItems, categories);
+  // The table shows the exact same order as the list (category, then name)
+  // — it used to show raw insertion order, so a new item landed at the
+  // bottom instead of in its place among the others.
+  const sortedItems = groups.flatMap(g => g.items);
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7] flex flex-col">
@@ -6737,7 +6796,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
           </div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
-          <PriceComparisonTable items={enrichedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem}
+          <PriceComparisonTable items={sortedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem}
             onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })}
             onShowMissing={(it, p) => setMissingPick({ item: it, profile: p })} />
         ) : (
