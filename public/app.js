@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.56";
+const VERSION = "v2.57";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1019,7 +1019,7 @@ function MaintenanceScreen({ onSignOut }) {
 // ── PRICE COMPARISON TABLE ────────────────────────────────────────────────────
 // One row per item, one column per active vendor branch — lets you compare
 // prices at a glance instead of reading them off each item's own chips.
-function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem, onShowVendorPick, onShowMissing }) {
+function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem, onShowVendorPick, onShowMissing, isNewItem }) {
   const totals = {};
   activeProfiles.forEach(p => { totals[p.id] = { sum: 0, count: 0 }; });
   items.forEach(item => {
@@ -1055,7 +1055,9 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
             const qty = item.quantity || 1;
             return (
               <tr key={item.id} className="cursor-pointer active:bg-[#FBF4E7]" onClick={() => onEditItem(item)}>
-                <td className="sticky right-0 bg-white z-10 px-3 py-2 border-b border-[#F0E9D4] text-right text-[#B8462F] underline decoration-[#E7A796] underline-offset-2">
+                <td className={"sticky right-0 z-10 px-3 py-2 border-b border-[#F0E9D4] text-right text-[#B8462F] underline decoration-[#E7A796] underline-offset-2 " +
+                  (isNewItem && isNewItem(item) ? "bg-[#FFF8E6] outline-2 outline-dashed outline-[#E3A939] -outline-offset-2" : "bg-white")}>
+                  {isNewItem && isNewItem(item) && <span className="no-underline text-[10px] font-bold text-[#8A5A15] ml-1">✦</span>}
                   {itemHasMixedVendorMatches(item, activeProfiles.map(p => p.vendor)) && (
                     <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
                   )}
@@ -1289,7 +1291,7 @@ function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, sh
   );
 }
 
-function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote, onShowVendorPick, onShowMissing }) {
+function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote, onShowVendorPick, onShowMissing, isNew }) {
   const [editingNote, setEditingNote] = useState(false);
   const [noteVal, setNoteVal] = useState(item.note || "");
 
@@ -1310,7 +1312,10 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
     : [];
 
   return (
-    <div className="py-2.5 border-b-2 border-dotted border-[#E0D4B4]">
+    <div className={isNew
+      ? "my-1.5 px-2.5 py-2 border-2 border-dashed border-[#E3A939] rounded-xl bg-[#FFF8E6]"
+      : "py-2.5 border-b-2 border-dotted border-[#E0D4B4]"}>
+      {isNew && <span className="inline-block text-[10px] font-bold text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-full px-1.5 mb-1">✦ חדש</span>}
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0" onClick={() => onEdit(item)}>
           <span className="text-[15px] cursor-pointer text-[#B8462F] underline decoration-[#E7A796] underline-offset-2">
@@ -7256,6 +7261,29 @@ function ListScreen({ uid, listId, listName, onBack }) {
   // חדשה" creates the list up front, so every open-and-leave used to leave
   // an empty list cluttering the home screen. Runs on unmount, so it covers
   // any way of leaving. The admin's starter template is never touched.
+  // Items added since this list was last opened on this device get a dashed
+  // "✦ חדש" frame — mainly for items added from outside the list (the home
+  // search, another device), so you can see what arrived and where it
+  // landed. The "last seen" mark is set on entering and again on leaving,
+  // so items added during a visit stay marked for that visit only. A list
+  // never opened here before marks nothing (everything would be "new").
+  const seenKey = "sz_seen_" + listId;
+  const prevSeenRef = useRef(null);
+  if (prevSeenRef.current === null) {
+    try { prevSeenRef.current = Number(localStorage.getItem(seenKey)) || 0; } catch (e) { prevSeenRef.current = 0; }
+  }
+  useEffect(() => {
+    const mark = () => { try { localStorage.setItem(seenKey, String(Date.now())); } catch (e) {} };
+    mark();
+    return mark;
+    // eslint-disable-next-line
+  }, [listId]);
+  function isNewItem(it) {
+    if (!prevSeenRef.current) return false;
+    const t = it.addedAt && it.addedAt.toMillis ? it.addedAt.toMillis() : null;
+    return t === null || t > prevSeenRef.current;
+  }
+
   // The home screen's "N פריטים" comes from itemCount on the list doc (free
   // — the home screen already loads that doc), kept right here whenever the
   // list is open, so any drift from other add/remove paths self-corrects.
@@ -7393,7 +7421,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         {items !== null && items.length > 0 && viewMode === "table" ? (
           <PriceComparisonTable items={sortedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem}
             onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })}
-            onShowMissing={(it, p) => setMissingPick({ item: it, profile: p })} />
+            onShowMissing={(it, p) => setMissingPick({ item: it, profile: p })} isNewItem={isNewItem} />
         ) : (
           groups.map(group => (
             <div key={group.label} className="mb-5">
@@ -7411,6 +7439,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
                     onDelete={setConfirmDeleteItem} onEdit={setEditItem}
                     onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })}
                     onShowMissing={(it, p) => setMissingPick({ item: it, profile: p })}
+                    isNew={isNewItem(item)}
                     onUpdateNote={note => updateNote(item, note)} />
                 ))}
               </div>
