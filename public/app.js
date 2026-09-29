@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.43";
+const VERSION = "v2.44";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1009,7 +1009,7 @@ function MaintenanceScreen({ onSignOut }) {
 // ── PRICE COMPARISON TABLE ────────────────────────────────────────────────────
 // One row per item, one column per active vendor branch — lets you compare
 // prices at a glance instead of reading them off each item's own chips.
-function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem, onShowVendorPick }) {
+function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem, onShowVendorPick, onShowMissing }) {
   const totals = {};
   activeProfiles.forEach(p => { totals[p.id] = { sum: 0, count: 0 }; });
   items.forEach(item => {
@@ -1064,7 +1064,11 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                   const cellClass = !bc || !fetched ? "text-[#DECBA1]" : isCheapest ? "text-[#2E7D4F] font-bold" : "text-[#5B5749]";
                   return (
                     <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}
-                      onClick={ev => { if (!onShowVendorPick || !byId[p.id]) return; ev.stopPropagation(); onShowVendorPick(item, byId[p.id]); }}>
+                      onClick={ev => {
+                        if (!bc && onShowMissing && Object.keys(item.barcodes || {}).length > 0) { ev.stopPropagation(); onShowMissing(item, p); return; }
+                        if (!onShowVendorPick || !byId[p.id]) return;
+                        ev.stopPropagation(); onShowVendorPick(item, byId[p.id]);
+                      }}>
                       {!bc ? "—" : !fetched ? "…" : price != null ? (
                         <div className="leading-tight">
                           {promoActive ? (
@@ -1106,21 +1110,25 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
 // for at that vendor. With "pick the cheapest for me" each chain can hold a
 // different product under one shared item name, so the list alone doesn't
 // say what's being compared.
-function VendorPickModal({ item, entry, activeProfiles, onEdit, onClose }) {
+function VendorPickModal({ item, entry, activeProfiles, onEdit, onChangeHere, onClose }) {
   const p = entry.profile;
   const bc = itemVendorBarcode(item, p.vendor);
   const matchedName = itemVendorMatchedName(item, p.vendor);
   const qty = item.quantity || 1;
   const promo = entry.promo;
   const mixed = itemHasMixedVendorMatches(item, (activeProfiles || []).map(x => x.vendor));
+  const label = profileLabel(p, activeProfiles);
   return (
     <Modal onClose={onClose} footer={
-      <div className="flex gap-2">
-        <button onClick={() => { onClose(); onEdit(item); }} className="flex-1 bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] py-3 rounded-2xl font-semibold text-sm">שינוי המוצר</button>
-        <button onClick={onClose} className="flex-1 bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">סגירה</button>
+      <div>
+        <div className="flex gap-2">
+          <button onClick={() => { onClose(); onChangeHere(item, p); }} className="flex-1 bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] py-3 rounded-2xl font-semibold text-sm">שינוי המוצר ב{label}</button>
+          <button onClick={onClose} className="flex-1 bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">סגירה</button>
+        </div>
+        <button onClick={() => { onClose(); onEdit(item); }} className="w-full text-center text-xs text-[#8A7F66] underline mt-2">עריכת הפריט כולו (שם, כמות, כל הרשתות)</button>
       </div>
     }>
-      <h3 className="text-lg text-center mb-0.5" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>{profileLabel(p, activeProfiles)}</h3>
+      <h3 className="text-lg text-center mb-0.5" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>{label}</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">מה נבחר עבור "{itemDisplayName(item)}"</p>
       <div className="bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
         <div>
@@ -1150,14 +1158,128 @@ function VendorPickModal({ item, entry, activeProfiles, onEdit, onClose }) {
       </div>
       {mixed && (
         <p className="text-[11px] text-[#8A7F66] mt-3 leading-relaxed">
-          בכל רשת נבחר מוצר קצת אחר (למשל מותג או גודל אריזה שונים) — כדאי לבדוק כשמשווים. "שינוי המוצר" מאפשר לבחור אחר.
+          בכל רשת נבחר מוצר קצת אחר (למשל מותג או גודל אריזה שונים) — כדאי לבדוק כשמשווים. "שינוי המוצר" מחליף רק ברשת הזו.
         </p>
       )}
     </Modal>
   );
 }
 
-function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote, onShowVendorPick }) {
+// A chain where this item has no product yet ("—"): searches just that one
+// chain (a single cheap search over only its catalog) and says why nothing
+// was picked — nothing by that name at all, only approximate matches
+// (which are never auto-picked), or real matches that simply weren't
+// chosen yet (e.g. the item was added before this chain was switched on).
+// replace: the same picker reached from "שינוי המוצר" on a chain that
+// already has a product — swaps it at that one chain only; every other
+// chain on the item keeps its own pick untouched.
+function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, showToast, replace }) {
+  const v = profile.vendor;
+  const label = profileLabel(profile, activeProfiles);
+  const currentBarcode = itemVendorBarcode(item, v);
+  const [query, setQuery] = useState(item.name || "");
+  const [lastQuery, setLastQuery] = useState("");
+  const [list, setList] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  function search(q) {
+    const qq = (q || "").trim();
+    if (!qq || loading) return;
+    setLoading(true);
+    setLastQuery(qq);
+    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: [qq], force: true, profileIds: [profile.id], vendors: [v] }).then(res => {
+      const r = ((res.data && res.data.results) || {})[qq];
+      setList(((r && r.candidates) || []).filter(c => c.prices && c.prices[v] != null));
+      setLoading(false);
+    }, err => {
+      setLoading(false);
+      setList([]);
+      showToast(err && err.code === "functions/resource-exhausted" ? err.message : "שגיאה בחיפוש");
+    });
+  }
+  useEffect(() => { search(item.name); }, []);
+
+  // Dotted field paths — only this one chain's entry changes, nothing else
+  // on the item (including any not-yet-saved online overlay) is rewritten.
+  function choose(c) {
+    if (saving) return;
+    setSaving(true);
+    db.collection("lists").doc(listId).collection("items").doc(item.id)
+      .update({ ["barcodes." + v]: c.barcode, ["matchedNames." + v]: c.name }).then(() => {
+        fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: c.barcode, matchedName: c.name, vendors: [v] }).catch(() => {});
+        showToast(`נבחר ב${label}: ${c.name}`);
+        onClose();
+      }, () => { setSaving(false); showToast("שגיאה בשמירה"); });
+  }
+
+  const confident = (list || []).filter(c => !c.fuzzyLayer && c.score >= 800);
+  const auto = list ? autoPickByVendor(list, [v])[v] : null;
+  const effPrice = c => {
+    const promo = c.promoPrices && c.promoPrices[v];
+    return promo && promo.price < c.prices[v] && (promo.minQty || 1) <= 1 ? promo.price : c.prices[v];
+  };
+  const reason = list === null || loading ? null
+    : list.length === 0 ? `ב${label} לא נמצא מוצר בשם "${lastQuery}". נסו מילה אחרת או קצרה יותר.`
+    : replace ? null
+    : confident.length === 0 ? `ב${label} נמצאו רק מוצרים דומים ולא התאמה ודאית, ולכן לא נבחר אוטומטית. אם אחד מהם מתאים, בחרו אותו.`
+    : `ב${label} יש מוצרים מתאימים, פשוט עוד לא נבחר אחד (למשל כי הפריט נוסף לפני שהרשת הופעלה).`;
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="text-lg text-center mb-0.5" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>
+        {replace ? `שינוי המוצר ב${label}` : `לא נבחר מוצר ב${label}`}
+      </h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-3">
+        {replace ? `רק ב${label} — שאר הרשתות בפריט "${itemDisplayName(item)}" נשארות כמו שהן` : `עבור "${itemDisplayName(item)}"`}
+      </p>
+      {replace && (
+        <div className="text-xs bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2 mb-3 text-[#3F5A38]">
+          כרגע: <b>{itemVendorMatchedName(item, v) || itemDisplayName(item)}</b>
+        </div>
+      )}
+      <form onSubmit={e => { e.preventDefault(); search(query); }} className="flex gap-2 mb-3">
+        <input value={query} onChange={e => setQuery(e.target.value)}
+          className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
+        <button type="submit" disabled={!query.trim() || loading}
+          className="px-4 rounded-xl bg-[#2E4A3B] text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+          {loading ? <Spinner /> : "חיפוש"}
+        </button>
+      </form>
+      {loading && <div className="sz-progress-track mb-3"><div className="sz-progress-bar" /></div>}
+      {reason && (
+        <p className={"text-sm rounded-xl px-3 py-2.5 mb-3 leading-relaxed " + (list.length === 0 ? "bg-[#FBEAE5] text-[#8A3B26]" : "bg-[#F7F2E4] text-[#5B5749]")}>{reason}</p>
+      )}
+      {!loading && auto && auto.barcode !== currentBarcode && (
+        <button onClick={() => choose(auto)} disabled={saving}
+          className="w-full mb-2 bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-xl py-2.5 px-3 text-sm font-bold disabled:opacity-40">
+          ✨ בחרו לי את הזול: {auto.name} · ₪{effPrice(auto).toFixed(2)}
+        </button>
+      )}
+      {!loading && list && list.length > 0 && (
+        <div className="space-y-1.5">
+          {list.slice(0, 8).map(c => (
+            <button key={c.barcode} onClick={() => c.barcode !== currentBarcode && choose(c)} disabled={saving}
+              className={"w-full text-right border rounded-xl px-3 py-2.5 flex items-center justify-between gap-2 disabled:opacity-40 " +
+                (c.barcode === currentBarcode ? "bg-[#EEF5EC] border-[#B9D9B0] cursor-default" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
+              <span className="min-w-0">
+                <span className="text-sm font-medium text-[#2B2418] flex items-center gap-1.5 flex-wrap">
+                  {c.name}
+                  {c.barcode === currentBarcode && <span className="text-[9px] font-bold text-[#256A3F] bg-white border border-[#B9D9B0] rounded-full px-1.5 py-0.5">נבחר כרגע</span>}
+                  {c.fuzzyLayer && <span className="text-[9px] font-bold text-[#8A5A15] bg-[#FBF0D9] border border-[#E9D8A6] rounded-full px-1.5 py-0.5">התאמה מקורבת</span>}
+                </span>
+                {c.unit && <span className="text-[11px] text-[#A79A7C]">{c.unit}</span>}
+              </span>
+              <span className="text-sm font-bold text-[#2E4A3B] flex-shrink-0">₪{effPrice(c).toFixed(2)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote, onShowVendorPick, onShowMissing }) {
   const [editingNote, setEditingNote] = useState(false);
   const [noteVal, setNoteVal] = useState(item.note || "");
 
@@ -1170,6 +1292,12 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
   const qty = [qtyCount, qtyUnit].filter(Boolean).join(" ");
 
   const pricedEntries = itemProfilePrices(item, activeProfiles, priceMap || {}, promoMap || {});
+  // Only for items the user did match somewhere — an item added on purpose
+  // without price comparison shouldn't sprout a "—" for every chain.
+  const hasAnyBarcode = Object.keys(item.barcodes || {}).length > 0;
+  const missingProfiles = hasAnyBarcode && onShowMissing
+    ? (activeProfiles || []).filter(p => !itemVendorBarcode(item, p.vendor))
+    : [];
 
   return (
     <div className="py-2.5 border-b-2 border-dotted border-[#E0D4B4]">
@@ -1190,7 +1318,7 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
               <span>💬</span><span>הוסף הערה</span>
             </button>
           ) : null}
-          {pricedEntries.length > 0 && (
+          {(pricedEntries.length > 0 || missingProfiles.length > 0) && (
             <div className="flex items-center gap-1.5 flex-wrap mt-1">
               {pricedEntries.map(e => {
                 const promoActive = !!(e.promo && e.promo.active);
@@ -1215,6 +1343,13 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
                   </span>
                 );
               })}
+              {missingProfiles.map(p => (
+                <span key={p.id} role="button"
+                  onClick={ev => { ev.stopPropagation(); onShowMissing(item, p); }}
+                  className="text-[11px] font-semibold px-1.5 py-0.5 rounded leading-tight cursor-pointer bg-[#F3ECD9] text-[#A79A7C] border border-dashed border-[#DECBA1]">
+                  {profileLabel(p, activeProfiles)}: —
+                </span>
+              ))}
             </div>
           )}
         </div>
@@ -5984,6 +6119,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showPasteList, setShowPasteList] = useState(false);
   const [showAddDemo, setShowAddDemo] = useState(false);
   const [vendorPick, setVendorPick] = useState(null); // { item, entry } | null
+  const [missingPick, setMissingPick] = useState(null); // { item, profile } | null
+  const [gapFilling, setGapFilling] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -6165,6 +6302,56 @@ function ListScreen({ uid, listId, listName, onBack }) {
       addedBy: uid,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     })).then(() => done());
+  }
+
+  // Gaps = an item the user did match somewhere, but not at some chain this
+  // list currently shows (typically: added before that chain was switched
+  // on, or nothing confident was found). Filled with ONE search for every
+  // gapped name together — same cost as a single search, not one per item.
+  const gapVendorIds = [...new Set(visibleProfiles.map(p => p.vendor))];
+  const gapItems = (items || []).filter(it => Object.keys(it.barcodes || {}).length > 0 && gapVendorIds.some(v => !(it.barcodes || {})[v]));
+  const gapSignature = gapItems.map(it => it.id + ":" + gapVendorIds.filter(v => !(it.barcodes || {})[v]).join(",")).sort().join("|");
+  const gapStorageKey = "sz_gapfill_" + listId;
+  const [gapDismissed, setGapDismissed] = useState(() => { try { return localStorage.getItem(gapStorageKey) || ""; } catch (e) { return ""; } });
+  // Hidden once handled (filled or dismissed) until the set of gaps changes
+  // — otherwise gaps no chain can fill would nag on every visit.
+  const showGapBanner = gapItems.length > 0 && gapDismissed !== gapSignature;
+  function dismissGaps(sig) {
+    try { localStorage.setItem(gapStorageKey, sig); } catch (e) {}
+    setGapDismissed(sig);
+  }
+  async function fillGaps() {
+    if (gapFilling || gapItems.length === 0) return;
+    setGapFilling(true);
+    try {
+      const names = [...new Set(gapItems.map(it => (it.name || "").trim()).filter(Boolean))];
+      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, profileIds: visibleProfiles.map(p => p.id) });
+      const results = (res.data && res.data.results) || {};
+      const batch = db.batch();
+      let filled = 0;
+      const remaining = [];
+      gapItems.forEach(it => {
+        const r = results[(it.name || "").trim()] || {};
+        const missing = gapVendorIds.filter(v => !(it.barcodes || {})[v]);
+        const upd = {};
+        const got = new Set();
+        missing.forEach(v => { if (r.barcodes && r.barcodes[v]) { upd["barcodes." + v] = r.barcodes[v]; got.add(v); } });
+        const picks = autoPickByVendor(r.candidates, missing.filter(v => !got.has(v)));
+        Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; got.add(v); });
+        filled += got.size;
+        const left = missing.filter(v => !got.has(v));
+        if (left.length > 0) remaining.push(it.id + ":" + left.join(","));
+        if (got.size > 0) batch.update(db.collection("lists").doc(listId).collection("items").doc(it.id), upd);
+      });
+      if (filled > 0) await batch.commit();
+      dismissGaps(remaining.sort().join("|"));
+      setToast(remaining.length === 0
+        ? `הושלמו ${filled} התאמות — לכל הפריטים יש מוצר בכל הרשתות`
+        : `הושלמו ${filled} התאמות. ב-${remaining.length} פריטים עדיין חסר — לחצו על "—" כדי לראות למה ולבחור ידנית`);
+    } catch (e) {
+      setToast(e && e.code === "functions/resource-exhausted" ? e.message : "שגיאה בהשלמה — נסו שוב");
+    }
+    setGapFilling(false);
   }
 
   // Copies an admin-curated list (appConfig/limits.defaultListId) into this
@@ -6356,6 +6543,19 @@ function ListScreen({ uid, listId, listName, onBack }) {
       </div>
 
       <div className="flex-1 px-3 pt-3 pb-40 print-items-area">
+        {showGapBanner && (
+          <div className="no-print mb-2 bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2 flex items-center gap-2">
+            <p className="flex-1 text-xs text-[#8A5A15] leading-snug">
+              ל-{gapItems.length} פריטים חסר מוצר ברשת אחת או יותר
+            </p>
+            <button onClick={fillGaps} disabled={gapFilling}
+              className="text-xs font-bold bg-[#2E4A3B] text-[#FBF4E7] rounded-lg px-3 py-1.5 flex-shrink-0 disabled:opacity-50">
+              {gapFilling ? "משלים..." : "השלמה אוטומטית"}
+            </button>
+            <button onClick={() => dismissGaps(gapSignature)} disabled={gapFilling}
+              className="text-[#8A7F66] text-lg leading-none flex-shrink-0" aria-label="הסתרה">×</button>
+          </div>
+        )}
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
         {items !== null && items.length === 0 && (
           <div className="text-center py-6 px-4">
@@ -6396,7 +6596,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
           <PriceComparisonTable items={enrichedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem}
-            onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })} />
+            onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })}
+            onShowMissing={(it, p) => setMissingPick({ item: it, profile: p })} />
         ) : (
           groups.map(group => (
             <div key={group.label} className="mb-5">
@@ -6413,6 +6614,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
                   <ItemRow key={item.id} item={item} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap}
                     onDelete={setConfirmDeleteItem} onEdit={setEditItem}
                     onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })}
+                    onShowMissing={(it, p) => setMissingPick({ item: it, profile: p })}
                     onUpdateNote={note => updateNote(item, note)} />
                 ))}
               </div>
@@ -6486,7 +6688,12 @@ function ListScreen({ uid, listId, listName, onBack }) {
       {showAddDemo && <AddItemsDemoModal onClose={() => setShowAddDemo(false)} />}
       {vendorPick && (
         <VendorPickModal item={vendorPick.item} entry={vendorPick.entry} activeProfiles={visibleProfiles}
-          onEdit={setEditItem} onClose={() => setVendorPick(null)} />
+          onEdit={setEditItem} onChangeHere={(it, p) => setMissingPick({ item: it, profile: p, replace: true })}
+          onClose={() => setVendorPick(null)} />
+      )}
+      {missingPick && (
+        <MissingVendorModal item={missingPick.item} profile={missingPick.profile} activeProfiles={visibleProfiles}
+          listId={listId} replace={!!missingPick.replace} onClose={() => setMissingPick(null)} showToast={setToast} />
       )}
       {showAdd && (
         <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
