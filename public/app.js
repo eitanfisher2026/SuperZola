@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.55";
+const VERSION = "v2.56";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -451,6 +451,7 @@ const DEFAULT_DAILY_CAPS = {
   createFeedbackThread: 5,
   confirmItemBarcode: 300,
   getVendorBranches: 100,
+  parseShoppingList: 60,
 };
 function useAppLimits() {
   const [limits, setLimits] = useState(Object.assign(
@@ -521,6 +522,7 @@ const FUNCTION_LABELS = {
   createFeedbackThread: "פתיחת שיחת משוב",
   confirmItemBarcode: "אישור התאמת ברקוד",
   getVendorBranches: "בדיקת סניפי רשת",
+  parseShoppingList: "ניקוי רשימה מוקלטת (AI)",
 };
 function useCostEstimates() {
   const [estimates, setEstimates] = useState(DEFAULT_COST_ESTIMATES);
@@ -6437,6 +6439,33 @@ function MicIcon({ size }) {
     </svg>
   );
 }
+// Rule-based cleanup for one line — used for typed lists, and for
+// dictated ones whenever the AI extraction (parseShoppingList) isn't
+// available. Drops filler/connector words, the leading ו' of "וחלב", and
+// turns a spoken leading quantity into a number ("שתי חבילות חלב" -> חלב x2).
+const FILLER_WORDS = new Set(["אמ", "אממ", "אמממ", "אה", "אהה", "אההה", "אום", "כאילו", "גם", "וגם", "עוד", "ועוד", "צריך", "צריכה", "צריכים",
+  "אני", "תוסיף", "תוסיפי", "להוסיף", "בבקשה", "רגע", "ואז", "אז", "טוב", "יאללה", "זהו", "וזהו", "נגיד", "איזה", "קצת", "משהו", "הכל"]);
+const KEEP_LEADING_VAV = new Set(["וופל", "ופל", "וניל", "ויסקי", "וודקה", "וואפל", "ורדים"]);
+const NUMBER_WORDS = { "אחד": 1, "אחת": 1, "שני": 2, "שתי": 2, "שניים": 2, "שתיים": 2, "שלוש": 3, "שלושה": 3, "ארבע": 4, "ארבעה": 4, "חמש": 5, "חמישה": 5,
+  "שש": 6, "שישה": 6, "שבע": 7, "שבעה": 7, "שמונה": 8, "תשע": 9, "תשעה": 9, "עשר": 10, "עשרה": 10 };
+const PACK_WORDS = new Set(["חבילה", "חבילות", "יחידה", "יחידות", "קופסה", "קופסאות", "מארז", "מארזים"]);
+function cleanItemLine(line) {
+  let words = line.trim().split(/\s+/).filter(Boolean)
+    .map(w => (w.length > 2 && w[0] === "ו" && !KEEP_LEADING_VAV.has(w)) ? w.slice(1) : w)
+    .filter(w => !FILLER_WORDS.has(w));
+  let qty = 1;
+  if (words.length > 1) {
+    const n = /^\d+(\.\d+)?$/.test(words[0]) ? parseFloat(words[0]) : NUMBER_WORDS[words[0]];
+    if (n && n > 0 && n < 100) {
+      qty = n;
+      words = words.slice(1);
+      if (words.length > 1 && PACK_WORDS.has(words[0])) words = words.slice(1);
+    }
+  }
+  const text = words.join(" ").trim();
+  return text.length >= 2 ? { text, qty } : null;
+}
+
 function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAdded, showToast }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState("");
@@ -6446,51 +6475,77 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
   // Nothing is searched until the list is confirmed: people pause mid-item
   // while thinking, and a split like "עגבניות" / "שרי" is far cheaper to
   // fix here with a tap than after it became two wrong items.
-  const [stage, setStage] = useState("input");
+  const [stage, setStage] = useState("input"); // "input" | "parsing" | "review"
   const [rows, setRows] = useState([]);
+  const [progress, setProgress] = useState(null); // { matched, categorized, total } while adding
   const [editingRow, setEditingRow] = useState(null);
   const recRef = useRef(null);
   const wantListeningRef = useRef(false);
   const silentEndsRef = useRef(0);
+  const usedMicRef = useRef(false);
   const textareaRef = useRef(null);
   const parseLines = s => s.split(/[\n,،]+/).map(x => x.trim()).filter(x => x.length >= 2);
   const inputCount = parseLines(text).length;
-  const allNames = [...new Set(rows.map(r => r.trim()).filter(r => r.length >= 2))];
+  // rows: [{ text, qty }]. Duplicates by name collapse into the first one.
+  const qtyByName = {};
+  rows.forEach(r => { const t = r.text.trim(); if (t.length >= 2 && !(t in qtyByName)) qtyByName[t] = r.qty || 1; });
+  const allNames = Object.keys(qtyByName);
   const names = allNames.slice(0, PASTE_LIST_MAX);
   const busy = !!status;
 
   useEffect(() => () => { wantListeningRef.current = false; if (recRef.current) recRef.current.abort(); }, []);
 
-  function goReview() {
+  // A dictated list goes through one AI extraction (drops filler words,
+  // splits items said in one breath, reads spoken quantities); a typed
+  // one, or any AI trouble, uses the rule-based cleanup instead. Either
+  // way the result lands on the review screen, where it can be fixed.
+  async function goReview() {
     if (listening) stopListening();
-    setRows(parseLines(text));
+    const lines = parseLines(text);
     setEditingRow(null);
+    if (usedMicRef.current) {
+      setStage("parsing");
+      try {
+        const res = await fns.httpsCallable("parseShoppingList", { timeout: 30000 })({ text: lines.join("\n") });
+        const items = res.data && res.data.items;
+        if (Array.isArray(items) && items.length > 0) {
+          setRows(items.map(it => ({ text: it.name, qty: it.quantity || 1 })));
+          setStage("review");
+          return;
+        }
+      } catch (e) {}
+    }
+    setRows(lines.map(cleanItemLine).filter(Boolean));
     setStage("review");
   }
   function backToInput() {
-    setText(rows.filter(r => r.trim()).join("\n") + (rows.length ? "\n" : ""));
+    setText(rows.filter(r => r.text.trim()).map(r => (r.qty > 1 ? r.qty + " " : "") + r.text).join("\n") + (rows.length ? "\n" : ""));
+    usedMicRef.current = false;
     setEditingRow(null);
     setStage("input");
   }
   function commitRow(i, value) {
     const v = value.trim();
-    setRows(prev => v ? prev.map((r, n) => n === i ? v : r) : prev.filter((_, n) => n !== i));
+    setRows(prev => v ? prev.map((r, n) => n === i ? Object.assign({}, r, { text: v }) : r) : prev.filter((_, n) => n !== i));
     setEditingRow(null);
   }
   function mergeUp(i) {
-    setRows(prev => prev.slice(0, i - 1).concat([prev[i - 1] + " " + prev[i]], prev.slice(i + 1)));
+    setRows(prev => prev.slice(0, i - 1).concat([{ text: prev[i - 1].text + " " + prev[i].text, qty: prev[i - 1].qty }], prev.slice(i + 1)));
     setEditingRow(null);
   }
   function splitRow(i) {
-    setRows(prev => prev.slice(0, i).concat(prev[i].trim().split(/\s+/), prev.slice(i + 1)));
+    setRows(prev => prev.slice(0, i).concat(prev[i].text.trim().split(/\s+/).map((w, n) => ({ text: w, qty: n === 0 ? prev[i].qty : 1 })), prev.slice(i + 1)));
     setEditingRow(null);
   }
   function removeRow(i) {
     setRows(prev => prev.filter((_, n) => n !== i));
     setEditingRow(null);
   }
+  function stepQty(i, delta) {
+    setRows(prev => prev.map((r, n) => n === i ? Object.assign({}, r, { qty: Math.max(1, Math.min(99, (r.qty || 1) + delta)) }) : r));
+  }
   function addRow() {
-    setRows(prev => prev.concat([""]));
+    setRows(prev => prev.concat([{ text: "", qty: 1 }]));
     setEditingRow(rows.length);
   }
 
@@ -6520,7 +6575,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
       let partial = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) addSpoken(r[0].transcript);
+        if (r.isFinal) { usedMicRef.current = true; addSpoken(r[0].transcript); }
         else partial += r[0].transcript;
       }
       setInterim(partial);
@@ -6561,23 +6616,41 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
     const vendorIds = [...new Set(profiles.map(p => p.vendor))];
     const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
     try {
-      let results = {};
-      if (profiles.length > 0) {
-        setStatus(`מחפש ${names.length} פריטים בכל הרשתות...`);
-        const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, profileIds: profiles.map(p => p.id) });
-        results = (res.data || {}).results || {};
-      }
-      setStatus("משייך לקטגוריות...");
+      // Matching goes out in small batches so progress is real, not a
+      // spinner: the server keeps each chain's catalog in memory between
+      // batches, so batching doesn't re-read catalogs. Categorizing runs
+      // alongside it (independent work), which also shortens the wait.
+      const total = names.length;
+      let matched = profiles.length > 0 ? 0 : total;
+      let categorized = 0;
+      const report = () => setProgress({ matched, categorized, total });
+      setStatus("working");
+      report();
+      const results = {};
+      const matching = (async () => {
+        if (profiles.length === 0) return;
+        const BATCH = 6;
+        for (let i = 0; i < total; i += BATCH) {
+          const chunk = names.slice(i, i + BATCH);
+          const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: chunk, profileIds: profiles.map(p => p.id) });
+          Object.assign(results, (res.data || {}).results || {});
+          matched += chunk.length;
+          report();
+        }
+      })();
       const cats = {};
-      await runLimited(names, 4, async name => {
+      const categorizing = runLimited(names, 4, async name => {
         try {
           const r = await fns.httpsCallable("categorizeItemName")({ name, categories: categories.map(c => ({ label: c.label })) });
           const label = r.data && r.data.category;
           const cat = label && categories.find(c => c.label === label);
           if (cat) cats[name] = cat;
         } catch (e) {}
+        categorized++;
+        report();
       });
-      setStatus("מוסיף לרשימה...");
+      await Promise.all([matching, categorizing]);
+      setStatus("saving");
       const col = db.collection("lists").doc(listId).collection("items");
       const batch = db.batch();
       let partial = 0;
@@ -6595,7 +6668,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
         const gapTried = {};
         vendorIds.forEach(v => { if (!barcodes[v]) gapTried[v] = true; });
         batch.set(col.doc(), {
-          name, category: cat.label, categoryEmoji: cat.emoji, quantity: 1, unit: "יחידות", note: "",
+          name, category: cat.label, categoryEmoji: cat.emoji, quantity: qtyByName[name] || 1, unit: "יחידות", note: "",
           barcodes, matchedNames, gapTried, addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
       });
@@ -6618,31 +6691,43 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
       <div>
         <button onClick={submit} disabled={busy || names.length === 0}
           className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-          {busy ? status : `אישור והוספת ${names.length} פריטים`}
+          {busy ? (status === "saving" ? "שומר ברשימה..." : "מוסיף את הפריטים...") : `אישור והוספת ${names.length} פריטים`}
         </button>
         {!busy && <button onClick={backToInput} className="w-full text-center text-sm text-[#8A7F66] mt-2">‹ חזרה להקלטה / להקלדה</button>}
       </div>
     }>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>זו הרשימה? {names.length} פריטים</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-3 leading-relaxed">
-        הקישו על פריט כדי לתקן. פריט שנחתך באמצע? "חיבור ↑" מחבר אותו לשורה שמעליו.
+        הקישו על פריט כדי לתקן את השם או הכמות. פריט שנחתך באמצע? "חיבור ↑" מחבר אותו לשורה שמעליו.
       </p>
       <div className="space-y-1.5">
         {rows.map((r, i) => (
           <div key={i} className="flex items-center gap-1.5 bg-white border border-[#E0D4B4] rounded-xl px-2 py-1.5">
             <span className="text-[11px] text-[#A79A7C] w-5 text-center flex-shrink-0">{i + 1}</span>
             {editingRow === i ? (
-              <input autoFocus defaultValue={r} disabled={busy}
-                onBlur={e => commitRow(i, e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } }}
-                className="flex-1 min-w-0 border border-[#2E4A3B] rounded-lg px-2 py-1 text-sm outline-none" />
+              <React.Fragment>
+                <input autoFocus defaultValue={r.text} disabled={busy}
+                  onBlur={e => commitRow(i, e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } }}
+                  className="flex-1 min-w-0 border border-[#2E4A3B] rounded-lg px-2 py-1 text-sm outline-none" />
+                {/* onMouseDown preventDefault keeps the text box focused, so
+                    tapping the quantity doesn't commit/close the edit. */}
+                <span className="flex items-center gap-0.5 flex-shrink-0" onMouseDown={e => e.preventDefault()}>
+                  <button onClick={() => stepQty(i, -1)} className="w-6 h-6 rounded-md bg-[#EFE4C6] text-[#8A7F66] font-bold">−</button>
+                  <span className="w-5 text-center text-sm" style={{ fontVariantNumeric: "tabular-nums" }}>{r.qty || 1}</span>
+                  <button onClick={() => stepQty(i, 1)} className="w-6 h-6 rounded-md bg-[#E3A939]/25 text-[#8A5A15] font-bold">+</button>
+                </span>
+              </React.Fragment>
             ) : (
-              <span onClick={() => !busy && setEditingRow(i)} className="flex-1 min-w-0 text-sm text-[#2B2418] py-1 cursor-text break-words">{r}</span>
+              <span onClick={() => !busy && setEditingRow(i)} className="flex-1 min-w-0 text-sm text-[#2B2418] py-1 cursor-text break-words">
+                {r.text}
+                {r.qty > 1 && <span className="mr-1.5 text-[11px] font-bold text-[#8A5A15] bg-[#FBF0D9] rounded px-1">×{r.qty}</span>}
+              </span>
             )}
-            {!busy && i > 0 && (
+            {!busy && editingRow !== i && i > 0 && (
               <button onClick={() => mergeUp(i)} className={smallBtn + "border-[#DECBA1] text-[#8A5A15] bg-[#FBF0D9]"}>חיבור ↑</button>
             )}
-            {!busy && r.trim().split(/\s+/).length > 1 && (
+            {!busy && editingRow !== i && r.text.trim().split(/\s+/).length > 1 && (
               <button onClick={() => splitRow(i)} className={smallBtn + "border-[#DECBA1] text-[#5B5749] bg-[#F7F2E4]"}>פיצול</button>
             )}
             {!busy && (
@@ -6654,7 +6739,20 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
       {!busy && (
         <button onClick={addRow} className="w-full mt-2 border-2 border-dashed border-[#C7B78E] rounded-xl py-2 text-sm text-[#A0906B]">+ הוספת פריט</button>
       )}
-      {busy && <div className="sz-progress-track mt-3"><div className="sz-progress-bar" /></div>}
+      {busy && progress && (() => {
+        const pct = status === "saving" ? 100 : Math.round(((progress.matched + progress.categorized) / (2 * progress.total)) * 100);
+        return (
+          <div className="mt-3 bg-white border border-[#E0D4B4] rounded-xl px-3 py-2.5">
+            <div className="h-2 bg-[#EFE4C6] rounded-full overflow-hidden">
+              <div className="h-full bg-[#2E4A3B] rounded-full transition-all duration-500" style={{ width: pct + "%" }} />
+            </div>
+            <div className="flex justify-between text-[11px] text-[#5B5749] mt-1.5" style={{ fontVariantNumeric: "tabular-nums" }}>
+              <span>🔎 מחירים ברשתות: {progress.matched} מתוך {progress.total}</span>
+              <span>🗂️ קטגוריות: {progress.categorized} מתוך {progress.total}</span>
+            </div>
+          </div>
+        );
+      })()}
       {allNames.length > PASTE_LIST_MAX && (
         <p className="text-[11px] text-[#B8462F] mt-2">עד {PASTE_LIST_MAX} פריטים בכל פעם — יתווספו {PASTE_LIST_MAX} הראשונים</p>
       )}
@@ -6663,9 +6761,10 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
 
   return (
     <Modal onClose={onClose} footer={
-      <button onClick={goReview} disabled={inputCount === 0}
-        className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-        {inputCount > 0 ? `המשך לבדיקה (${inputCount} פריטים) ›` : "המשך לבדיקה ›"}
+      <button onClick={goReview} disabled={inputCount === 0 || stage === "parsing"}
+        className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-60">
+        {stage === "parsing" ? "✨ מסדר את הרשימה ומנקה מילים מיותרות..."
+          : inputCount > 0 ? `המשך לבדיקה (${inputCount} פריטים) ›` : "המשך לבדיקה ›"}
       </button>
     }>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספת כמה פריטים</h3>

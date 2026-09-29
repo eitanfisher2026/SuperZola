@@ -104,6 +104,7 @@ const DAILY_CALL_CAPS = {
   createFeedbackThread: 5,
   confirmItemBarcode: 300,
   getVendorBranches: 100,
+  parseShoppingList: 60,
 };
 async function enforceDailyCap(uid, fnName) {
   let cap = DAILY_CALL_CAPS[fnName];
@@ -339,6 +340,56 @@ exports.categorizeCatalogBatch = onCall(
     });
     const remaining = Math.max(0, barcodes.length - cachedSet.size - processed);
     return { totalInCatalog: barcodes.length, alreadyCached: cachedSet.size, processedNow: processed, remaining };
+  }
+);
+
+// Dictated shopping lists come out of speech recognition with filler and
+// connector words ("אממ", "גם", "תוסיף", "וזהו"), several items in one breath,
+// and spoken quantities. One small AI call per list turns that into clean
+// items before the user's review step. Returns { items: null } (never
+// throws on AI trouble) so the client falls back to its own rule-based
+// cleanup — the list is never blocked on this.
+exports.parseShoppingList = onCall(
+  { timeoutSeconds: 30, memory: '256MiB', region: REGION, enforceAppCheck: true },
+  async (request) => {
+    requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'parseShoppingList');
+    const raw = String((request.data || {}).text || '').slice(0, 3000).trim();
+    if (!raw) return { items: [] };
+    if ((await monthlyCostSoFar(request.auth.uid)) >= FREE_TIER_MONTHLY_AI_CAP_USD) return { items: null };
+    const config = await getAppAiConfig();
+    if (!config) return { items: null };
+    let ai;
+    try { ai = makeAI(config); } catch (e) { return { items: null }; }
+    const prompt = `לפניך תמלול של אדם שהכתיב בקול רשימת קניות לסופרמרקט. חלץ ממנו רק את המוצרים לקנייה.
+
+כללים:
+- התעלם ממילות מילוי, היסוס וקישור (אמ, אה, כאילו, גם, ועוד, אני צריך, תוסיף, בבקשה, רגע, זהו, זה הכל וכדומה) ומכל דבר שאינו מוצר.
+- הסר ו' החיבור מתחילת שם מוצר ("וחלב" → "חלב"), אבל לא כשה-ו' היא חלק מהשם עצמו (וופל, וניל, ויסקי, וודקה).
+- אם נאמרו כמה מוצרים ברצף באותה שורה, הפרד אותם לפריטים נפרדים.
+- אם נאמרה כמות ("שתי חבילות חלב", "3 עגבניות"), החזר אותה במספר בשדה quantity, והשאר בשם רק את המוצר. גודל אריזה הוא חלק מהשם ("חלב 2 ליטר" נשאר כך). בלי כמות: quantity=1.
+- אל תמציא מוצרים, אל תתרגם ואל "תתקן" שמות — שמור על הניסוח של המשתמש.
+
+החזר JSON בלבד, בלי שום טקסט נוסף, בפורמט: [{"name":"...","quantity":1}]
+
+התמלול:
+${raw}`;
+    try {
+      const { text, usage } = await callAI(ai, prompt, 800);
+      await recordCost(request, ai, usage?.input_tokens || 0, usage?.output_tokens || 0);
+      const s = String(text || '');
+      const json = s.slice(s.indexOf('['), s.lastIndexOf(']') + 1);
+      const parsed = JSON.parse(json);
+      if (!Array.isArray(parsed)) return { items: null };
+      const items = parsed
+        .map(it => ({ name: String((it && it.name) || '').trim().slice(0, 80), quantity: Number(it && it.quantity) }))
+        .filter(it => it.name.length >= 2)
+        .map(it => ({ name: it.name, quantity: it.quantity > 0 && it.quantity < 100 ? Math.round(it.quantity * 10) / 10 : 1 }))
+        .slice(0, 100);
+      return { items };
+    } catch (e) {
+      return { items: null };
+    }
   }
 );
 
@@ -1226,8 +1277,22 @@ async function ensureFreshCatalog(vendor, branchId, force) {
   // at once, competing for resources and stalling the very request they
   // were meant to not block. Freshness is handled by the scheduled
   // refresh instead — this function only ever reads.
-  return readAllCatalogItems(key);
+  // Kept in this server instance's memory for a short while, keyed by the
+  // catalog's own updatedAt — so a refreshed catalog is never served stale,
+  // but back-to-back searches (a multi-item list sent in small batches for
+  // real progress, or a user searching item after item) don't re-read the
+  // whole catalog (thousands of documents) every single time.
+  const memoKey = key + '@' + ((indexSnap.data() || {}).updatedAt || 0);
+  const hit = CATALOG_MEMO.get(memoKey);
+  if (hit && Date.now() - hit.at < CATALOG_MEMO_TTL_MS) return hit.items;
+  const items = await readAllCatalogItems(key);
+  CATALOG_MEMO.set(memoKey, { items, at: Date.now() });
+  while (CATALOG_MEMO.size > CATALOG_MEMO_MAX) CATALOG_MEMO.delete(CATALOG_MEMO.keys().next().value);
+  return items;
 }
+const CATALOG_MEMO = new Map();
+const CATALOG_MEMO_TTL_MS = 20 * 60 * 1000;
+const CATALOG_MEMO_MAX = 12;
 
 // Re-enabled after finding a real regression: with this off, ensureFreshCatalog
 // tried to refresh a stale catalog "in the background" on whatever search
@@ -1374,18 +1439,30 @@ function scoreCatalogName(name, q, qTokens, nameTokensPre, nearSets) {
 // distinct catalog words (instead of against every word of every product).
 // Searching a pasted list of dozens of names in one call went from tens of
 // seconds to a small fraction of that; results are identical.
-function buildMatchIndex(catalogsByVendor) {
-  const norm = new Map();
-  const vocab = new Set();
-  for (const catalog of Object.values(catalogsByVendor)) {
-    for (const item of Object.values(catalog || {})) {
-      if (norm.has(item.name)) continue;
+// Each catalog's normalized names are computed once per catalog object —
+// with CATALOG_MEMO, the same object comes back for repeat searches, so
+// this work is reused across requests too, not just across names.
+const CATALOG_NORM_MEMO = new WeakMap();
+function catalogNormPart(catalog) {
+  let part = CATALOG_NORM_MEMO.get(catalog);
+  if (!part) {
+    part = { norm: new Map(), vocab: new Set() };
+    for (const item of Object.values(catalog)) {
+      if (part.norm.has(item.name)) continue;
       const name = normalizeItemName(item.name);
       const tokens = name.split(' ').filter(Boolean);
-      norm.set(item.name, { name, tokens });
-      tokens.forEach(t => vocab.add(t));
+      part.norm.set(item.name, { name, tokens });
+      tokens.forEach(t => part.vocab.add(t));
     }
+    CATALOG_NORM_MEMO.set(catalog, part);
   }
+  return part;
+}
+function buildMatchIndex(catalogsByVendor) {
+  const parts = Object.values(catalogsByVendor).filter(c => c && typeof c === 'object').map(catalogNormPart);
+  const norm = new Map();
+  const vocab = new Set();
+  parts.forEach(p => { p.norm.forEach((v, k) => norm.set(k, v)); p.vocab.forEach(t => vocab.add(t)); });
   return { norm, vocab: [...vocab], nearCache: new Map() };
 }
 function nearTokensOf(index, t) {
