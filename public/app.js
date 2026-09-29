@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.51";
+const VERSION = "v2.52";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3323,18 +3323,21 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           🔍 חיפוש והוספת פריט
         </button>
       </div>
-      <div className="px-4 mt-5">
-        <div className="text-xs font-semibold text-[#8A7F66] mb-2">🎬 מדריכים קצרים</div>
-        <div className={"grid gap-2 " + (guideAvailable ? "grid-cols-3" : "grid-cols-2")}>
+      {/* Styled as "play a clip", not as actions: small muted pills with a
+          ▶ mark — big white cards with ➕/🚀 icons read like buttons that DO
+          something (a "+" on the home screen looks like "add"). */}
+      <div className="px-4 mt-6 text-center">
+        <div className="text-[11px] text-[#A79A7C] mb-1.5">🎬 סרטוני הדרכה קצרים</div>
+        <div className="flex flex-wrap justify-center gap-1.5">
           {[
-            guideAvailable && { key: "start", icon: "🚀", label: "איך מתחילים", onClick: openGuide },
-            { key: "add", icon: "➕", label: "הוספת פריטים", onClick: () => setShowGuide("add") },
-            { key: "all", icon: "✨", label: "כל האפשרויות", onClick: () => setShowGuide("all") },
+            guideAvailable && { key: "start", label: "איך מתחילים", onClick: openGuide },
+            { key: "add", label: "הוספת פריטים", onClick: () => setShowGuide("add") },
+            { key: "all", label: "כל האפשרויות", onClick: () => setShowGuide("all") },
           ].filter(Boolean).map(g => (
             <button key={g.key} onClick={g.onClick}
-              className="bg-white border border-[#E0D4B4] rounded-2xl py-3 px-1 flex flex-col items-center gap-1 shadow-sm">
-              <span className="text-xl">{g.icon}</span>
-              <span className="text-xs font-semibold text-[#2B2418]">{g.label}</span>
+              className="bg-[#F3ECD9] text-[#5B5749] rounded-full pl-2.5 pr-1 py-1 text-[11px] font-medium flex items-center gap-1 whitespace-nowrap">
+              <span className="w-4 h-4 rounded-full bg-[#8A7F66] text-[#FBF4E7] text-[8px] flex items-center justify-center" style={{ paddingLeft: 1 }}>▶</span>
+              {g.label}
             </button>
           ))}
         </div>
