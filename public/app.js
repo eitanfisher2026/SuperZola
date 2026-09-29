@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.54";
+const VERSION = "v2.55";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2550,9 +2550,9 @@ function DemoBarcodeFound() {
 }
 
 // The full list screen, for the "everything you can do" chapters.
-function DemoListFull() {
+function DemoListFull({ replaced }) {
   const rows = [
-    { name: "חלב טרי 3%", chips: [["רמי לוי ₪6.60", "g"], ["שופרסל ₪7.40", ""]] },
+    { name: "חלב טרי 3%", nameId: "itemName", chips: [[replaced ? "רמי לוי ₪6.30" : "רמי לוי ₪6.60", "g", "milkChip"], ["שופרסל ₪7.40", ""]] },
     { name: "חומוס 400 גרם", chips: [["יוחננוף ₪8.90", "", "promoChip", "🏷️ 3 ב-₪20"], ["רמי לוי ₪9.50", ""]] },
     { name: "חסה", chips: [["שופרסל ₪4.90", "g"], ["חצי חינם: —", "gap", "gapChip"]] },
   ];
@@ -2569,7 +2569,7 @@ function DemoListFull() {
       <div className="flex-1 p-2 space-y-1.5">
         {rows.map(r => (
           <div key={r.name} className="border-b border-dotted border-[#E0D4B4] pb-1.5">
-            <div className="text-[12px] text-[#B8462F] underline mb-0.5">{r.name}</div>
+            <div className="text-[12px] text-[#B8462F] underline mb-0.5"><span data-demo={r.nameId}>{r.name}</span></div>
             <div className="flex flex-wrap gap-1 text-[9px]">
               {r.chips.map(([t, kind, id, promo]) => (
                 <span key={t} data-demo={id} className={"rounded px-1 py-0.5 font-semibold " + (kind === "g" ? "bg-[#DCEFD8] text-[#256A3F]" : kind === "gap" ? "bg-[#F3ECD9] text-[#A79A7C] border border-dashed border-[#DECBA1]" : "bg-[#F3ECD9]")}>
@@ -2630,11 +2630,22 @@ function DemoTable() {
     </div>
   );
 }
-function DemoPriceInfo({ gap }) {
+function DemoPriceInfo({ gap, milk }) {
   return (
     <div className="h-full relative">
       <DemoListFull />
-      {gap ? (
+      {milk ? (
+        <DemoSheet title="רמי לוי">
+          <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-1.5 space-y-1">
+            <div className="text-[9px] text-[#8A7F66]">המוצר ברשת הזו</div>
+            <div className="font-bold text-[12px]">חלב טרי 3% בקרטון 1 ליטר</div>
+            <div className="text-[9px] text-[#A79A7C]">ברקוד 7290000042442</div>
+            <div>מחיר: <b>₪6.60</b></div>
+          </div>
+          <div data-demo="changeHere" className="mt-1.5 text-center border-2 border-[#2E4A3B] text-[#2E4A3B] rounded-lg py-1 font-semibold">שינוי המוצר ברמי לוי</div>
+          <div className="text-center text-[9px] text-[#8A7F66] underline mt-1">עריכת הפריט כולו (שם, כמות, כל הרשתות)</div>
+        </DemoSheet>
+      ) : gap ? (
         <DemoSheet title="לא נבחר מוצר בחצי חינם">
           <div className="bg-[#F7F2E4] rounded-lg px-2 py-1.5 mb-1.5 leading-snug">נמצאו רק מוצרים דומים ולא התאמה ודאית, ולכן לא נבחר אוטומטית. אם אחד מהם מתאים, בחרו אותו.</div>
           {[["חסה ערבית", "₪5.90"], ["חסה אייסברג", "₪6.90"]].map(([n, p]) => (
@@ -2653,6 +2664,45 @@ function DemoPriceInfo({ gap }) {
           <div className="mt-1.5 text-center border-2 border-[#2E4A3B] text-[#2E4A3B] rounded-lg py-1 font-semibold">שינוי המוצר ביוחננוף</div>
         </DemoSheet>
       )}
+    </div>
+  );
+}
+function DemoReplacePicker() {
+  const rows = [["alt1", "חלב טרי 3% בשקית 1 ליטר", "₪6.30"], ["", "חלב טרי 3% בקרטון 1 ליטר", "₪6.60", true], ["", "חלב טרי 3% 2 ליטר", "₪12.40"]];
+  return (
+    <div className="h-full relative">
+      <DemoListFull />
+      <DemoSheet title="שינוי המוצר ברמי לוי">
+        <div className="text-center text-[9px] text-[#8A7F66] mb-1.5">רק ברמי לוי — שאר הרשתות נשארות כמו שהן</div>
+        <div className="space-y-1">
+          {rows.map(([id, n, p, cur]) => (
+            <div key={n} data-demo={id || undefined} className={"border rounded-lg px-2 py-1.5 flex justify-between items-center " + (cur ? "bg-[#EEF5EC] border-[#B9D9B0]" : "bg-white border-[#E0D4B4]")}>
+              <span>{n}{cur && <span className="text-[8px] font-bold text-[#256A3F] bg-white border border-[#B9D9B0] rounded-full px-1 mr-1">נבחר כרגע</span>}</span>
+              <b className="text-[#2E4A3B]">{p}</b>
+            </div>
+          ))}
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoEditItem() {
+  return (
+    <div className="h-full relative">
+      <DemoListFull replaced />
+      <DemoSheet title="עריכת פריט" footer={
+        <div className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">שמירת שינויים</div>
+      }>
+        <div className="text-[9px] text-[#8A7F66]">שם</div>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 mb-1.5">חלב טרי 3%</div>
+        <div className="text-[9px] text-[#8A7F66]">כמות</div>
+        <div className="flex items-center gap-1 mb-1.5">
+          <span className="w-6 h-6 rounded-md bg-[#EFE4C6] flex items-center justify-center">−</span>
+          <span className="flex-1 bg-white border border-[#C7B78E] rounded-lg py-1 text-center">2</span>
+          <span data-demo="qtyPlus" className="w-6 h-6 rounded-md bg-[#E3A939]/25 text-[#8A5A15] flex items-center justify-center font-bold">+</span>
+        </div>
+        <div className="bg-[#26361F] text-[#F3ECD9] rounded-lg px-2 py-1 text-[9px]">✓ הותאם ב-3 מתוך 3 רשתות · הכי זול: <b className="text-[#E3A939]">רמי לוי ₪6.30</b></div>
+      </DemoSheet>
     </div>
   );
 }
@@ -2780,9 +2830,16 @@ const FEATURES_GUIDE_CHAPTERS = [
     { view: <DemoListFull />, target: "toggleTable", caption: "1. עוברים לתצוגת \"טבלה\"" },
     { view: <DemoTable />, target: "toggleTable", tap: false, ms: 4000, caption: "כל הרשתות זו לצד זו, עם סה\"כ לכל רשת — הזול בירוק" },
   ] },
-  { id: "prices", label: "🏷️ מחירים ומבצעים", frames: [
-    { view: <DemoListFull />, target: "promoChip", caption: "1. לחיצה על מחיר מראה בדיוק איזה מוצר נבחר ברשת" },
-    { view: <DemoPriceInfo />, target: "promoChip", tap: false, ms: 3600, caption: "🏷️ יש מבצע? רואים מאיזו כמות הוא חל — ואפשר להחליף מוצר רק ברשת הזו" },
+  { id: "check", label: "🔍 בדיקה ועריכת פריט", frames: [
+    { view: <DemoListFull />, target: "milkChip", caption: "1. לוחצים על מחיר של רשת — רואים בדיוק איזה מוצר נבחר שם" },
+    { view: <DemoPriceInfo milk />, target: "changeHere", ms: 2800, caption: "2. לא המוצר שרציתם? \"שינוי המוצר ברמי לוי\"" },
+    { view: <DemoReplacePicker />, target: "alt1", ms: 2800, caption: "3. בוחרים מוצר אחר — רק ברשת הזו, שאר הרשתות לא משתנות" },
+    { view: <DemoListFull replaced />, target: "itemName", ms: 2600, caption: "4. לחיצה על שם הפריט: עריכת השם, הכמות וההערה" },
+    { view: <DemoEditItem />, target: "qtyPlus", ms: 3200, caption: "משנים כמות — מבצע שחל מכמות מסוימת מתעדכן לבד במחיר" },
+  ] },
+  { id: "prices", label: "🏷️ מבצעים וחוסרים", frames: [
+    { view: <DemoListFull />, target: "promoChip", caption: "1. מבצע מסומן 🏷️ ליד המחיר — לחיצה מסבירה אותו" },
+    { view: <DemoPriceInfo />, target: "promoChip", tap: false, ms: 3600, caption: "רואים מאיזו כמות המבצע חל, ומה יהיה המחיר ליחידה" },
     { view: <DemoListFull />, target: "gapChip", caption: "2. רשת בלי מוצר מסומנת \"—\"" },
     { view: <DemoPriceInfo gap />, target: "gapChip", tap: false, ms: 3600, caption: "לחיצה עליה מסבירה למה לא נבחר מוצר, ומאפשרת לבחור" },
   ] },
@@ -6654,6 +6711,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showPasteList, setShowPasteList] = useState(false);
   const [showAddDemo, setShowAddDemo] = useState(false);
   const [vendorPick, setVendorPick] = useState(null); // { item, entry } | null
+  // One-time tip for the least discoverable feature: tapping a price.
+  const [priceTipDismissed, setPriceTipDismissed] = useState(() => { try { return localStorage.getItem("sz_tip_pricetap") === "1"; } catch (e) { return false; } });
+  const [showCheckGuide, setShowCheckGuide] = useState(false);
+  function dismissPriceTip() {
+    try { localStorage.setItem("sz_tip_pricetap", "1"); } catch (e) {}
+    setPriceTipDismissed(true);
+  }
   const [missingPick, setMissingPick] = useState(null); // { item, profile } | null
   const [gapFilling, setGapFilling] = useState(false);
   const [editItem, setEditItem] = useState(null);
@@ -7180,6 +7244,15 @@ function ListScreen({ uid, listId, listName, onBack }) {
             <Spinner2 /> משלים מחירים לרשתות שנוספו...
           </div>
         )}
+        {!priceTipDismissed && viewMode !== "table" && Object.keys(effectivePriceMap).length > 0 && (items || []).length > 0 && (
+          <div className="no-print mb-2 bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2 flex items-center gap-2">
+            <p className="flex-1 text-xs text-[#3F5A38] leading-snug">
+              💡 לחיצה על מחיר מראה איזה מוצר נבחר ברשת, ואפשר להחליף אותו רק שם.{" "}
+              <button onClick={() => setShowCheckGuide(true)} className="font-bold underline">▶ הדגמה</button>
+            </p>
+            <button onClick={dismissPriceTip} aria-label="סגירה" className="text-[#8A7F66] text-lg leading-none flex-shrink-0">×</button>
+          </div>
+        )}
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
         {items !== null && items.length === 0 && (
           <div className="text-center py-6 px-4">
@@ -7310,6 +7383,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
           onClose={() => setShowPasteList(false)} showToast={setToast} />
       )}
       {showAddDemo && <AddItemsDemoModal onClose={() => setShowAddDemo(false)} />}
+      {showCheckGuide && (
+        <GuideModal title="כל מה שאפשר לעשות" chapters={FEATURES_GUIDE_CHAPTERS} initialChapter="check"
+          onClose={() => { setShowCheckGuide(false); dismissPriceTip(); }} />
+      )}
       {vendorPick && (
         <VendorPickModal item={vendorPick.item} entry={vendorPick.entry} activeProfiles={visibleProfiles}
           onEdit={setEditItem} onChangeHere={(it, p) => setMissingPick({ item: it, profile: p, replace: true })}
