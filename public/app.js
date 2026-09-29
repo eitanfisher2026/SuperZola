@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.53";
+const VERSION = "v2.54";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3324,35 +3324,40 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           🔍 חיפוש והוספת פריט
         </button>
       </div>
-      {/* Styled as "play a clip", not as actions: small muted pills with a
-          ▶ mark — big white cards with ➕/🚀 icons read like buttons that DO
-          something (a "+" on the home screen looks like "add"). */}
-      <div className="px-4 mt-6 text-center">
-        <div className="text-[11px] text-[#A79A7C] mb-1.5">🎬 סרטוני הדרכה קצרים</div>
-        <div className="flex flex-wrap justify-center gap-1.5">
-          {[
-            guideAvailable && { key: "start", label: "איך מתחילים", onClick: openGuide },
-            { key: "add", label: "הוספת פריטים", onClick: () => setShowGuide("add") },
-            { key: "all", label: "כל האפשרויות", onClick: () => setShowGuide("all") },
-          ].filter(Boolean).map(g => (
-            <button key={g.key} onClick={g.onClick}
-              className="bg-[#F3ECD9] text-[#5B5749] rounded-full pl-2.5 pr-1 py-1 text-[11px] font-medium flex items-center gap-1 whitespace-nowrap">
-              <span className="w-4 h-4 rounded-full bg-[#8A7F66] text-[#FBF4E7] text-[8px] flex items-center justify-center" style={{ paddingLeft: 1 }}>▶</span>
-              {g.label}
-            </button>
-          ))}
+      {/* One "help & community" section, set apart from the everyday actions
+          above by a divider and a single soft panel: guide clips (▶ pills —
+          they play something, they don't do something), then feedback and
+          sharing as quiet rows. Both used to be reachable only from ⚙️. */}
+      <div className="px-4 mt-8">
+        <div className="border-t border-[#E5D8B5] pt-5">
+          <div className="bg-[#F3ECD9]/70 rounded-2xl px-3 pt-3 pb-1">
+            <div className="text-[11px] font-semibold text-[#8A7F66] mb-2">🎬 סרטוני הדרכה קצרים</div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {[
+                guideAvailable && { key: "start", label: "איך מתחילים", onClick: openGuide },
+                { key: "add", label: "הוספת פריטים", onClick: () => setShowGuide("add") },
+                { key: "all", label: "כל האפשרויות", onClick: () => setShowGuide("all") },
+              ].filter(Boolean).map(g => (
+                <button key={g.key} onClick={g.onClick}
+                  className="bg-white/80 border border-[#E5D8B5] text-[#5B5749] rounded-full pl-2.5 pr-1 py-1 text-[11px] font-medium flex items-center gap-1 whitespace-nowrap">
+                  <span className="w-4 h-4 rounded-full bg-[#8A7F66] text-[#FBF4E7] text-[8px] flex items-center justify-center" style={{ paddingLeft: 1 }}>▶</span>
+                  {g.label}
+                </button>
+              ))}
+            </div>
+            {[
+              { key: "fb", icon: "💬", label: "יש לכם רעיון, שאלה או תקלה? ספרו לנו", onClick: () => setShowFeedback(true) },
+              { key: "share", icon: "💚", label: "נהנים מסופר זולה? שתפו חברים", onClick: shareApp },
+            ].map(r => (
+              <button key={r.key} onClick={r.onClick}
+                className="w-full flex items-center gap-2 py-2.5 border-t border-[#E5D8B5] text-right">
+                <span className="text-sm flex-shrink-0">{r.icon}</span>
+                <span className="flex-1 text-[13px] text-[#5B5749]">{r.label}</span>
+                <span className="text-[#C7B78E] text-base flex-shrink-0">‹</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
-
-      {/* Feedback and sharing used to live only inside the ⚙️ menu — easy to
-          never find. Visible, but kept to two quiet lines. */}
-      <div className="px-4 mt-4 flex flex-col items-center gap-1.5">
-        <button onClick={() => setShowFeedback(true)} className="text-sm text-[#2E4A3B] font-semibold">
-          💬 יש לכם רעיון, שאלה או תקלה? <span className="underline">ספרו לנו</span>
-        </button>
-        <button onClick={shareApp} className="text-sm text-[#2E4A3B] font-semibold">
-          💚 נהנים מסופר זולה? <span className="underline">שתפו חברים</span>
-        </button>
       </div>
 
       <div className="text-center py-8 text-[11px] text-[#C7B78E]">
