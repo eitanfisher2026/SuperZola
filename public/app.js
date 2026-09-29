@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.40";
+const VERSION = "v2.41";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1182,6 +1182,44 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
   );
 }
 
+// "I want lettuce, I don't care which" — only search results whose wording
+// genuinely matches are eligible (score >= 800: every search word present
+// and the name starts the same way); approximate/fuzzy hits never are,
+// since silently choosing the wrong product is worse than leaving a vendor
+// for the user to pick by hand.
+// Same-product-first: the one product (barcode) sold at the most of these
+// vendors wins, cheapest on average among equals — so the comparison is
+// the identical item across chains, not a 25g bag at one chain against an
+// 80g bag at another. Vendors it doesn't cover get the same treatment from
+// what's left; produce sold by weight (each chain's own internal code)
+// naturally ends up as each chain's cheapest match.
+function autoPickByVendor(candidateList, vendorIds) {
+  const effPrice = (c, v) => {
+    const price = c.prices && c.prices[v];
+    if (price == null) return null;
+    const promo = c.promoPrices && c.promoPrices[v];
+    return promo && promo.price < price && (promo.minQty || 1) <= 1 ? promo.price : price;
+  };
+  const eligible = (candidateList || []).filter(c => !c.fuzzyLayer && c.score >= 800);
+  const picks = {};
+  let remaining = (vendorIds || []).slice();
+  while (remaining.length > 0) {
+    let best = null;
+    eligible.forEach(c => {
+      const covered = remaining.filter(v => effPrice(c, v) != null);
+      if (covered.length === 0) return;
+      const avg = covered.reduce((s, v) => s + effPrice(c, v), 0) / covered.length;
+      if (!best || covered.length > best.covered.length || (covered.length === best.covered.length && avg < best.avg)) {
+        best = { c, covered, avg };
+      }
+    });
+    if (!best) break;
+    best.covered.forEach(v => { picks[v] = best.c; });
+    remaining = remaining.filter(v => best.covered.indexOf(v) === -1);
+  }
+  return picks;
+}
+
 // ── ITEM WIZARD (add + edit) ─────────────────────────────────────────────────
 // Item details first, price matching as its own explicit step — replaces
 // the old tabbed ItemDialog entirely, for both adding and editing.
@@ -1351,6 +1389,56 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     else applyCandidate(c, { keepOpen: true });
   }
 
+  const autoPicks = candidates ? autoPickByVendor(candidates.list, candidates.vendors) : {};
+  const autoPickVendors = Object.keys(autoPicks);
+  // Same commit path as ticking the boxes by hand, just one vendor at a
+  // time with that vendor's own cheapest pick — so the checkboxes below
+  // simply show what got chosen, and any of them can be changed.
+  function autoPick() {
+    if (autoPickVendors.length === 0) return;
+    setDraft(prev => {
+      const nb = Object.assign({}, replacing ? {} : (prev.barcodes || {}));
+      const nn = Object.assign({}, replacing ? {} : (prev.matchedNames || {}));
+      autoPickVendors.forEach(v => { nb[v] = autoPicks[v].barcode; nn[v] = autoPicks[v].name; });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+    });
+    setPriceMap(prev => {
+      const next = Object.assign({}, replacing ? {} : prev);
+      (activeProfiles || []).forEach(p => {
+        const c = autoPicks[p.vendor];
+        if (!c) return;
+        next[p.id] = Object.assign({}, next[p.id], { [c.barcode]: c.prices[p.vendor] });
+      });
+      return next;
+    });
+    setPromoMap(prev => {
+      const next = Object.assign({}, replacing ? {} : prev);
+      (activeProfiles || []).forEach(p => {
+        const c = autoPicks[p.vendor];
+        const promoInfo = c && c.promoPrices && c.promoPrices[p.vendor];
+        if (!promoInfo) return;
+        next[p.id] = Object.assign({}, next[p.id], { [c.barcode]: promoInfo });
+      });
+      return next;
+    });
+    setReplacing(false);
+    const vendorsByBarcode = {};
+    autoPickVendors.forEach(v => { (vendorsByBarcode[autoPicks[v].barcode] = vendorsByBarcode[autoPicks[v].barcode] || []).push(v); });
+    Object.entries(vendorsByBarcode).forEach(([bc, vs], n) => {
+      const c = autoPicks[vs[0]];
+      fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: bc, matchedName: c.name, vendors: vs }).then(res => {
+        if (n !== 0) return;
+        const label = res.data && res.data.category;
+        const cat = label && categories && categories.find(cc => cc.label === label);
+        if (cat) setDraft(prev => Object.assign({}, prev, { category: cat.label, categoryEmoji: cat.emoji }));
+      }).catch(() => {});
+    });
+    const missed = (candidates.vendors || []).length - autoPickVendors.length;
+    showToast(missed > 0
+      ? `נבחר הזול ב-${autoPickVendors.length} רשתות — ב-${missed} לא נמצאה התאמה ודאית, אפשר לבחור ידנית`
+      : `נבחר הזול בכל ${autoPickVendors.length} הרשתות — אפשר לשנות`);
+  }
+
   const vendorEffectivePrices = {};
   (activeProfiles || []).forEach(p => {
     const bc = draft.barcodes[p.vendor];
@@ -1420,8 +1508,14 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
           ) : (
             <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
           )}
+          {candidates.list.length > 1 && autoPickVendors.length > 0 && (
+            <button type="button" onClick={autoPick}
+              className="w-full mb-2 bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-xl py-2.5 text-sm font-bold">
+              ✨ לא משנה לי איזה — בחרו לי את הזול בכל רשת
+            </button>
+          )}
           {candidates.list.length > 0 && (candidates.vendors || []).length > 1 && (
-            <p className="text-[11px] text-[#8A7F66] mb-2">סמנו התאמה מכל רשת בנפרד — הכל יתמזג לפריט אחד; רשת שכבר נבחרה תיחסם מבחירות אחרות.</p>
+            <p className="text-[11px] text-[#8A7F66] mb-2">או סמנו בעצמכם התאמה מכל רשת — הכל יתמזג לפריט אחד.</p>
           )}
         </React.Fragment>
       )}
@@ -1455,11 +1549,16 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
               // item's own draft, so there's nothing separate to "confirm";
               // checking a box already saved it.
               const isChecked = vendorsForC.length > 0 && vendorsForC.every(v => draft.barcodes && draft.barcodes[v] === c.barcode);
-              const blocked = !isChecked && vendorsForC.some(v => draft.barcodes && draft.barcodes[v] && draft.barcodes[v] !== c.barcode);
+              // Picked at some of its vendors but not all — normal after an
+              // auto-pick, where a cheaper product can win elsewhere. Shown
+              // as chosen (with where), not as blocked.
+              const pickedAt = isChecked ? [] : vendorsForC.filter(v => draft.barcodes && draft.barcodes[v] === c.barcode);
+              const isPartial = pickedAt.length > 0;
+              const blocked = !isChecked && !isPartial && vendorsForC.some(v => draft.barcodes && draft.barcodes[v] && draft.barcodes[v] !== c.barcode);
               return (
                 <div key={c.barcode} onClick={() => !blocked && pickCandidate(c)}
                   className={"w-full text-right rounded-xl px-3 py-3 border cursor-pointer " +
-                    (isChecked ? "bg-[#EEF5EC] border-[#B9D9B0]" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45 cursor-default" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
+                    (isChecked || isPartial ? "bg-[#EEF5EC] border-[#B9D9B0]" : blocked ? "bg-[#F7F2E4] border-[#E5D8B5] opacity-45 cursor-default" : "bg-white border-[#E5D8B5] hover:bg-[#FBF4E7]")}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-[#2B2418] flex items-center gap-1.5">
@@ -1471,14 +1570,17 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
                       <div className="text-[11px] text-[#A79A7C] mt-0.5">
                         ברקוד {c.barcode}{c.unit ? ` · ${c.unit}` : ""}
                       </div>
+                      {isPartial && (
+                        <div className="text-[11px] text-[#256A3F] font-semibold mt-0.5">✓ נבחר ב{pickedAt.map(vendorLabel).join(", ")}</div>
+                      )}
                     </div>
                     {allowMultiSelect && vendorsForC.length > 0 ? (
                       <button type="button"
-                        onClick={e => { e.stopPropagation(); if (!blocked) toggleCommit(c, isChecked); }}
+                        onClick={e => { e.stopPropagation(); if (!blocked) toggleCommit(c, isChecked || isPartial); }}
                         disabled={blocked}
                         title={blocked ? "כבר הותאם ברשת אחרת — לחצו על השורה כדי להחליף" : isChecked ? "הסרת ההתאמה" : "בחירה (אפשר לבחור כמה)"}
                         className={"w-5 h-5 rounded-[5px] border-2 flex-shrink-0 flex items-center justify-center text-[11px] font-bold leading-none disabled:cursor-not-allowed " +
-                          (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1] text-transparent")}>
+                          (isChecked ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : isPartial ? "bg-[#B9D9B0] border-[#2E4A3B] text-[#2E4A3B]" : "border-[#DECBA1] text-transparent")}>
                         ✓
                       </button>
                     ) : (
@@ -1998,12 +2100,22 @@ function DemoHomeScreen() {
     </div>
   );
 }
-function DemoListScreen({ item, dim }) {
+function DemoListScreen({ item, many, dim }) {
+  const rows = [["חלב טרי 3%", "רמי לוי ₪6.60"], ["לחם אחיד", "יוחננוף ₪8.20"], ["חסה", "שופרסל ₪5.90"], ["עגבניות שרי", "רמי לוי ₪9.90"], ["שניצל עוף", "יוחננוף ₪39.90"]];
   return (
     <div className={"h-full flex flex-col text-[11px] text-[#2B2418] " + (dim ? "opacity-40" : "")}>
       <div className="bg-[#26361F] px-2.5 py-2 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</div>
       <div className="flex-1 p-2.5">
-        {item ? (
+        {many ? (
+          <div className="sz-demo-fade space-y-1">
+            {rows.map(([n, p]) => (
+              <div key={n} className="bg-white border border-[#E0D4B4] rounded-md px-2 py-1 flex justify-between">
+                <span className="font-semibold">{n}</span>
+                <span className="bg-[#DCEFD8] text-[#256A3F] font-bold rounded px-1 text-[10px]">{p}</span>
+              </div>
+            ))}
+          </div>
+        ) : item ? (
           <div className="sz-demo-fade bg-white border border-[#E0D4B4] rounded-lg p-2">
             <div className="font-semibold text-[12px] mb-1.5">חלב טרי 3% 1 ליטר</div>
             <div className="flex flex-wrap gap-1 text-[10px]">
@@ -2040,7 +2152,7 @@ function DemoAddChoice() {
       <DemoListScreen dim />
       <DemoSheet title="הוספת פריט">
         <div className="space-y-1.5">
-          {[["byName", "🔎", "לפי שם"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"]].map(([id, icon, label]) => (
+          {[["byName", "🔎", "לפי שם"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"], ["byPaste", "📝", "הדבקת רשימה"]].map(([id, icon, label]) => (
             <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-2">
               <span>{icon}</span><span className="font-semibold">{label}</span>
             </div>
@@ -2067,37 +2179,75 @@ function DemoItemName() {
     </div>
   );
 }
-function DemoPriceMatch({ checked }) {
+// auto: shows the "pick the cheapest for me" button; autoDone: the result
+// of pressing it (a different product can win at each chain).
+function DemoPriceMatch({ checked, auto, autoDone, addAnother }) {
   const rows = [
-    { id: "check1", name: "חלב טרי 3% 1 ליטר", prices: [["רמי לוי", "₪6.90"], ["יוחננוף", "₪7.10"]] },
-    { id: "check2", name: "חלב טרי 3% בשקית", prices: [["שופרסל", "₪6.50"], ["רמי לוי", "₪6.60"]] },
+    { id: "check1", name: "חלב טרי 3% 1 ליטר", prices: [["רמי לוי", "₪6.90"], ["יוחננוף", "₪7.10"]], autoAt: "יוחננוף" },
+    { id: "check2", name: "חלב טרי 3% בשקית", prices: [["שופרסל", "₪6.50"], ["רמי לוי", "₪6.60"]], autoAt: "שופרסל, רמי לוי" },
   ];
+  const ready = checked || autoDone;
   return (
     <div className="h-full relative">
       <DemoListScreen dim />
       <DemoSheet title="השוואת מחירים" footer={
-        <div data-demo="finish" className={"mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold " + (checked ? "" : "opacity-40")}>סיום והוספה לרשימה</div>
+        <div>
+          <div data-demo="finish" className={"mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold " + (ready ? "" : "opacity-40")}>סיום והוספה לרשימה</div>
+          {addAnother && <div data-demo="addAnother" className="text-center text-[10px] text-[#8A7F66] underline mt-1">הוספה + בחירת פריט נוסף מאותה רשימה</div>}
+        </div>
       }>
-        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 mb-1.5">חלב טרי 3%</div>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 mb-1.5">חלב טרי 3%</div>
+        {auto && (
+          <div data-demo="autoPick" className="mb-1.5 text-center bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-lg py-1 font-bold text-[10px]">✨ בחרו לי את הזול בכל רשת</div>
+        )}
         <div className="space-y-1.5">
-          {rows.map((r, n) => (
-            <div key={r.id} className={"bg-white border rounded-lg px-2 py-1.5 " + (checked && n === 0 ? "border-[#2E4A3B]" : "border-[#E0D4B4]")}>
+          {rows.map((r, n) => {
+            const on = autoDone || (checked && n === 0);
+            return (
+            <div key={r.id} className={"bg-white border rounded-lg px-2 py-1 " + (on ? "border-[#2E4A3B] bg-[#EEF5EC]" : "border-[#E0D4B4]")}>
               <div className="flex items-center gap-1.5 mb-1">
-                <span data-demo={r.id} className={"w-3.5 h-3.5 rounded border-2 flex items-center justify-center text-[8px] " + (checked && n === 0 ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1]")}>
-                  {checked && n === 0 ? "✓" : ""}
+                <span data-demo={r.id} className={"w-3.5 h-3.5 rounded border-2 flex items-center justify-center text-[8px] " + (on ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1]")}>
+                  {on ? "✓" : ""}
                 </span>
                 <span className="font-semibold">{r.name}</span>
               </div>
+              {autoDone && <div className="text-[9px] text-[#256A3F] font-semibold mb-0.5">✓ נבחר ב{r.autoAt}</div>}
               <div className="flex gap-1 text-[9px]">
                 {r.prices.map(([v, p]) => <span key={v} className="bg-[#DCEFD8] text-[#256A3F] rounded px-1 py-0.5">{v}: {p}</span>)}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </DemoSheet>
     </div>
   );
 }
+function DemoPasteList() {
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="הדבקת רשימה" footer={
+        <div data-demo="pasteSubmit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">הוספת 5 פריטים לרשימה</div>
+      }>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 leading-relaxed">
+          חלב טרי 3%<br />לחם אחיד<br />חסה<br />עגבניות שרי<br />שניצל עוף <span className="sz-demo-caret" />
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+
+const ADD_ITEMS_DEMO = [
+  { view: <DemoListScreen />, target: "addItem", caption: "1. לוחצים \"הוספת פריט\"" },
+  { view: <DemoAddChoice />, target: "byName", caption: "2. הכי פשוט: חיפוש לפי שם" },
+  { view: <DemoItemName />, target: "continue", caption: "3. כותבים שם — גם כללי כמו \"חלב\" מספיק" },
+  { view: <DemoPriceMatch auto />, target: "autoPick", caption: "4. לא משנה לכם איזה? \"בחרו לי את הזול בכל רשת\"" },
+  { view: <DemoPriceMatch autoDone addAnother />, target: "addAnother", ms: 2400, caption: "5. רוצים עוד מוצר מאותו חיפוש? \"הוספה + בחירת פריט נוסף\"" },
+  { view: <DemoAddChoice />, target: "byPaste", caption: "6. הרבה פריטים בבת אחת? \"הדבקת רשימה\"" },
+  { view: <DemoPasteList />, target: "pasteSubmit", ms: 2200, caption: "7. פריט בכל שורה (או מכתיבים בטלפון) — והכול נוסף ומותאם לבד" },
+  { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3200, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
+];
 
 const LIST_DEMO = [
   { view: <DemoHomeScreen />, target: "newList", caption: "1. יוצרים רשימה חדשה" },
@@ -5569,6 +5719,112 @@ function VendorOrderModal({ vendor, entries, onClose }) {
   );
 }
 
+async function runLimited(items, concurrency, worker) {
+  let i = 0;
+  const lane = async () => { while (i < items.length) { const item = items[i++]; await worker(item); } };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, lane));
+}
+
+// Many items at once — one per line or comma-separated (phone dictation
+// naturally produces commas). Every name goes into ONE search call: each
+// call reads every chain's full catalog, so searching the whole list at
+// once costs about the same as searching a single item.
+const PASTE_LIST_MAX = 80;
+function PasteListModal({ uid, listId, activeProfiles, categories, onClose, showToast }) {
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState("");
+  const allNames = [...new Set(text.split(/[\n,،]+/).map(s => s.trim()).filter(s => s.length >= 2))];
+  const names = allNames.slice(0, PASTE_LIST_MAX);
+  const busy = !!status;
+
+  async function submit() {
+    if (busy || names.length === 0) return;
+    const profiles = activeProfiles || [];
+    const vendorIds = [...new Set(profiles.map(p => p.vendor))];
+    const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
+    try {
+      let results = {};
+      if (profiles.length > 0) {
+        setStatus(`מחפש ${names.length} פריטים בכל הרשתות...`);
+        const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, profileIds: profiles.map(p => p.id) });
+        results = (res.data || {}).results || {};
+      }
+      setStatus("משייך לקטגוריות...");
+      const cats = {};
+      await runLimited(names, 4, async name => {
+        try {
+          const r = await fns.httpsCallable("categorizeItemName")({ name, categories: categories.map(c => ({ label: c.label })) });
+          const label = r.data && r.data.category;
+          const cat = label && categories.find(c => c.label === label);
+          if (cat) cats[name] = cat;
+        } catch (e) {}
+      });
+      setStatus("מוסיף לרשימה...");
+      const col = db.collection("lists").doc(listId).collection("items");
+      const batch = db.batch();
+      let partial = 0;
+      names.forEach(name => {
+        const r = results[name] || {};
+        // Barcodes already confirmed for this exact name (by anyone) come
+        // back ready-made; only the vendors still missing get auto-picked.
+        const barcodes = Object.assign({}, r.barcodes || {});
+        const matchedNames = {};
+        const picks = autoPickByVendor(r.candidates, vendorIds.filter(v => !barcodes[v]));
+        Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; });
+        if (vendorIds.some(v => !barcodes[v])) partial++;
+        const cat = cats[name] || other;
+        batch.set(col.doc(), {
+          name, category: cat.label, categoryEmoji: cat.emoji, quantity: 1, unit: "יחידות", note: "",
+          barcodes, matchedNames, addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      showToast(partial > 0
+        ? `נוספו ${names.length} פריטים — ב-${partial} מהם חסרה התאמה ברשת אחת או יותר, אפשר להשלים בלחיצה על הפריט`
+        : `נוספו ${names.length} פריטים, עם מחיר בכל הרשתות`);
+      onClose();
+    } catch (e) {
+      setStatus("");
+      showToast(e && e.code === "functions/resource-exhausted" ? e.message : "שגיאה בהוספה — נסו שוב");
+    }
+  }
+
+  return (
+    <Modal onClose={busy ? () => {} : onClose} disableClose={busy} footer={
+      <button onClick={submit} disabled={busy || names.length === 0}
+        className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+        {busy ? status : names.length > 0 ? `הוספת ${names.length} פריטים לרשימה` : "הוספה לרשימה"}
+      </button>
+    }>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הדבקת רשימה</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-3 leading-relaxed">
+        פריט בכל שורה (או מופרדים בפסיקים). אפשר שם כללי כמו "חסה" או "עגבניות שרי" — בכל רשת ייבחר אוטומטית המוצר הזול שמתאים לשם.
+      </p>
+      <textarea value={text} onChange={e => setText(e.target.value)} rows={9} disabled={busy} autoFocus
+        placeholder={"חלב 3%\nלחם\nחסה\nעגבניות שרי\nשניצל"}
+        className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none leading-relaxed disabled:opacity-60" />
+      {busy && <div className="sz-progress-track mt-3"><div className="sz-progress-bar" /></div>}
+      {allNames.length > PASTE_LIST_MAX && (
+        <p className="text-[11px] text-[#B8462F] mt-2">עד {PASTE_LIST_MAX} פריטים בכל פעם — יתווספו {PASTE_LIST_MAX} הראשונים</p>
+      )}
+      <p className="text-[11px] text-[#A79A7C] mt-2 leading-relaxed">
+        טיפ: בטלפון אפשר להכתיב במקום להקליד — לוחצים על המיקרופון במקלדת. אחרי ההוספה אפשר לבדוק ולשנות כל פריט בנפרד.
+      </p>
+    </Modal>
+  );
+}
+
+function AddItemsDemoModal({ onClose }) {
+  return (
+    <Modal onClose={onClose} footer={
+      <button onClick={onClose} className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">הבנתי</button>
+    }>
+      <h3 className="text-lg text-center mb-3" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>איך מוסיפים פריטים</h3>
+      <DemoPlayer frames={ADD_ITEMS_DEMO} />
+    </Modal>
+  );
+}
+
 // ── LIST SCREEN ───────────────────────────────────────────────────────────────
 function ListScreen({ uid, listId, listName, onBack }) {
   const [list, setList] = useState({ name: listName });
@@ -5577,6 +5833,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showBrowse, setShowBrowse] = useState(false);
   const [showBarcodeAdd, setShowBarcodeAdd] = useState(false);
   const [showAddChoice, setShowAddChoice] = useState(false);
+  const [showPasteList, setShowPasteList] = useState(false);
+  const [showAddDemo, setShowAddDemo] = useState(false);
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -5964,12 +6222,27 @@ function ListScreen({ uid, listId, listName, onBack }) {
             <p className="text-[#A79A7C] text-xs mt-2 max-w-xs mx-auto leading-relaxed">
               טיפ: השתמשו ב"עיון לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
             </p>
-            {!!limits.defaultListId && !starterListUsed && new Set(activeProfiles.map(p => p.vendor)).size >= 2 && (
-              <button onClick={loadStarterList} disabled={loadingStarter}
-                className="mt-3 text-xs font-bold text-[#2E4A3B] underline disabled:opacity-50">
-                {loadingStarter ? (starterStatus || "טוען...") : "או: טענו רשימת מוצרים בסיסית להתחלה"}
-              </button>
-            )}
+            {(() => {
+              // Admin always sees it (to test), regardless of the one-time
+              // per-account limit — and when it's hidden for a real reason,
+              // the admin is told which one instead of it silently missing.
+              const vendorCount = new Set(activeProfiles.map(p => p.vendor)).size;
+              const eligible = !!limits.defaultListId && (isAdmin || !starterListUsed) && vendorCount >= 2;
+              if (eligible) return (
+                <button onClick={loadStarterList} disabled={loadingStarter}
+                  className="mt-4 w-full max-w-xs mx-auto block bg-[#EEF5EC] border border-[#B9D9B0] text-[#2E4A3B] rounded-xl py-2.5 text-sm font-bold disabled:opacity-50">
+                  {loadingStarter ? (starterStatus || "טוען...") : "📋 טענו רשימת מוצרים בסיסית להתחלה"}
+                </button>
+              );
+              if (!isAdmin) return null;
+              return (
+                <p className="mt-3 text-[11px] text-[#B8462F]">
+                  (מנהל) כפתור רשימת הדוגמה מוסתר: {!limits.defaultListId ? "לא נבחרה רשימת ברירת מחדל ב⚙️ ← אפשרויות מנהל ← קליטת משתמשים חדשים" : "צריך לפחות 2 רשתות פעילות"}
+                </p>
+              );
+            })()}
+            <button onClick={() => setShowAddDemo(true)}
+              className="mt-3 text-sm font-semibold text-[#2E4A3B] underline">🎬 איך מוסיפים פריטים? הדגמה קצרה</button>
           </div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
@@ -6042,9 +6315,24 @@ function ListScreen({ uid, listId, listName, onBack }) {
                 <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
               </span>
             </button>
+            <button onClick={() => { setShowAddChoice(false); setShowPasteList(true); }}
+              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+              <span className="text-xl">📝</span>
+              <span>
+                <div className="text-sm font-semibold text-[#2B2418]">הדבקת רשימה</div>
+                <div className="text-[11px] text-[#8A7F66]">הרבה פריטים בבת אחת — המערכת בוחרת את הזול בכל רשת</div>
+              </span>
+            </button>
           </div>
+          <button onClick={() => { setShowAddChoice(false); setShowAddDemo(true); }}
+            className="w-full text-center text-sm font-semibold text-[#2E4A3B] underline mt-4">🎬 איך מוסיפים פריטים? הדגמה קצרה</button>
         </Modal>
       )}
+      {showPasteList && (
+        <PasteListModal uid={uid} listId={listId} activeProfiles={visibleProfiles} categories={categories}
+          onClose={() => setShowPasteList(false)} showToast={setToast} />
+      )}
+      {showAddDemo && <AddItemsDemoModal onClose={() => setShowAddDemo(false)} />}
       {showAdd && (
         <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}

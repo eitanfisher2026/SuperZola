@@ -1320,22 +1320,28 @@ function tokensNearMatch(a, b) {
 // the way to the client so an approximate hit is never presented as if it
 // were an exact one, even though it's found via the same always-on code
 // path as exact matches, not the separate opt-in Layer 2 fallback.
-function scoreCatalogName(name, q, qTokens) {
-  const nameTokens = name.split(' ').filter(Boolean);
+// nameTokens/nearSets are optional precomputed shortcuts from a MatchIndex
+// (see buildMatchIndex) — same result either way, just without redoing the
+// same work for every product on every searched name.
+function scoreCatalogName(name, q, qTokens, nameTokensPre, nearSets) {
+  const nameTokens = nameTokensPre || name.split(' ').filter(Boolean);
   if (name === q) return { score: 1000, approx: false };
 
-  function matchToken(t) {
+  function matchToken(t, i) {
     if (nameTokens.includes(t)) return 'exact';
-    if (t.length >= 4 && nameTokens.some(nt => tokensNearMatch(nt, t))) return 'near';
+    if (t.length < 4) return null;
+    const near = nearSets && nearSets[i];
+    if (near ? nameTokens.some(nt => near.has(nt)) : nameTokens.some(nt => tokensNearMatch(nt, t))) return 'near';
     return null;
   }
 
-  const firstMatch = matchToken(qTokens[0]);
+  const firstMatch = matchToken(qTokens[0], 0);
   if (qTokens.length > 1 && !firstMatch) return null;
 
   let overlapCount = 0, anyNear = false;
-  for (const t of qTokens) {
-    const m = matchToken(t);
+  for (let i = 0; i < qTokens.length; i++) {
+    const t = qTokens[i];
+    const m = i === 0 ? firstMatch : matchToken(t, i);
     if (m) overlapCount++;
     if (m === 'near') anyNear = true;
   }
@@ -1350,16 +1356,48 @@ function scoreCatalogName(name, q, qTokens) {
   return null;
 }
 
-function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
+// Built once per search request and shared by every searched name: each
+// product name is normalized/tokenized once (instead of once per name), and
+// the "one letter off" check runs once per searched word against the set of
+// distinct catalog words (instead of against every word of every product).
+// Searching a pasted list of dozens of names in one call went from tens of
+// seconds to a small fraction of that; results are identical.
+function buildMatchIndex(catalogsByVendor) {
+  const norm = new Map();
+  const vocab = new Set();
+  for (const catalog of Object.values(catalogsByVendor)) {
+    for (const item of Object.values(catalog || {})) {
+      if (norm.has(item.name)) continue;
+      const name = normalizeItemName(item.name);
+      const tokens = name.split(' ').filter(Boolean);
+      norm.set(item.name, { name, tokens });
+      tokens.forEach(t => vocab.add(t));
+    }
+  }
+  return { norm, vocab: [...vocab], nearCache: new Map() };
+}
+function nearTokensOf(index, t) {
+  let s = index.nearCache.get(t);
+  if (!s) {
+    s = new Set();
+    if (t.length >= 4) for (const v of index.vocab) if (v !== t && tokensNearMatch(v, t)) s.add(v);
+    index.nearCache.set(t, s);
+  }
+  return s;
+}
+
+function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor, index) {
   const q = normalizeItemName(query);
   const qTokens = q.split(' ').filter(Boolean);
+  const nearSets = index ? qTokens.map(t => nearTokensOf(index, t)) : null;
   const vendorNames = Object.keys(catalogsByVendor);
   const byBarcode = {};
   for (const vendor of vendorNames) {
     for (const [barcode, item] of Object.entries(catalogsByVendor[vendor] || {})) {
-      const name = normalizeItemName(item.name);
+      const pre = index && index.norm.get(item.name);
+      const name = pre ? pre.name : normalizeItemName(item.name);
       if (!name) continue;
-      const result = scoreCatalogName(name, q, qTokens);
+      const result = scoreCatalogName(name, q, qTokens, pre && pre.tokens, nearSets);
       if (result === null) continue;
       if (!byBarcode[barcode]) byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', bestScore: -1, approx: false, prices: {} };
       const entry = byBarcode[barcode];
@@ -1618,13 +1656,14 @@ exports.resolveItemBarcodes = onCall(
     const fuzzySearchThreshold = limitsData.fuzzySearchThreshold >= 0 ? limitsData.fuzzySearchThreshold : 0;
 
     const results = {};
+    const matchIndex = neededVendors.size > 0 ? buildMatchIndex(catalogsByVendor) : null;
     for (const name of names) {
       const { barcodes, missingVendors } = cacheByName[name];
       if (missingVendors.length === 0) { results[name] = { barcodes, missingVendors: [] }; continue; }
       // A result only the caller can actually act on if it's priced at one
       // of the vendors they searched for — otherwise it's just an
       // unpickable "not sold here" row from an unrelated vendor's catalog.
-      let candidates = fuzzyMatchCatalogs(name, catalogsByVendor, promoPricesByVendor)
+      let candidates = fuzzyMatchCatalogs(name, catalogsByVendor, promoPricesByVendor, matchIndex)
         .filter(c => vendorIds.some(v => c.prices[v] != null));
       let layer2Count = 0;
       if (fuzzySearchEnabled && candidates.length <= fuzzySearchThreshold) {
