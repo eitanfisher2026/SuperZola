@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.42";
+const VERSION = "v2.43";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1009,7 +1009,7 @@ function MaintenanceScreen({ onSignOut }) {
 // ── PRICE COMPARISON TABLE ────────────────────────────────────────────────────
 // One row per item, one column per active vendor branch — lets you compare
 // prices at a glance instead of reading them off each item's own chips.
-function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem }) {
+function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEditItem, onShowVendorPick }) {
   const totals = {};
   activeProfiles.forEach(p => { totals[p.id] = { sum: 0, count: 0 }; });
   items.forEach(item => {
@@ -1063,7 +1063,8 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                   const isCheapest = fetched && bc && isCheapestPrice(effectivePrice, others);
                   const cellClass = !bc || !fetched ? "text-[#DECBA1]" : isCheapest ? "text-[#2E7D4F] font-bold" : "text-[#5B5749]";
                   return (
-                    <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}>
+                    <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}
+                      onClick={ev => { if (!onShowVendorPick || !byId[p.id]) return; ev.stopPropagation(); onShowVendorPick(item, byId[p.id]); }}>
                       {!bc ? "—" : !fetched ? "…" : price != null ? (
                         <div className="leading-tight">
                           {promoActive ? (
@@ -1101,7 +1102,62 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
 }
 
 // ── ITEM ROW ──────────────────────────────────────────────────────────────────
-function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote }) {
+// Tapping one vendor's price on an item: which exact product that price is
+// for at that vendor. With "pick the cheapest for me" each chain can hold a
+// different product under one shared item name, so the list alone doesn't
+// say what's being compared.
+function VendorPickModal({ item, entry, activeProfiles, onEdit, onClose }) {
+  const p = entry.profile;
+  const bc = itemVendorBarcode(item, p.vendor);
+  const matchedName = itemVendorMatchedName(item, p.vendor);
+  const qty = item.quantity || 1;
+  const promo = entry.promo;
+  const mixed = itemHasMixedVendorMatches(item, (activeProfiles || []).map(x => x.vendor));
+  return (
+    <Modal onClose={onClose} footer={
+      <div className="flex gap-2">
+        <button onClick={() => { onClose(); onEdit(item); }} className="flex-1 bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] py-3 rounded-2xl font-semibold text-sm">שינוי המוצר</button>
+        <button onClick={onClose} className="flex-1 bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">סגירה</button>
+      </div>
+    }>
+      <h3 className="text-lg text-center mb-0.5" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>{profileLabel(p, activeProfiles)}</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-4">מה נבחר עבור "{itemDisplayName(item)}"</p>
+      <div className="bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
+        <div>
+          <div className="text-[11px] text-[#8A7F66]">המוצר ברשת הזו</div>
+          <div className="text-[15px] font-bold text-[#2B2418]">{matchedName || itemDisplayName(item)}</div>
+          <div className="text-[11px] text-[#A79A7C]">ברקוד {bc}</div>
+        </div>
+        <div className="pt-2 border-t border-[#F0E9D4]">
+          {entry.price == null ? (
+            <div className="text-sm text-[#B8462F]">המוצר הזה לא נמכר כרגע בסניף הזה</div>
+          ) : (
+            <div className="text-sm text-[#2B2418]">
+              מחיר: <b>₪{entry.price.toFixed(2)}</b>{qty !== 1 && <span> × {qty} = <b>₪{(entry.price * qty).toFixed(2)}</b></span>}
+            </div>
+          )}
+          {promo && (
+            <div className="mt-1.5 text-sm">
+              <span className="text-[#B8462F] font-semibold">🏷️ מבצע: {promoTagPhrase(promo)}</span>
+              <div className="text-xs text-[#8A7F66] mt-0.5">
+                {promo.active
+                  ? `המבצע חל על הכמות ברשימה — ₪${promo.price.toFixed(2)} ליחידה`
+                  : `המבצע חל מ-${promo.minQty || 1} יחידות — ברשימה יש ${qty}. הגדלת הכמות תוריד את המחיר ל-₪${promo.price.toFixed(2)} ליחידה`}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {mixed && (
+        <p className="text-[11px] text-[#8A7F66] mt-3 leading-relaxed">
+          בכל רשת נבחר מוצר קצת אחר (למשל מותג או גודל אריזה שונים) — כדאי לבדוק כשמשווים. "שינוי המוצר" מאפשר לבחור אחר.
+        </p>
+      )}
+    </Modal>
+  );
+}
+
+function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, onUpdateNote, onShowVendorPick }) {
   const [editingNote, setEditingNote] = useState(false);
   const [noteVal, setNoteVal] = useState(item.note || "");
 
@@ -1142,7 +1198,9 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
                 const others = pricedEntries.filter(o => o.profile.id !== e.profile.id)
                   .map(o => (o.promo && o.promo.active) ? o.promo.price : o.price);
                 return (
-                  <span key={e.profile.id} className={"text-[11px] font-semibold px-1.5 py-0.5 rounded leading-tight " + cheapestBadgeClass(effective, others)}>
+                  <span key={e.profile.id} role="button"
+                    onClick={ev => { if (!onShowVendorPick) return; ev.stopPropagation(); onShowVendorPick(item, e); }}
+                    className={"text-[11px] font-semibold px-1.5 py-0.5 rounded leading-tight cursor-pointer " + cheapestBadgeClass(effective, others)}>
                     <span className="flex flex-col items-start">
                       <span>
                         {profileLabel(e.profile, activeProfiles)}: {promoActive ? "₪" + e.promo.price.toFixed(2) + "*" : (e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן")}
@@ -5925,6 +5983,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [showAddChoice, setShowAddChoice] = useState(false);
   const [showPasteList, setShowPasteList] = useState(false);
   const [showAddDemo, setShowAddDemo] = useState(false);
+  const [vendorPick, setVendorPick] = useState(null); // { item, entry } | null
   const [editItem, setEditItem] = useState(null);
   const [showMenu, setShowMenu] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -6336,7 +6395,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
           </div>
         )}
         {items !== null && items.length > 0 && viewMode === "table" ? (
-          <PriceComparisonTable items={enrichedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem} />
+          <PriceComparisonTable items={enrichedItems} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap} onEditItem={setEditItem}
+            onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })} />
         ) : (
           groups.map(group => (
             <div key={group.label} className="mb-5">
@@ -6352,6 +6412,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
                 {group.items.map(item => (
                   <ItemRow key={item.id} item={item} activeProfiles={visibleProfiles} priceMap={effectivePriceMap} promoMap={effectivePromoMap}
                     onDelete={setConfirmDeleteItem} onEdit={setEditItem}
+                    onShowVendorPick={(it, entry) => setVendorPick({ item: it, entry })}
                     onUpdateNote={note => updateNote(item, note)} />
                 ))}
               </div>
@@ -6423,6 +6484,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
           onClose={() => setShowPasteList(false)} showToast={setToast} />
       )}
       {showAddDemo && <AddItemsDemoModal onClose={() => setShowAddDemo(false)} />}
+      {vendorPick && (
+        <VendorPickModal item={vendorPick.item} entry={vendorPick.entry} activeProfiles={visibleProfiles}
+          onEdit={setEditItem} onClose={() => setVendorPick(null)} />
+      )}
       {showAdd && (
         <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
       )}
