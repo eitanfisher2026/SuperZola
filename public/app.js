@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.47";
+const VERSION = "v2.48";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2165,14 +2165,19 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
 // ── LIST CARD (home row) ─────────────────────────────────────────────────────
 // List actions (rename, duplicate, delete) live inside the list itself now
 // (its own ☰ menu) — this is just a tappable row, no per-card menu.
-function ListCard({ list, onOpen, isAdmin }) {
+function ListCard({ list, onOpen, isAdmin, itemCount }) {
   return (
     <div
       onClick={onOpen}
-      className="bg-white border border-[#E0D4B4] rounded-2xl px-4 py-4 flex items-center gap-2 shadow-sm cursor-pointer"
+      className="bg-white border border-[#E0D4B4] rounded-2xl px-4 py-3.5 flex items-center gap-2 shadow-sm cursor-pointer"
     >
-      <span className="text-[16px] font-medium text-right flex-1 min-w-0 truncate text-[#2B2418]">
-        {list.name}
+      <span className="flex-1 min-w-0">
+        <span className="block text-[16px] font-medium text-right truncate text-[#2B2418]">{list.name}</span>
+        {itemCount != null && (
+          <span className="block text-[11px] text-[#A79A7C] mt-0.5" style={{ fontVariantNumeric: "tabular-nums" }}>
+            {itemCount === 0 ? "ריקה" : itemCount === 1 ? "פריט אחד" : `${itemCount} פריטים`}
+          </span>
+        )}
       </span>
       {/* Visible only to the admin who set it — regular users never see
           which list (if any) is the starter template. */}
@@ -2953,7 +2958,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           <div className="text-[#8A7F66] text-sm py-6 text-center">אין עדיין רשימות. צרו את הראשונה!</div>
         )}
         {(lists || []).map(list => (
-          <ListCard key={list.id} list={list} isAdmin={simulatedIsAdmin} onOpen={() => onOpenList(list.id, list.name)} />
+          <ListCard key={list.id} list={list} isAdmin={simulatedIsAdmin} itemCount={list.itemCount} onOpen={() => onOpenList(list.id, list.name)} />
         ))}
       </div>
 
@@ -5275,7 +5280,12 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
     db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
       addedBy: uid,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    })).then(() => done());
+    })).then(() => {
+      // Keeps the home-screen count current without opening the list;
+      // ListScreen corrects any drift the next time it's opened.
+      db.collection("lists").doc(listId).update({ itemCount: firebase.firestore.FieldValue.increment(1) }).catch(() => {});
+      done();
+    });
   }
 
   // The shared onInsert passed to ItemWizard/CategoryBrowseModal: already
@@ -6666,6 +6676,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     const newRef = await db.collection("lists").add({
       name,
       ownerId: uid,
+      itemCount: itemsSnap.size,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     const batch = db.batch();
@@ -6685,6 +6696,26 @@ function ListScreen({ uid, listId, listName, onBack }) {
     await batch.commit();
     onBack();
   }
+
+  // A list left with nothing in it is deleted on the way out — "+ רשימה
+  // חדשה" creates the list up front, so every open-and-leave used to leave
+  // an empty list cluttering the home screen. Runs on unmount, so it covers
+  // any way of leaving. The admin's starter template is never touched.
+  // The home screen's "N פריטים" comes from itemCount on the list doc (free
+  // — the home screen already loads that doc), kept right here whenever the
+  // list is open, so any drift from other add/remove paths self-corrects.
+  useEffect(() => {
+    if (items === null || list.ownerId === undefined || list.itemCount === items.length) return;
+    db.collection("lists").doc(listId).update({ itemCount: items.length }).catch(() => {});
+    // eslint-disable-next-line
+  }, [items && items.length, list.itemCount, list.ownerId]);
+
+  const leaveStateRef = useRef({});
+  leaveStateRef.current = { empty: items !== null && items.length === 0, template: !!list.isDefaultTemplate };
+  useEffect(() => () => {
+    const s = leaveStateRef.current;
+    if (s.empty && !s.template) db.collection("lists").doc(listId).delete().catch(() => {});
+  }, [listId]);
 
   const groups = groupByCategory(enrichedItems, categories);
   // The table shows the exact same order as the list (category, then name)
