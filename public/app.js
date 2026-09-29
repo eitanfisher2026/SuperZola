@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.39";
+const VERSION = "v2.40";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -454,7 +454,7 @@ const DEFAULT_DAILY_CAPS = {
 };
 function useAppLimits() {
   const [limits, setLimits] = useState(Object.assign(
-    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0, defaultListId: null },
+    { maxOnlineVendors: 4, maxPhysicalVendors: 4, fuzzySearchEnabled: false, fuzzySearchThreshold: 0, defaultListId: null, onboardingWizardEnabled: false },
     Object.fromEntries(Object.entries(DEFAULT_DAILY_CAPS).map(([fn, v]) => [fn + "DailyCap", v]))
   ));
   useEffect(() => {
@@ -472,6 +472,9 @@ function useAppLimits() {
         // The one list (owned by an admin) offered to brand-new users as a
         // starter — null/empty means the option is off entirely.
         defaultListId: d.defaultListId || null,
+        // Off until the admin has previewed it and switched it on — while
+        // off, only the admin's own preview can open the wizard.
+        onboardingWizardEnabled: d.onboardingWizardEnabled === true,
       };
       Object.entries(DEFAULT_DAILY_CAPS).forEach(([fn, defaultVal]) => {
         const key = fn + "DailyCap";
@@ -1877,6 +1880,366 @@ function ListCard({ list, onOpen, isAdmin }) {
   );
 }
 
+// ── ONBOARDING WIZARD ─────────────────────────────────────────────────────────
+// First-run walkthrough: one decision per screen, each with a silent
+// animated "how-to" clip built from miniature copies of the real screens —
+// no recorded video, so nothing to host or re-record when the UI changes.
+// Open/step state lives in localStorage so leaving to pick branches (a
+// separate screen) and coming back resumes at the same step.
+function readOnboardingState() {
+  try { return JSON.parse(localStorage.getItem("sz_onboarding") || "null"); } catch (e) { return null; }
+}
+function writeOnboardingState(state) {
+  try {
+    if (state) localStorage.setItem("sz_onboarding", JSON.stringify(state));
+    else localStorage.removeItem("sz_onboarding");
+  } catch (e) {}
+}
+
+// Each frame is "the screen as it looks now + the next thing to tap": the
+// pointer glides to the element marked data-demo={target}, taps it, and the
+// next frame shows the result. Loops forever while mounted.
+function DemoPlayer({ frames }) {
+  const [i, setI] = useState(0);
+  const [ptr, setPtr] = useState(null);
+  const boxRef = useRef(null);
+  const frame = frames[i];
+  useEffect(() => {
+    const t = setTimeout(() => setI(n => (n + 1) % frames.length), frame.ms || 1800);
+    return () => clearTimeout(t);
+  }, [i]);
+  useEffect(() => {
+    const box = boxRef.current;
+    const el = box && frame.target ? box.querySelector('[data-demo="' + frame.target + '"]') : null;
+    if (!el) return;
+    const b = box.getBoundingClientRect(), r = el.getBoundingClientRect();
+    setPtr({ x: r.left - b.left + r.width / 2, y: r.top - b.top + r.height / 2 });
+  }, [i]);
+  return (
+    <div>
+      <div ref={boxRef} dir="rtl" aria-hidden="true"
+        className="relative mx-auto w-[250px] h-[300px] rounded-[24px] border-[5px] border-[#2B2418] bg-[#FBF4E7] overflow-hidden text-right select-none shadow-lg">
+        <div key={i} className="absolute inset-0">{frame.view}</div>
+        {ptr && (
+          <div className="sz-demo-pointer" style={{ left: ptr.x, top: ptr.y }}>
+            👆
+            {frame.tap !== false && <span key={i} className="sz-demo-ripple" />}
+          </div>
+        )}
+      </div>
+      <p className="text-center text-sm font-semibold text-[#2E4A3B] mt-3 min-h-[40px] px-2 leading-snug">{frame.caption}</p>
+      <div className="flex justify-center gap-1 mt-1">
+        {frames.map((_, n) => (
+          <span key={n} className={"h-1.5 rounded-full transition-all " + (n === i ? "w-4 bg-[#2E4A3B]" : "w-1.5 bg-[#DECBA1]")} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const DEMO_TITLE_STYLE = { fontFamily: "'Suez One', serif", color: "#26361F" };
+
+function DemoBranchesScreen({ vendor, menuOpen, branchOpen, branch, added }) {
+  const vendors = ["שופרסל", "רמי לוי", "יוחננוף", "ויקטורי"];
+  const branches = ["תל אביב · יגאל אלון", "רמת גן · ביאליק", "גבעתיים · כצנלסון"];
+  return (
+    <div className="p-2.5 text-[11px] text-[#2B2418]">
+      <div className="text-[13px] mb-2" style={DEMO_TITLE_STYLE}>רשתות להשוואת מחירים</div>
+      <div className="text-[10px] text-[#8A7F66] mb-1">הסניפים שלי</div>
+      {added ? (
+        <div className="sz-demo-fade bg-white border border-[#B9D9B0] rounded-lg px-2 py-1.5 mb-2 flex justify-between">
+          <span>רמי לוי · {added}</span><span className="text-[#256A3F] font-bold">✓ פעיל</span>
+        </div>
+      ) : (
+        <div className="text-[10px] text-[#A79A7C] mb-2">עדיין לא נבחרו סניפים</div>
+      )}
+      <div className="relative bg-white border border-[#E0D4B4] rounded-lg p-2 space-y-1.5">
+        <div className="text-[10px] font-semibold text-[#8A7F66]">הוספת סניף להשוואה</div>
+        <div data-demo="vendorSelect" className="border border-[#C7B78E] rounded-md px-2 py-1.5 flex justify-between">
+          <span className={vendor ? "" : "text-[#A79A7C]"}>{vendor || "בחירת רשת..."}</span><span>▾</span>
+        </div>
+        {menuOpen && (
+          <div className="sz-demo-fade absolute right-2 left-2 top-[50px] bg-white border border-[#C7B78E] rounded-md shadow-lg z-10">
+            {vendors.map(v => <div key={v} data-demo={"v-" + v} className="px-2 py-1.5 border-b border-[#F0E9D4] last:border-0">{v}</div>)}
+          </div>
+        )}
+        {vendor && (
+          <div className={"border rounded-md px-2 py-1.5 " + (branch ? "border-[#C7B78E]" : "border-[#2E4A3B]")}>
+            {branch ? "רמי לוי · " + branch : <span className="text-[#A79A7C]">חיפוש סניף לפי שם או עיר...</span>}
+          </div>
+        )}
+        {branchOpen && (
+          <div className="sz-demo-fade bg-white border border-[#C7B78E] rounded-md shadow-lg">
+            {branches.map(b => <div key={b} data-demo={"b-" + b} className="px-2 py-1.5 border-b border-[#F0E9D4] last:border-0">{b}</div>)}
+          </div>
+        )}
+        <div data-demo="addBranch" className={"text-center rounded-md py-1.5 font-semibold bg-[#2E4A3B] text-[#FBF4E7] " + (branch ? "" : "opacity-40")}>
+          + הוספת סניף
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const BRANCH_DEMO = [
+  { view: <DemoBranchesScreen />, target: "vendorSelect", caption: "1. בוחרים רשת" },
+  { view: <DemoBranchesScreen menuOpen />, target: "v-רמי לוי", caption: "1. בוחרים רשת" },
+  { view: <DemoBranchesScreen vendor="רמי לוי" branchOpen />, target: "b-רמת גן · ביאליק", caption: "2. בוחרים את הסניף שלכם (אפשר גם להקליד עיר)" },
+  { view: <DemoBranchesScreen vendor="רמי לוי" branch="רמת גן · ביאליק" />, target: "addBranch", caption: "3. לוחצים \"הוספת סניף\"" },
+  { view: <DemoBranchesScreen added="רמת גן · ביאליק" />, target: "vendorSelect", tap: false, ms: 3000, caption: "זהו! חוזרים על זה עוד פעם או פעמיים, כדי שיהיה מה להשוות" },
+];
+
+function DemoHomeScreen() {
+  return (
+    <div className="p-2.5 text-[11px] text-[#2B2418]">
+      <div className="text-[15px] mb-3 mt-1" style={DEMO_TITLE_STYLE}>הרשימות שלי</div>
+      <div className="text-center text-[#8A7F66] py-4">אין עדיין רשימות</div>
+      <div data-demo="newList" className="border-2 border-dashed border-[#C7B78E] rounded-xl py-2 text-center text-[#A0906B] text-[12px]">+ רשימה חדשה</div>
+    </div>
+  );
+}
+function DemoListScreen({ item, dim }) {
+  return (
+    <div className={"h-full flex flex-col text-[11px] text-[#2B2418] " + (dim ? "opacity-40" : "")}>
+      <div className="bg-[#26361F] px-2.5 py-2 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</div>
+      <div className="flex-1 p-2.5">
+        {item ? (
+          <div className="sz-demo-fade bg-white border border-[#E0D4B4] rounded-lg p-2">
+            <div className="font-semibold text-[12px] mb-1.5">חלב טרי 3% 1 ליטר</div>
+            <div className="flex flex-wrap gap-1 text-[10px]">
+              <span className="bg-[#DCEFD8] text-[#256A3F] font-bold rounded-md px-1.5 py-0.5">רמי לוי: ₪6.90</span>
+              <span className="bg-[#F3ECD9] rounded-md px-1.5 py-0.5">יוחננוף: ₪7.10</span>
+              <span className="bg-[#F3ECD9] rounded-md px-1.5 py-0.5">שופרסל: ₪7.40</span>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center text-[#8A7F66] pt-10">הרשימה ריקה</div>
+        )}
+      </div>
+      <div className="p-2.5 flex justify-center">
+        <div data-demo="addItem" className="bg-[#2E4A3B] text-[#FBF4E7] rounded-xl px-3 py-1.5 font-semibold">+ הוספת פריט</div>
+      </div>
+    </div>
+  );
+}
+function DemoSheet({ title, children, footer }) {
+  return (
+    <div className="absolute inset-0 bg-black/30 flex items-end">
+      <div className="sz-demo-fade w-full bg-[#FBF4E7] rounded-t-2xl px-2.5 pt-2 pb-2.5 text-[11px] text-[#2B2418]">
+        <div className="w-8 h-1 bg-[#DECBA1] rounded-full mx-auto mb-2" />
+        <div className="text-[13px] text-center mb-2" style={DEMO_TITLE_STYLE}>{title}</div>
+        {children}
+        {footer}
+      </div>
+    </div>
+  );
+}
+function DemoAddChoice() {
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="הוספת פריט">
+        <div className="space-y-1.5">
+          {[["byName", "🔎", "לפי שם"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"]].map(([id, icon, label]) => (
+            <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-2">
+              <span>{icon}</span><span className="font-semibold">{label}</span>
+            </div>
+          ))}
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoItemName() {
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="הוספת פריט" footer={
+        <div data-demo="continue" className="mt-3 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">המשך להשוואת מחירים ←</div>
+      }>
+        <div className="text-[10px] text-[#8A7F66] mb-0.5">שם</div>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5">חלב טרי 3% <span className="sz-demo-caret" /></div>
+        <div className="flex gap-1.5 mt-2">
+          <div className="flex-1 bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 text-center">1</div>
+          <div className="flex-1 bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5">יחידות</div>
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoPriceMatch({ checked }) {
+  const rows = [
+    { id: "check1", name: "חלב טרי 3% 1 ליטר", prices: [["רמי לוי", "₪6.90"], ["יוחננוף", "₪7.10"]] },
+    { id: "check2", name: "חלב טרי 3% בשקית", prices: [["שופרסל", "₪6.50"], ["רמי לוי", "₪6.60"]] },
+  ];
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="השוואת מחירים" footer={
+        <div data-demo="finish" className={"mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold " + (checked ? "" : "opacity-40")}>סיום והוספה לרשימה</div>
+      }>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 mb-1.5">חלב טרי 3%</div>
+        <div className="space-y-1.5">
+          {rows.map((r, n) => (
+            <div key={r.id} className={"bg-white border rounded-lg px-2 py-1.5 " + (checked && n === 0 ? "border-[#2E4A3B]" : "border-[#E0D4B4]")}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <span data-demo={r.id} className={"w-3.5 h-3.5 rounded border-2 flex items-center justify-center text-[8px] " + (checked && n === 0 ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1]")}>
+                  {checked && n === 0 ? "✓" : ""}
+                </span>
+                <span className="font-semibold">{r.name}</span>
+              </div>
+              <div className="flex gap-1 text-[9px]">
+                {r.prices.map(([v, p]) => <span key={v} className="bg-[#DCEFD8] text-[#256A3F] rounded px-1 py-0.5">{v}: {p}</span>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+
+const LIST_DEMO = [
+  { view: <DemoHomeScreen />, target: "newList", caption: "1. יוצרים רשימה חדשה" },
+  { view: <DemoListScreen />, target: "addItem", caption: "2. לוחצים \"הוספת פריט\"" },
+  { view: <DemoAddChoice />, target: "byName", caption: "3. בוחרים \"לפי שם\"" },
+  { view: <DemoItemName />, target: "continue", caption: "4. כותבים את שם המוצר וממשיכים" },
+  { view: <DemoPriceMatch />, target: "check1", caption: "5. מסמנים את המוצר המתאים" },
+  { view: <DemoPriceMatch checked />, target: "finish", caption: "6. מוסיפים לרשימה" },
+  { view: <DemoListScreen item />, target: "addItem", tap: false, ms: 3400, caption: "זהו! ליד כל פריט מופיע המחיר בכל רשת, והזול ביותר מסומן בירוק" },
+];
+
+const PREF_OPTIONS = [
+  { id: "instoreOnly", icon: "🏪", label: "בחנות בלבד", desc: "משווים את מחירי המדף בסניפים שבהם אתם קונים" },
+  { id: "both", icon: "🔀", label: "גם וגם", desc: "גם בסניפים וגם באתרי קניות עם משלוח" },
+  { id: "onlineOnly", icon: "🚚", label: "אונליין בלבד", desc: "רק אתרי קניות עם משלוח עד הבית" },
+];
+
+// preview: the admin's own look at the wizard — nothing it does touches the
+// admin's real settings or creates a list.
+function OnboardingWizard({ uid, preview, initialStep, pricePreference, profiles, onlineVendors, limits, hasLists, onOpenVendors, onCreateList, onClose, showToast }) {
+  const [step, setStep] = useState(initialStep || 1);
+  const [pref, setPref] = useState(pricePreference || "instoreOnly");
+  const [showOnlinePicker, setShowOnlinePicker] = useState(false);
+
+  useEffect(() => { writeOnboardingState({ open: true, step, preview: !!preview }); }, [step]);
+
+  const wantsInstore = pref !== "onlineOnly";
+  const wantsOnline = pref !== "instoreOnly";
+  const active = (profiles || []).filter(p => p.active);
+  const instoreCount = active.filter(p => (p.mode || "instore") === "instore").length;
+  const onlineCount = active.filter(p => p.mode === "online").length;
+
+  function choosePref(id) {
+    setPref(id);
+    if (!preview) savePricePreference(uid, id);
+  }
+  function finish(createList) {
+    writeOnboardingState(null);
+    if (!preview) db.collection("users").doc(uid).set({ onboardingDone: true }, { merge: true });
+    onClose();
+    if (!createList) return;
+    if (preview) showToast("תצוגה מקדימה — לא נוצרה רשימה");
+    else onCreateList();
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 bg-[#FBF4E7] overflow-y-auto">
+      <div className="max-w-md mx-auto min-h-full flex flex-col px-4 pt-4 pb-6">
+        {preview && (
+          <div className="mb-3 bg-[#E3A939]/20 border border-[#E3A939] rounded-xl px-3 py-1.5 text-[11px] text-[#8A5A15] text-center">
+            👁️ תצוגה מקדימה — רק אתה רואה את זה, ושום דבר כאן לא משנה את ההגדרות שלך
+          </div>
+        )}
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-[#8A7F66]">שלב {step} מתוך 3</span>
+          <button onClick={() => finish(false)} className="text-xs text-[#8A7F66] underline">דילוג</button>
+        </div>
+        <div className="flex gap-1.5 mb-5">
+          {[1, 2, 3].map(n => <span key={n} className={"flex-1 h-1.5 rounded-full " + (n <= step ? "bg-[#2E4A3B]" : "bg-[#E5D8B5]")} />)}
+        </div>
+
+        <div className="flex-1">
+          {step === 1 && (
+            <div>
+              <h2 className="text-xl text-center mb-1" style={DEMO_TITLE_STYLE}>איפה תרצו להשוות מחירים?</h2>
+              <p className="text-sm text-[#8A7F66] text-center mb-5">אפשר לשנות את זה בכל רגע מ⚙️</p>
+              <div className="space-y-2.5">
+                {PREF_OPTIONS.map(o => (
+                  <button key={o.id} onClick={() => choosePref(o.id)}
+                    className={"w-full text-right flex items-center gap-3 px-4 py-4 rounded-2xl border-2 transition " +
+                      (pref === o.id ? "border-[#2E4A3B] bg-[#EEF5EC]" : "border-[#E0D4B4] bg-white")}>
+                    <span className="text-2xl">{o.icon}</span>
+                    <span className="flex-1">
+                      <div className="text-[15px] font-bold text-[#2B2418]">{o.label}</div>
+                      <div className="text-xs text-[#8A7F66]">{o.desc}</div>
+                    </span>
+                    <span className={"w-5 h-5 rounded-full border-2 flex-shrink-0 " + (pref === o.id ? "border-[#2E4A3B] bg-[#2E4A3B] shadow-[inset_0_0_0_3px_#EEF5EC]" : "border-[#DECBA1]")} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div>
+              <h2 className="text-xl text-center mb-1" style={DEMO_TITLE_STYLE}>איפה אתם קונים?</h2>
+              <p className="text-sm text-[#8A7F66] text-center mb-4">
+                {wantsInstore ? "בוחרים 2–3 סניפים — ככה נראה את זה:" : "בוחרים את אתרי הקניות שתרצו להשוות"}
+              </p>
+              {wantsInstore && <DemoPlayer frames={BRANCH_DEMO} />}
+              <div className="space-y-2 mt-5">
+                {wantsInstore && (
+                  <button onClick={onOpenVendors}
+                    className="w-full bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] rounded-2xl py-3 text-sm font-bold">
+                    {instoreCount === 1 ? "✓ נבחר סניף אחד — הוספת עוד" : instoreCount > 1 ? `✓ נבחרו ${instoreCount} סניפים — הוספת עוד` : "🏪 בחירת סניפים"}
+                  </button>
+                )}
+                {wantsOnline && (
+                  <button onClick={() => preview ? showToast("בתצוגה מקדימה — כאן נפתח חלון בחירת אתרי המשלוחים") : setShowOnlinePicker(true)}
+                    className="w-full bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] rounded-2xl py-3 text-sm font-bold">
+                    {onlineCount === 1 ? "✓ נבחר אתר משלוחים אחד — שינוי" : onlineCount > 1 ? `✓ נבחרו ${onlineCount} אתרי משלוחים — שינוי` : "🚚 בחירת אתרי משלוחים"}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div>
+              <h2 className="text-xl text-center mb-1" style={DEMO_TITLE_STYLE}>בונים רשימה ראשונה</h2>
+              <p className="text-sm text-[#8A7F66] text-center mb-4">ככה מוסיפים פריט ורואים איפה הכי זול:</p>
+              <DemoPlayer frames={LIST_DEMO} />
+              {limits.defaultListId && (
+                <p className="text-xs text-[#3F5A38] bg-[#EEF5EC] rounded-xl px-3 py-2 mt-4 text-center">
+                  💡 ברשימה החדשה אפשר גם לטעון רשימת מוצרים בסיסית מוכנה, ולערוך אותה
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 space-y-2">
+          {/* Someone replaying the guide already has lists — finishing
+              shouldn't create yet another empty one for them. */}
+          <button onClick={() => step < 3 ? setStep(step + 1) : finish(!hasLists)}
+            className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3.5 rounded-2xl font-semibold text-[15px]">
+            {step < 3 ? "המשך" : hasLists ? "סיום" : "יצירת הרשימה הראשונה"}
+          </button>
+          {step > 1 && (
+            <button onClick={() => setStep(step - 1)} className="w-full text-center text-sm text-[#8A7F66] py-1">‹ חזרה</button>
+          )}
+        </div>
+      </div>
+
+      {showOnlinePicker && (
+        <OnlineVendorPickerModal uid={uid} onlineVendors={onlineVendors} existingProfiles={profiles}
+          maxOnlineVendors={limits.maxOnlineVendors} showToast={showToast} onDone={() => setShowOnlinePicker(false)} />
+      )}
+    </div>
+  );
+}
+
 // ── HOME ──────────────────────────────────────────────────────────────────────
 function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminOptions, onOpenHelp, onSignOut }) {
   const [lists, setLists] = useState(null);
@@ -1909,6 +2272,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
   const limits = useAppLimits();
+  const [onboarding, setOnboarding] = useState(() => readOnboardingState());
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
@@ -1923,6 +2287,27 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   // opening an online list shouldn't count as having completed setup. Only
   // a real in-store branch, which the user actually chose to add, does.
   const isNewUser = profilesLoaded && (allProfiles || []).filter(p => p.active && (p.mode || "instore") === "instore").length === 0;
+
+  // Opens by itself once, for a brand-new account with nothing set up yet —
+  // and only after the admin has switched it on. Anyone can replay it later
+  // from the home screen (openGuide); while it's still off, that replay
+  // button is admin-only and opens as a no-side-effects preview.
+  const guideAvailable = limits.onboardingWizardEnabled || simulatedIsAdmin;
+  function openGuide() {
+    setOnboarding({ open: true, step: 1, preview: !limits.onboardingWizardEnabled });
+  }
+  // Once per mount at most — closing it writes onboardingDone, but that
+  // snapshot can land a render later, and this must not reopen it meanwhile.
+  const guideAutoShownRef = useRef(false);
+  useEffect(() => {
+    if (guideAutoShownRef.current || onboarding || !limits.onboardingWizardEnabled || userDoc === null || userDoc.onboardingDone) return;
+    if (isNewUser && lists !== null && lists.length === 0) {
+      guideAutoShownRef.current = true;
+      setOnboarding({ open: true, step: 1, preview: false });
+    }
+    // eslint-disable-next-line
+  }, [limits.onboardingWizardEnabled, userDoc, isNewUser, lists]);
+  const showOnboarding = !!(onboarding && onboarding.open && (!onboarding.preview || isAdmin));
 
   // A brand-new user who never touches the banner's toggle below still
   // ends up with an explicit choice saved (rather than silently defaulting
@@ -2204,14 +2589,29 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           🔍 חיפוש והוספת פריט
         </button>
       </div>
+      {guideAvailable && (
+        <div className="px-4 mt-3 text-center">
+          <button onClick={openGuide} className="text-sm font-semibold text-[#2E4A3B] underline">
+            🎬 איך זה עובד? מדריך קצר בשלושה שלבים
+          </button>
+        </div>
+      )}
 
       <div className="text-center py-8 text-[11px] text-[#C7B78E]">
         סופר זולה {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
       </div>
 
-      {needsOnlineVendorSetup && (
+      {/* Held back while the guide is open — its own step 2 offers the same
+          picker at the right moment, instead of it popping over step 1. */}
+      {needsOnlineVendorSetup && !showOnboarding && (
         <OnlineVendorPickerModal uid={uid} onlineVendors={onlineVendors} existingProfiles={allProfiles}
           maxOnlineVendors={limits.maxOnlineVendors} showToast={setToast} onDone={() => {}} />
+      )}
+      {showOnboarding && (
+        <OnboardingWizard uid={uid} preview={onboarding.preview} initialStep={onboarding.step}
+          pricePreference={(userDoc || {}).pricePreference} profiles={allProfiles} onlineVendors={onlineVendors}
+          limits={limits} hasLists={(lists || []).length > 0} onOpenVendors={onOpenVendors}
+          onCreateList={quickCreate} onClose={() => setOnboarding(null)} showToast={setToast} />
       )}
       {showCheckPrice && (
         <FindItemModal uid={uid} categories={categories} onClose={() => setShowCheckPrice(false)} onOpenList={onOpenList} showToast={setToast} />
@@ -3405,14 +3805,26 @@ function AdminOptionsScreen({ uid, onBack }) {
               <div className="flex items-center gap-3">
                 <span className="text-lg w-7 text-center">⭐</span>
                 <div className="text-right">
-                  <div className="text-sm font-semibold text-[#2B2418]">רשימת ברירת מחדל למשתמשים חדשים</div>
-                  <div className="text-xs text-[#A79A7C]">רשימה משלך שמוצעת כנקודת התחלה במקום דף ריק</div>
+                  <div className="text-sm font-semibold text-[#2B2418]">קליטת משתמשים חדשים</div>
+                  <div className="text-xs text-[#A79A7C]">מדריך הפתיחה, ורשימת ברירת מחדל במקום דף ריק</div>
                 </div>
               </div>
               <span className="text-[#A79A7C] text-xs flex-shrink-0">{showDefaultList ? "▲ הסתר" : "▼ הצג"}</span>
             </button>
             {showDefaultList && (
               <div className="mt-2 bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
+                <div className="text-xs font-semibold text-[#2B2418]">🎬 מדריך פתיחה בשלושה שלבים</div>
+                <p className="text-[11px] text-[#A79A7C]">
+                  כשפעיל: נפתח אוטומטית פעם אחת למשתמש חדש לגמרי, וכל משתמש יכול לצפות בו שוב מכפתור "איך זה עובד?" במסך הבית. כשכבוי: רק אתה רואה את הכפתור הזה, והמדריך נפתח אצלך כתצוגה מקדימה.
+                </p>
+                <label className="flex items-center gap-2 cursor-pointer pb-3 border-b border-[#F0E9D4]">
+                  <input type="checkbox" checked={!!limits.onboardingWizardEnabled}
+                    onChange={e => db.collection("appConfig").doc("limits").set({ onboardingWizardEnabled: e.target.checked }, { merge: true })
+                      .then(() => setToast(e.target.checked ? "המדריך הופעל לכל המשתמשים" : "המדריך כובה"), () => setToast("שגיאה בשמירה"))}
+                    className="w-4 h-4" />
+                  <span className="text-xs text-[#5B5749]">הפעלת המדריך לכל המשתמשים</span>
+                </label>
+                <div className="text-xs font-semibold text-[#2B2418] pt-1">⭐ רשימת ברירת מחדל</div>
                 <p className="text-xs text-[#8A7F66] mb-2">
                   בחר אחת מהרשימות שלך (עם פריטים אמיתיים ומחירים מותאמים). משתמש חדש עם 2 רשתות פעילות ומעלה, שעדיין לא השתמש באפשרות הזו, יוכל להעתיק אותה כשהרשימה שלו ריקה — הרשתות שלו שלא הותאמו ברשימה המקורית יושלמו אוטומטית במידת האפשר, ואם לא, יסומנו להתאמה ידנית.
                 </p>

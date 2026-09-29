@@ -27,6 +27,47 @@ html, body {
   animation: szProgressSweep 1.1s ease-in-out infinite;
 }
 
+/* Onboarding "how-to" clips: a pointer glides to each scripted target, then
+   a ring pulses out once it arrives (the delay matches the glide). */
+.sz-demo-pointer {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  margin: -2px 0 0 -11px;
+  pointer-events: none;
+  z-index: 5;
+  transition: left 0.6s ease-in-out, top 0.6s ease-in-out, opacity 0.3s;
+  font-size: 22px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.25));
+}
+@keyframes szDemoRipple {
+  0% { transform: scale(0.3); opacity: 0.9; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+.sz-demo-ripple {
+  position: absolute;
+  left: -4px;
+  top: -13px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 3px solid #E3A939;
+  opacity: 0;
+  animation: szDemoRipple 0.55s ease-out 0.65s 1 both;
+}
+@keyframes szDemoFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.sz-demo-fade { animation: szDemoFadeIn 0.3s ease-out both; }
+@keyframes szDemoCaret { 50% { opacity: 0; } }
+.sz-demo-caret { display: inline-block; width: 1px; height: 1em; background: #2B2418; vertical-align: middle; animation: szDemoCaret 1s step-end infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .sz-demo-pointer { transition: none; }
+  .sz-demo-ripple, .sz-demo-fade, .sz-demo-caret { animation: none; }
+}
+
 @media print {
   .no-print { display: none !important; }
   .print-only { display: block !important; }
