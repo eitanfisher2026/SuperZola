@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.50";
+const VERSION = "v2.51";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2697,10 +2697,10 @@ function DemoHomeShare({ sheet }) {
       <div className="h-full p-2.5 text-[11px] text-[#2B2418]">
         <div className="text-[15px] mb-2 mt-1" style={DEMO_TITLE_STYLE}>הרשימות שלי</div>
         <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 mb-1.5">קניות שבועיות<div className="text-[9px] text-[#A79A7C]">32 פריטים</div></div>
-        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-lg px-2 py-2 mt-3 flex items-center gap-1.5">
-          <span>💚</span>
-          <span className="flex-1"><b className="text-[#2E4A3B]">נהנים מסופר זולה?</b><span className="block text-[9px] text-[#3F5A38]">ספרו לחברים</span></span>
-          <span data-demo="shareBtn" className="bg-[#2E4A3B] text-[#FBF4E7] rounded-md px-1.5 py-1 font-semibold text-[10px]">📤 שיתוף</span>
+        <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2">מסיבת יום הולדת<div className="text-[9px] text-[#A79A7C]">14 פריטים</div></div>
+        <div className="mt-6 flex flex-col items-center gap-1 text-[10px] font-semibold text-[#2E4A3B]">
+          <span>💬 יש לכם רעיון או תקלה? <u>ספרו לנו</u></span>
+          <span data-demo="shareBtn">💚 נהנים מסופר זולה? <u>שתפו חברים</u></span>
         </div>
       </div>
       {sheet && (
@@ -2791,7 +2791,7 @@ const FEATURES_GUIDE_CHAPTERS = [
     { view: <DemoListMenu />, target: "copy", ms: 2800, caption: "העתקת פריטים לרשימה אחרת, הדפסה, ו\"רשתות מוצגות\" להסתרת רשת ברשימה הזו" },
   ] },
   { id: "share", label: "📣 שיתוף", frames: [
-    { view: <DemoHomeShare />, target: "shareBtn", caption: "1. אהבתם? \"📤 שיתוף\" במסך הבית" },
+    { view: <DemoHomeShare />, target: "shareBtn", caption: "1. אהבתם? \"שתפו חברים\" בתחתית מסך הבית" },
     { view: <DemoHomeShare sheet />, target: "wa", ms: 3400, caption: "2. שולחים לחברים בוואטסאפ — ההודעה כבר כתובה, עם הקישור" },
   ] },
   { id: "feedback", label: "💬 משוב", frames: [
@@ -3323,20 +3323,6 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           🔍 חיפוש והוספת פריט
         </button>
       </div>
-      {/* Sharing used to sit only inside the ⚙️ menu. Word of mouth is how
-          this app grows, so it gets its own visible card. */}
-      <div className="px-4 mt-5">
-        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-2xl px-4 py-3 flex items-center gap-3">
-          <span className="text-2xl flex-shrink-0">💚</span>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-bold text-[#2E4A3B]">נהנים מסופר זולה?</div>
-            <div className="text-xs text-[#3F5A38] leading-snug">ספרו לחברים — ככה היא ממשיכה לגדול ולהשתפר</div>
-          </div>
-          <button onClick={shareApp}
-            className="bg-[#2E4A3B] text-[#FBF4E7] rounded-xl px-3.5 py-2 text-sm font-semibold flex-shrink-0">📤 שיתוף</button>
-        </div>
-      </div>
-
       <div className="px-4 mt-5">
         <div className="text-xs font-semibold text-[#8A7F66] mb-2">🎬 מדריכים קצרים</div>
         <div className={"grid gap-2 " + (guideAvailable ? "grid-cols-3" : "grid-cols-2")}>
@@ -3354,10 +3340,14 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
         </div>
       </div>
 
-      {/* Feedback used to live only inside the ⚙️ menu — easy to never find. */}
-      <div className="px-4 mt-4 text-center">
+      {/* Feedback and sharing used to live only inside the ⚙️ menu — easy to
+          never find. Visible, but kept to two quiet lines. */}
+      <div className="px-4 mt-4 flex flex-col items-center gap-1.5">
         <button onClick={() => setShowFeedback(true)} className="text-sm text-[#2E4A3B] font-semibold">
           💬 יש לכם רעיון, שאלה או תקלה? <span className="underline">ספרו לנו</span>
+        </button>
+        <button onClick={shareApp} className="text-sm text-[#2E4A3B] font-semibold">
+          💚 נהנים מסופר זולה? <span className="underline">שתפו חברים</span>
         </button>
       </div>
 
