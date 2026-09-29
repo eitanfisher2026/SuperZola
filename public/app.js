@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.48";
+const VERSION = "v2.49";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2475,19 +2475,325 @@ function DemoPasteReview({ merged }) {
   );
 }
 
-const ADD_ITEMS_DEMO = [
-  { view: <DemoListScreen />, target: "addItem", caption: "1. לוחצים \"הוספת פריט\"" },
-  { view: <DemoAddChoice />, target: "byName", caption: "2. הכי פשוט: חיפוש לפי שם" },
-  { view: <DemoItemName />, target: "continue", caption: "3. כותבים שם — גם כללי כמו \"חלב\" מספיק" },
-  { view: <DemoPriceMatch auto />, target: "autoPick", caption: "4. לא משנה לכם איזה? \"בחרו לי את הזול בכל רשת\"" },
-  { view: <DemoPriceMatch autoDone addAnother />, target: "addAnother", ms: 2400, caption: "5. רוצים עוד מוצר מאותו חיפוש? \"הוספה + בחירת פריט נוסף\"" },
-  { view: <DemoAddChoice />, target: "byPaste", caption: "6. הרבה פריטים? \"כמה פריטים בבת אחת\"" },
-  { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "7. לוחצים על המיקרופון ואומרים את כל הרשימה ברצף — או כותבים" },
-  { view: <DemoPasteList />, target: "pasteSubmit", caption: "8. ממשיכים לבדיקה" },
-  { view: <DemoPasteReview />, target: "merge-שרי", ms: 2600, caption: "9. פריט נחתך באמצע? \"חיבור ↑\" מחבר אותו לשורה שמעליו" },
-  { view: <DemoPasteReview merged />, target: "confirmList", caption: "10. מאשרים — והכול נוסף ומותאם לבד" },
-  { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3200, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
+function DemoCategoryGrid() {
+  const cats = [["cat-dairy", "🥛", "מוצרי חלב"], ["cat-meat", "🥩", "בשר ועוף"], ["cat-produce", "🥦", "פירות וירקות"], ["cat-bakery", "🍞", "מאפה ולחם"], ["cat-dry", "🥫", "מזון יבש"], ["cat-clean", "🧹", "ניקוי"]];
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="עיון לפי קטגוריה">
+        <div className="grid grid-cols-2 gap-1.5">
+          {cats.map(([id, e, l]) => (
+            <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-1.5"><span>{e}</span><span className="font-semibold">{l}</span></div>
+          ))}
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoCategoryItems({ checked }) {
+  const rows = [["catItem1", "חלב טרי 3% 1 ליטר", [["רמי לוי", "₪6.60"], ["שופרסל", "₪7.40"]]], ["catItem2", "קוטג' 5% 250 גרם", [["רמי לוי", "₪5.90"], ["שופרסל", "₪6.20"]]], ["catItem3", "יוגורט 3% 200 גרם", [["רמי לוי", "₪3.10"], ["שופרסל", "₪3.40"]]]];
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="🥛 מוצרי חלב וביצים" footer={
+        checked ? <div data-demo="catAdd" className="sz-demo-fade mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">הוספה לרשימה (2/2 רשתות)</div> : null
+      }>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 mb-1.5 text-[#A79A7C]">חיפוש לפי שם...</div>
+        <div className="space-y-1">
+          {rows.map(([id, name, prices], n) => (
+            <div key={id} className={"bg-white border rounded-lg px-2 py-1 " + (checked && n === 0 ? "border-[#2E4A3B] bg-[#EEF5EC]" : "border-[#E0D4B4]")}>
+              <div className="flex items-center gap-1.5">
+                <span data-demo={id} className={"w-3.5 h-3.5 rounded border-2 flex items-center justify-center text-[8px] " + (checked && n === 0 ? "bg-[#2E4A3B] border-[#2E4A3B] text-white" : "border-[#DECBA1]")}>{checked && n === 0 ? "✓" : ""}</span>
+                <span className="font-semibold">{name}</span>
+              </div>
+              <div className="flex gap-1 text-[9px] mt-0.5">{prices.map(([v, p]) => <span key={v} className="bg-[#DCEFD8] text-[#256A3F] rounded px-1">{v}: {p}</span>)}</div>
+            </div>
+          ))}
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoBarcodeScan() {
+  return (
+    <div className="h-full bg-[#1E1E1E] flex flex-col items-center justify-center text-[11px] text-white gap-3">
+      <div data-demo="scanFrame" className="relative w-40 h-24 border-2 border-[#E3A939] rounded-lg flex items-center justify-center">
+        <div className="flex gap-[2px] items-stretch h-12">
+          {[3, 1, 2, 1, 3, 2, 1, 1, 3, 1, 2, 2, 1, 3, 1, 2].map((w, i) => <span key={i} className="bg-white" style={{ width: w }} />)}
+        </div>
+        <span className="absolute left-2 right-2 top-1/2 h-0.5 bg-[#B8462F]" />
+      </div>
+      <span>מכוונים את המצלמה לברקוד</span>
+    </div>
+  );
+}
+function DemoBarcodeFound() {
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title="נמצא! ✓" footer={
+        <div data-demo="scanAdd" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">הוספה לרשימה</div>
+      }>
+        <div className="bg-white border border-[#B9D9B0] rounded-lg px-2 py-2">
+          <div className="font-bold text-[12px]">במבה 80 גרם</div>
+          <div className="text-[9px] text-[#A79A7C] mb-1">ברקוד 7290000066318</div>
+          <div className="flex gap-1 text-[9px]">
+            <span className="bg-[#DCEFD8] text-[#256A3F] font-bold rounded px-1">רמי לוי: ₪4.90</span>
+            <span className="bg-[#F3ECD9] rounded px-1">שופרסל: ₪5.40</span>
+            <span className="bg-[#F3ECD9] rounded px-1">יוחננוף: ₪5.20</span>
+          </div>
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+
+// The full list screen, for the "everything you can do" chapters.
+function DemoListFull() {
+  const rows = [
+    { name: "חלב טרי 3%", chips: [["רמי לוי ₪6.60", "g"], ["שופרסל ₪7.40", ""]] },
+    { name: "חומוס 400 גרם", chips: [["יוחננוף ₪8.90", "", "promoChip", "🏷️ 3 ב-₪20"], ["רמי לוי ₪9.50", ""]] },
+    { name: "חסה", chips: [["שופרסל ₪4.90", "g"], ["חצי חינם: —", "gap", "gapChip"]] },
+  ];
+  return (
+    <div className="h-full flex flex-col text-[11px] text-[#2B2418]">
+      <div className="bg-[#26361F] px-2.5 py-2 flex items-center gap-1.5">
+        <span className="flex-1 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</span>
+        <span className="flex bg-white/10 rounded-full p-0.5 text-[9px] font-bold">
+          <span className="bg-[#F3ECD9] text-[#26361F] rounded-full px-1.5 py-0.5">רשימה</span>
+          <span data-demo="toggleTable" className="text-[#C9BE9E] px-1.5 py-0.5">טבלה</span>
+        </span>
+        <span data-demo="menu" className="text-[#F3ECD9] bg-white/10 rounded-full w-5 h-5 flex items-center justify-center">☰</span>
+      </div>
+      <div className="flex-1 p-2 space-y-1.5">
+        {rows.map(r => (
+          <div key={r.name} className="border-b border-dotted border-[#E0D4B4] pb-1.5">
+            <div className="text-[12px] text-[#B8462F] underline mb-0.5">{r.name}</div>
+            <div className="flex flex-wrap gap-1 text-[9px]">
+              {r.chips.map(([t, kind, id, promo]) => (
+                <span key={t} data-demo={id} className={"rounded px-1 py-0.5 font-semibold " + (kind === "g" ? "bg-[#DCEFD8] text-[#256A3F]" : kind === "gap" ? "bg-[#F3ECD9] text-[#A79A7C] border border-dashed border-[#DECBA1]" : "bg-[#F3ECD9]")}>
+                  {t}{promo && <span className="block text-[8px] text-[#B8462F] font-normal">{promo}</span>}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="p-2 flex justify-center gap-1.5 items-center">
+        <div data-demo="optimizer" className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 text-[9px]">🧮 אופטימיזציה והשוואה</div>
+        <div className="bg-[#2E4A3B] text-[#FBF4E7] rounded-xl px-2.5 py-1.5 font-semibold text-[10px]">+ הוספת פריט</div>
+      </div>
+    </div>
+  );
+}
+function DemoOptimizer() {
+  return (
+    <div className="h-full relative">
+      <DemoListFull />
+      <DemoSheet title="אופטימיזציה והשוואה">
+        <div className="space-y-1.5">
+          <div className="sz-demo-fade bg-white border border-[#E0D4B4] rounded-lg px-2 py-1.5">
+            <div className="font-bold">🏪 בחנות</div>
+            <div>הכי זול בחנות אחת: <b>רמי לוי ₪182.40</b></div>
+            <div className="text-[#256A3F] font-semibold">פיצול ל-2 חנויות: ₪171.90 (חיסכון ₪10.50)</div>
+          </div>
+          <div className="sz-demo-fade bg-white border border-[#E0D4B4] rounded-lg px-2 py-1.5">
+            <div className="font-bold">🚚 אונליין</div>
+            <div>כולל משלוח: <b>שופרסל ₪205.30</b></div>
+          </div>
+          <div className="text-center text-[9px] text-[#8A7F66]">אפשר ליצור רשימה נפרדת לכל חנות בתכנית</div>
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoTable() {
+  const rows = [["חלב טרי 3%", "₪6.60", "₪7.40", "₪6.90", 0], ["חומוס", "₪9.50", "₪9.90", "₪8.90*", 2], ["חסה", "₪5.20", "₪4.90", "₪5.40", 1]];
+  return (
+    <div className="h-full flex flex-col text-[10px] text-[#2B2418]">
+      <div className="bg-[#26361F] px-2.5 py-2 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</div>
+      <div className="sz-demo-fade p-2">
+        <table className="w-full bg-white border border-[#E0D4B4] text-center">
+          <thead><tr className="bg-[#F3ECD9]"><th className="text-right px-1 py-1">פריט</th><th>רמי לוי</th><th>שופרסל</th><th>יוחננוף</th></tr></thead>
+          <tbody>
+            {rows.map(([n, a, b, c, best]) => (
+              <tr key={n} className="border-t border-[#F0E9D4]">
+                <td className="text-right px-1 py-1 text-[#B8462F]">{n}</td>
+                {[a, b, c].map((p, i) => <td key={i} className={i === best ? "text-[#2E7D4F] font-bold" : ""}>{p}</td>)}
+              </tr>
+            ))}
+            <tr className="border-t-2 border-[#DECBA1] bg-[#F3ECD9] font-bold"><td className="text-right px-1 py-1">סה"כ</td><td>₪21.30</td><td>₪22.20</td><td className="text-[#2E7D4F]">₪21.20</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+function DemoPriceInfo({ gap }) {
+  return (
+    <div className="h-full relative">
+      <DemoListFull />
+      {gap ? (
+        <DemoSheet title="לא נבחר מוצר בחצי חינם">
+          <div className="bg-[#F7F2E4] rounded-lg px-2 py-1.5 mb-1.5 leading-snug">נמצאו רק מוצרים דומים ולא התאמה ודאית, ולכן לא נבחר אוטומטית. אם אחד מהם מתאים, בחרו אותו.</div>
+          {[["חסה ערבית", "₪5.90"], ["חסה אייסברג", "₪6.90"]].map(([n, p]) => (
+            <div key={n} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-1 mb-1 flex justify-between"><span>{n}</span><b className="text-[#2E4A3B]">{p}</b></div>
+          ))}
+        </DemoSheet>
+      ) : (
+        <DemoSheet title="יוחננוף">
+          <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-1.5 space-y-1">
+            <div className="text-[9px] text-[#8A7F66]">המוצר ברשת הזו</div>
+            <div className="font-bold text-[12px]">חומוס אחלה 400 גרם</div>
+            <div>מחיר: <b>₪8.90</b></div>
+            <div className="text-[#B8462F] font-semibold">🏷️ מבצע: 3 ב-₪20</div>
+            <div className="text-[9px] text-[#8A7F66]">המבצע חל מ-3 יחידות — הגדלת הכמות תוריד את המחיר ל-₪6.67 ליחידה</div>
+          </div>
+          <div className="mt-1.5 text-center border-2 border-[#2E4A3B] text-[#2E4A3B] rounded-lg py-1 font-semibold">שינוי המוצר ביוחננוף</div>
+        </DemoSheet>
+      )}
+    </div>
+  );
+}
+function DemoListMenu() {
+  const opts = [["✏️", "שינוי שם", ""], ["📋", "שכפול רשימה", "dup"], ["📤", "העתק פריטים לרשימה אחרת", "copy"], ["🖨️", "הדפס / ייצוא ל-PDF", ""], ["🏪", "רשתות מוצגות", "vis"]];
+  return (
+    <div className="h-full relative">
+      <DemoListFull />
+      <DemoSheet title="פעולות">
+        <div className="space-y-0.5">
+          {opts.map(([e, l, id]) => (
+            <div key={l} data-demo={id || undefined} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"><span>{e}</span><span className="font-semibold">{l}</span></div>
+          ))}
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+function DemoHomeGear({ open }) {
+  return (
+    <div className="h-full p-2.5 text-[11px] text-[#2B2418] relative">
+      <div className="flex items-center gap-1.5 mb-2">
+        <span className="text-[13px]" style={DEMO_TITLE_STYLE}>סופר זולה</span>
+        <span className="flex-1" />
+        <span data-demo="gear" className="w-6 h-6 rounded-full bg-[#F3ECD9] border border-[#DECBA1] flex items-center justify-center">⚙️</span>
+      </div>
+      {open && (
+        <div className="sz-demo-fade absolute left-2.5 top-10 bg-white rounded-lg shadow-xl border border-[#E5D8B5] w-40 z-10">
+          {[["🏪", "רשתות להשוואת מחירים", ""], ["ⓘ", "עזרה", ""], ["💬", "שליחת משוב", "fb"], ["🔗", "שיתוף אפליקציה", ""]].map(([e, l, id]) => (
+            <div key={l} data-demo={id || undefined} className="px-2 py-1.5 border-b border-[#F0E9D4] flex gap-1.5"><span>{e}</span><span>{l}</span></div>
+          ))}
+        </div>
+      )}
+      <div className="text-[15px] mb-2" style={DEMO_TITLE_STYLE}>הרשימות שלי</div>
+      <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 mb-1.5">קניות שבועיות<div className="text-[9px] text-[#A79A7C]">32 פריטים</div></div>
+      <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2">מסיבת יום הולדת<div className="text-[9px] text-[#A79A7C]">14 פריטים</div></div>
+    </div>
+  );
+}
+function DemoFeedbackForm() {
+  return (
+    <div className="h-full relative">
+      <DemoHomeGear />
+      <DemoSheet title="שליחת משוב" footer={
+        <div data-demo="send" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">שליחה</div>
+      }>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 mb-1">רעיון לשיפור</div>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 h-14 leading-snug">יהיה נחמד אם אפשר יהיה... <span className="sz-demo-caret" /></div>
+        <div className="text-[9px] text-[#8A7F66] mt-1">📎 אפשר לצרף צילום מסך</div>
+      </DemoSheet>
+    </div>
+  );
+}
+
+// Guides are split into short chapters the viewer picks from — one long
+// clip covering everything is one nobody watches to the end.
+const ADD_GUIDE_CHAPTERS = [
+  { id: "name", label: "🔎 לפי שם", frames: [
+    { view: <DemoListScreen />, target: "addItem", caption: "1. לוחצים \"הוספת פריט\"" },
+    { view: <DemoAddChoice />, target: "byName", caption: "2. בוחרים \"לפי שם\"" },
+    { view: <DemoItemName />, target: "continue", caption: "3. כותבים שם — גם כללי כמו \"חלב\" מספיק" },
+    { view: <DemoPriceMatch auto />, target: "autoPick", caption: "4. לא משנה לכם איזה? \"בחרו לי את הזול בכל רשת\"" },
+    { view: <DemoPriceMatch autoDone addAnother />, target: "addAnother", ms: 2600, caption: "5. עוד מוצר מאותו חיפוש? \"הוספה + בחירת פריט נוסף\"" },
+    { view: <DemoPriceMatch autoDone addAnother />, target: "finish", caption: "6. או \"סיום והוספה לרשימה\"" },
+    { view: <DemoListScreen item />, target: "addItem", tap: false, ms: 3000, caption: "זהו! ליד הפריט המחיר בכל רשת, והזול בירוק" },
+  ] },
+  { id: "category", label: "📂 לפי קטגוריה", frames: [
+    { view: <DemoAddChoice />, target: "byCat", caption: "1. לא בטוחים בשם? \"עיון לפי קטגוריה\"" },
+    { view: <DemoCategoryGrid />, target: "cat-dairy", caption: "2. בוחרים קטגוריה" },
+    { view: <DemoCategoryItems />, target: "catItem1", caption: "3. מסמנים מוצר — רואים מראש את המחיר בכל רשת" },
+    { view: <DemoCategoryItems checked />, target: "catAdd", caption: "4. מוסיפים לרשימה, וממשיכים לבחור עוד" },
+    { view: <DemoListScreen item />, target: "addItem", tap: false, ms: 2600, caption: "זהו!" },
+  ] },
+  { id: "barcode", label: "📷 ברקוד", frames: [
+    { view: <DemoAddChoice />, target: "byScan", caption: "1. המוצר ביד? \"סריקת ברקוד\"" },
+    { view: <DemoBarcodeScan />, target: "scanFrame", tap: false, ms: 2200, caption: "2. מכוונים את המצלמה לברקוד שעל המוצר" },
+    { view: <DemoBarcodeFound />, target: "scanAdd", caption: "3. המוצר נמצא בכל הרשתות — מוסיפים" },
+  ] },
+  { id: "many", label: "🎙️ כמה בבת אחת", frames: [
+    { view: <DemoAddChoice />, target: "byPaste", caption: "1. הרבה פריטים? \"כמה פריטים בבת אחת\"" },
+    { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "2. לוחצים על המיקרופון ואומרים את כל הרשימה ברצף — או כותבים" },
+    { view: <DemoPasteList />, target: "pasteSubmit", caption: "3. ממשיכים לבדיקה" },
+    { view: <DemoPasteReview />, target: "merge-שרי", ms: 2600, caption: "4. פריט נחתך באמצע? \"חיבור ↑\" מחבר אותו לשורה שמעליו" },
+    { view: <DemoPasteReview merged />, target: "confirmList", caption: "5. מאשרים — והכול נוסף ומותאם לבד" },
+    { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3000, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
+  ] },
 ];
+
+const FEATURES_GUIDE_CHAPTERS = [
+  { id: "optimize", label: "🧮 איפה הכי זול", frames: [
+    { view: <DemoListFull />, target: "optimizer", caption: "1. \"אופטימיזציה והשוואה\" — איפה הסל כולו הכי זול" },
+    { view: <DemoOptimizer />, target: "optimizer", tap: false, ms: 4200, caption: "חנות אחת, פיצול לשתי חנויות, או אונליין כולל משלוח — הכול זה מול זה" },
+  ] },
+  { id: "table", label: "📊 טבלה", frames: [
+    { view: <DemoListFull />, target: "toggleTable", caption: "1. עוברים לתצוגת \"טבלה\"" },
+    { view: <DemoTable />, target: "toggleTable", tap: false, ms: 4000, caption: "כל הרשתות זו לצד זו, עם סה\"כ לכל רשת — הזול בירוק" },
+  ] },
+  { id: "prices", label: "🏷️ מחירים ומבצעים", frames: [
+    { view: <DemoListFull />, target: "promoChip", caption: "1. לחיצה על מחיר מראה בדיוק איזה מוצר נבחר ברשת" },
+    { view: <DemoPriceInfo />, target: "promoChip", tap: false, ms: 3600, caption: "🏷️ יש מבצע? רואים מאיזו כמות הוא חל — ואפשר להחליף מוצר רק ברשת הזו" },
+    { view: <DemoListFull />, target: "gapChip", caption: "2. רשת בלי מוצר מסומנת \"—\"" },
+    { view: <DemoPriceInfo gap />, target: "gapChip", tap: false, ms: 3600, caption: "לחיצה עליה מסבירה למה לא נבחר מוצר, ומאפשרת לבחור" },
+  ] },
+  { id: "lists", label: "📋 ניהול רשימות", frames: [
+    { view: <DemoListFull />, target: "menu", caption: "1. התפריט ☰ של הרשימה" },
+    { view: <DemoListMenu />, target: "dup", ms: 2800, caption: "שכפול: לוקחים את הרשימה של השבוע שעבר ומעדכנים רק מה שהשתנה" },
+    { view: <DemoListMenu />, target: "copy", ms: 2800, caption: "העתקת פריטים לרשימה אחרת, הדפסה, ו\"רשתות מוצגות\" להסתרת רשת ברשימה הזו" },
+  ] },
+  { id: "feedback", label: "💬 משוב", frames: [
+    { view: <DemoHomeGear />, target: "gear", caption: "1. ⚙️ במסך הבית" },
+    { view: <DemoHomeGear open />, target: "fb", caption: "2. \"שליחת משוב\"" },
+    { view: <DemoFeedbackForm />, target: "send", ms: 3600, caption: "רעיון, שאלה או תקלה — אפשר לצרף צילום מסך. אנחנו קוראים כל משוב ועונים" },
+  ] },
+];
+
+function GuideModal({ title, chapters, initialChapter, onClose }) {
+  const [idx, setIdx] = useState(Math.max(0, chapters.findIndex(c => c.id === initialChapter)));
+  const ch = chapters[idx];
+  return (
+    <Modal onClose={onClose} footer={
+      <div className="flex gap-2">
+        {idx < chapters.length - 1 && (
+          <button onClick={() => setIdx(idx + 1)} className="flex-1 bg-white border-2 border-[#2E4A3B] text-[#2E4A3B] py-3 rounded-2xl font-semibold text-sm">
+            הבא: {chapters[idx + 1].label} ›
+          </button>
+        )}
+        <button onClick={onClose} className="flex-1 bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">הבנתי</button>
+      </div>
+    }>
+      <h3 className="text-lg text-center mb-2" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>{title}</h3>
+      <div className="flex flex-wrap justify-center gap-1.5 mb-3">
+        {chapters.map((c, i) => (
+          <button key={c.id} onClick={() => setIdx(i)}
+            className={"text-xs font-bold px-2.5 py-1.5 rounded-full border " + (i === idx ? "bg-[#2E4A3B] text-[#FBF4E7] border-[#2E4A3B]" : "bg-white text-[#5B5749] border-[#DECBA1]")}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <DemoPlayer key={ch.id} frames={ch.frames} />
+    </Modal>
+  );
+}
 
 const LIST_DEMO = [
   { view: <DemoHomeScreen />, target: "newList", caption: "1. יוצרים רשימה חדשה" },
@@ -2663,6 +2969,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const onlineVendors = useOnlineVendors();
   const limits = useAppLimits();
   const [onboarding, setOnboarding] = useState(() => readOnboardingState());
+  const [showGuide, setShowGuide] = useState(null); // "add" | "all" | null
 
   useEffect(() => db.collection("users").doc(uid).collection("vendorProfiles")
     .onSnapshot(snap => setAllProfiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))), [uid]);
@@ -2979,13 +3286,29 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           🔍 חיפוש והוספת פריט
         </button>
       </div>
-      {guideAvailable && (
-        <div className="px-4 mt-3 text-center">
-          <button onClick={openGuide} className="text-sm font-semibold text-[#2E4A3B] underline">
-            🎬 איך זה עובד? מדריך קצר בשלושה שלבים
-          </button>
+      <div className="px-4 mt-5">
+        <div className="text-xs font-semibold text-[#8A7F66] mb-2">🎬 מדריכים קצרים</div>
+        <div className={"grid gap-2 " + (guideAvailable ? "grid-cols-3" : "grid-cols-2")}>
+          {[
+            guideAvailable && { key: "start", icon: "🚀", label: "איך מתחילים", onClick: openGuide },
+            { key: "add", icon: "➕", label: "הוספת פריטים", onClick: () => setShowGuide("add") },
+            { key: "all", icon: "✨", label: "כל האפשרויות", onClick: () => setShowGuide("all") },
+          ].filter(Boolean).map(g => (
+            <button key={g.key} onClick={g.onClick}
+              className="bg-white border border-[#E0D4B4] rounded-2xl py-3 px-1 flex flex-col items-center gap-1 shadow-sm">
+              <span className="text-xl">{g.icon}</span>
+              <span className="text-xs font-semibold text-[#2B2418]">{g.label}</span>
+            </button>
+          ))}
         </div>
-      )}
+      </div>
+
+      {/* Feedback used to live only inside the ⚙️ menu — easy to never find. */}
+      <div className="px-4 mt-4 text-center">
+        <button onClick={() => setShowFeedback(true)} className="text-sm text-[#2E4A3B] font-semibold">
+          💬 יש לכם רעיון, שאלה או תקלה? <span className="underline">ספרו לנו</span>
+        </button>
+      </div>
 
       <div className="text-center py-8 text-[11px] text-[#C7B78E]">
         סופר זולה {VERSION} · © {new Date().getFullYear()} כל הזכויות שמורות
@@ -2997,6 +3320,8 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
         <OnlineVendorPickerModal uid={uid} onlineVendors={onlineVendors} existingProfiles={allProfiles}
           maxOnlineVendors={limits.maxOnlineVendors} showToast={setToast} onDone={() => {}} />
       )}
+      {showGuide === "add" && <GuideModal title="איך מוסיפים פריטים" chapters={ADD_GUIDE_CHAPTERS} onClose={() => setShowGuide(null)} />}
+      {showGuide === "all" && <GuideModal title="כל מה שאפשר לעשות" chapters={FEATURES_GUIDE_CHAPTERS} onClose={() => setShowGuide(null)} />}
       {showOnboarding && (
         <OnboardingWizard uid={uid} preview={onboarding.preview} initialStep={onboarding.step}
           pricePreference={(userDoc || {}).pricePreference} profiles={allProfiles} onlineVendors={onlineVendors}
@@ -5302,7 +5627,15 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
     setCreatingNew(false);
     const p = pendingInsert;
     setPendingInsert(null);
+    // "Several at once" needs its list up front (it writes a whole batch
+    // at the end), so it asks first and only then opens.
+    if (p && p.multi) { setMethod("byMulti"); return; }
     if (p) writeToList(listId, p.payload, p.done);
+  }
+  function startMulti() {
+    if (destList) { setMethod("byMulti"); return; }
+    setPendingInsert({ multi: true });
+    openListPicker();
   }
 
   function createListAndUse() {
@@ -5381,8 +5714,13 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
       {listPickerOverlay}
     </React.Fragment>;
   }
+  if (method === "byMulti" && destList) {
+    return <PasteListModal uid={uid} listId={destList.id} activeProfiles={activeProfiles} categories={categories}
+      onClose={() => setMethod(null)} onAdded={() => onOpenList(destList.id, destList.name)} showToast={showToast} />;
+  }
 
   return (
+    <React.Fragment>
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>חיפוש והוספת פריט</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-4">
@@ -5414,8 +5752,18 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
             <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
           </span>
         </button>
+        <button onClick={startMulti}
+          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+          <span className="text-xl">📝</span>
+          <span>
+            <div className="text-sm font-semibold text-[#2B2418]">כמה פריטים בבת אחת 🎙️</div>
+            <div className="text-[11px] text-[#8A7F66]">מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת</div>
+          </span>
+        </button>
       </div>
     </Modal>
+    {listPickerOverlay}
+    </React.Fragment>
   );
 }
 
@@ -5982,7 +6330,7 @@ function MicIcon({ size }) {
     </svg>
   );
 }
-function PasteListModal({ uid, listId, activeProfiles, categories, onClose, showToast }) {
+function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAdded, showToast }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState("");
   const [listening, setListening] = useState(false);
@@ -6145,10 +6493,11 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
         });
       });
       await batch.commit();
+      db.collection("lists").doc(listId).update({ itemCount: firebase.firestore.FieldValue.increment(names.length) }).catch(() => {});
       showToast(partial > 0
         ? `נוספו ${names.length} פריטים — ב-${partial} מהם חסרה התאמה ברשת אחת או יותר, אפשר להשלים בלחיצה על הפריט`
         : `נוספו ${names.length} פריטים, עם מחיר בכל הרשתות`);
-      onClose();
+      if (onAdded) onAdded(); else onClose();
     } catch (e) {
       setStatus("");
       showToast(e && e.code === "functions/resource-exhausted" ? e.message : "שגיאה בהוספה — נסו שוב");
@@ -6241,14 +6590,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
 }
 
 function AddItemsDemoModal({ onClose }) {
-  return (
-    <Modal onClose={onClose} footer={
-      <button onClick={onClose} className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm">הבנתי</button>
-    }>
-      <h3 className="text-lg text-center mb-3" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>איך מוסיפים פריטים</h3>
-      <DemoPlayer frames={ADD_ITEMS_DEMO} />
-    </Modal>
-  );
+  return <GuideModal title="איך מוסיפים פריטים" chapters={ADD_GUIDE_CHAPTERS} onClose={onClose} />;
 }
 
 // ── LIST SCREEN ───────────────────────────────────────────────────────────────
