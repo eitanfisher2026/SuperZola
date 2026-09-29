@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.49";
+const VERSION = "v2.50";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2691,6 +2691,36 @@ function DemoHomeGear({ open }) {
     </div>
   );
 }
+function DemoHomeShare({ sheet }) {
+  return (
+    <div className="h-full relative">
+      <div className="h-full p-2.5 text-[11px] text-[#2B2418]">
+        <div className="text-[15px] mb-2 mt-1" style={DEMO_TITLE_STYLE}>הרשימות שלי</div>
+        <div className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 mb-1.5">קניות שבועיות<div className="text-[9px] text-[#A79A7C]">32 פריטים</div></div>
+        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-lg px-2 py-2 mt-3 flex items-center gap-1.5">
+          <span>💚</span>
+          <span className="flex-1"><b className="text-[#2E4A3B]">נהנים מסופר זולה?</b><span className="block text-[9px] text-[#3F5A38]">ספרו לחברים</span></span>
+          <span data-demo="shareBtn" className="bg-[#2E4A3B] text-[#FBF4E7] rounded-md px-1.5 py-1 font-semibold text-[10px]">📤 שיתוף</span>
+        </div>
+      </div>
+      {sheet && (
+        <div className="absolute inset-0 bg-black/30 flex items-end">
+          <div className="sz-demo-fade w-full bg-white rounded-t-2xl px-2.5 pt-2 pb-3 text-[11px] text-[#2B2418]">
+            <div className="w-8 h-1 bg-[#DDD] rounded-full mx-auto mb-2" />
+            <div className="bg-[#F3F3F3] rounded-lg px-2 py-1.5 mb-2 leading-snug text-[10px]">מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒</div>
+            <div className="flex justify-around text-center text-[9px]">
+              {[["wa", "💬", "וואטסאפ"], ["", "✉️", "מייל"], ["", "🔗", "העתקה"], ["", "⋯", "עוד"]].map(([id, e, l]) => (
+                <div key={l} data-demo={id || undefined} className="flex flex-col items-center gap-0.5">
+                  <span className={"w-8 h-8 rounded-full flex items-center justify-center text-sm " + (id ? "bg-[#25D366] text-white" : "bg-[#EEE]")}>{e}</span>{l}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function DemoFeedbackForm() {
   return (
     <div className="h-full relative">
@@ -2759,6 +2789,10 @@ const FEATURES_GUIDE_CHAPTERS = [
     { view: <DemoListFull />, target: "menu", caption: "1. התפריט ☰ של הרשימה" },
     { view: <DemoListMenu />, target: "dup", ms: 2800, caption: "שכפול: לוקחים את הרשימה של השבוע שעבר ומעדכנים רק מה שהשתנה" },
     { view: <DemoListMenu />, target: "copy", ms: 2800, caption: "העתקת פריטים לרשימה אחרת, הדפסה, ו\"רשתות מוצגות\" להסתרת רשת ברשימה הזו" },
+  ] },
+  { id: "share", label: "📣 שיתוף", frames: [
+    { view: <DemoHomeShare />, target: "shareBtn", caption: "1. אהבתם? \"📤 שיתוף\" במסך הבית" },
+    { view: <DemoHomeShare sheet />, target: "wa", ms: 3400, caption: "2. שולחים לחברים בוואטסאפ — ההודעה כבר כתובה, עם הקישור" },
   ] },
   { id: "feedback", label: "💬 משוב", frames: [
     { view: <DemoHomeGear />, target: "gear", caption: "1. ⚙️ במסך הבית" },
@@ -3085,10 +3119,13 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
 
   function shareApp() {
     const url = "https://superzola.web.app";
+    // Worded as a personal recommendation, not an ad — it's sent from one
+    // friend to another, usually on WhatsApp.
+    const text = "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒";
     if (navigator.share) {
-      navigator.share({ title: "סופר זולה", text: "נסו את סופר זולה — השוואת מחירים חכמה לרשימות קניות 🛒", url }).catch(() => {});
+      navigator.share({ title: "סופר זולה", text, url }).catch(() => {});
     } else {
-      navigator.clipboard.writeText(url).then(() => setToast("הקישור הועתק! 🔗"), () => setToast(url));
+      copyToClipboard(text + "\n" + url).then(() => setToast("הקישור הועתק — אפשר להדביק בוואטסאפ 🔗"), () => setToast(url));
     }
   }
 
@@ -3286,6 +3323,20 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
           🔍 חיפוש והוספת פריט
         </button>
       </div>
+      {/* Sharing used to sit only inside the ⚙️ menu. Word of mouth is how
+          this app grows, so it gets its own visible card. */}
+      <div className="px-4 mt-5">
+        <div className="bg-[#EEF5EC] border border-[#B9D9B0] rounded-2xl px-4 py-3 flex items-center gap-3">
+          <span className="text-2xl flex-shrink-0">💚</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-[#2E4A3B]">נהנים מסופר זולה?</div>
+            <div className="text-xs text-[#3F5A38] leading-snug">ספרו לחברים — ככה היא ממשיכה לגדול ולהשתפר</div>
+          </div>
+          <button onClick={shareApp}
+            className="bg-[#2E4A3B] text-[#FBF4E7] rounded-xl px-3.5 py-2 text-sm font-semibold flex-shrink-0">📤 שיתוף</button>
+        </div>
+      </div>
+
       <div className="px-4 mt-5">
         <div className="text-xs font-semibold text-[#8A7F66] mb-2">🎬 מדריכים קצרים</div>
         <div className={"grid gap-2 " + (guideAvailable ? "grid-cols-3" : "grid-cols-2")}>
