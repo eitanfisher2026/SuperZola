@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.44";
+const VERSION = "v2.45";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2345,7 +2345,7 @@ function DemoAddChoice() {
       <DemoListScreen dim />
       <DemoSheet title="הוספת פריט">
         <div className="space-y-1.5">
-          {[["byName", "🔎", "לפי שם"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"], ["byPaste", "📝", "הדבקת רשימה"]].map(([id, icon, label]) => (
+          {[["byName", "🔎", "לפי שם"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"], ["byPaste", "🎙️", "כמה פריטים בבת אחת"]].map(([id, icon, label]) => (
             <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-2">
               <span>{icon}</span><span className="font-semibold">{label}</span>
             </div>
@@ -2420,17 +2420,41 @@ function DemoPasteList() {
   return (
     <div className="h-full relative">
       <DemoListScreen dim />
-      <DemoSheet title="הדבקת רשימה" footer={
-        <div data-demo="pasteSubmit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">הוספת 5 פריטים לרשימה</div>
+      <DemoSheet title="הוספת כמה פריטים" footer={
+        <div data-demo="pasteSubmit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">המשך לבדיקה (6 פריטים) ›</div>
       }>
         <div className="flex gap-2 items-start">
           <div className="flex-1 bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 leading-relaxed">
-            חלב טרי 3%<br />לחם אחיד<br />חסה<br />עגבניות שרי<br />שניצל עוף <span className="sz-demo-caret" />
+            חלב טרי 3%<br />לחם אחיד<br />חסה<br />עגבניות<br />שרי<br />שניצל עוף <span className="sz-demo-caret" />
           </div>
           <div className="flex flex-col items-center gap-0.5">
             <div data-demo="mic" className="w-10 h-10 rounded-full bg-[#2E4A3B] text-white flex items-center justify-center"><MicIcon size={20} /></div>
             <span className="text-[9px] font-bold text-[#2E4A3B]">הקלטה</span>
           </div>
+        </div>
+      </DemoSheet>
+    </div>
+  );
+}
+
+function DemoPasteReview({ merged }) {
+  const rows = merged
+    ? ["חלב טרי 3%", "לחם אחיד", "חסה", "עגבניות שרי", "שניצל עוף"]
+    : ["חלב טרי 3%", "לחם אחיד", "חסה", "עגבניות", "שרי", "שניצל עוף"];
+  return (
+    <div className="h-full relative">
+      <DemoListScreen dim />
+      <DemoSheet title={`זו הרשימה? ${rows.length} פריטים`} footer={
+        <div data-demo="confirmList" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">אישור והוספת {rows.length} פריטים</div>
+      }>
+        <div className="space-y-1">
+          {rows.map((r, i) => (
+            <div key={r} className="bg-white border border-[#E0D4B4] rounded-md px-1.5 py-0.5 flex items-center gap-1">
+              <span className="flex-1">{r}</span>
+              {i > 0 && <span data-demo={"merge-" + r} className="text-[8px] font-bold text-[#8A5A15] bg-[#FBF0D9] border border-[#DECBA1] rounded px-1">חיבור ↑</span>}
+              <span className="text-[#B8462F] text-[9px]">✕</span>
+            </div>
+          ))}
         </div>
       </DemoSheet>
     </div>
@@ -2443,9 +2467,11 @@ const ADD_ITEMS_DEMO = [
   { view: <DemoItemName />, target: "continue", caption: "3. כותבים שם — גם כללי כמו \"חלב\" מספיק" },
   { view: <DemoPriceMatch auto />, target: "autoPick", caption: "4. לא משנה לכם איזה? \"בחרו לי את הזול בכל רשת\"" },
   { view: <DemoPriceMatch autoDone addAnother />, target: "addAnother", ms: 2400, caption: "5. רוצים עוד מוצר מאותו חיפוש? \"הוספה + בחירת פריט נוסף\"" },
-  { view: <DemoAddChoice />, target: "byPaste", caption: "6. הרבה פריטים בבת אחת? \"הדבקת רשימה\"" },
-  { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "7. לוחצים על המיקרופון ואומרים את הפריטים — או פשוט כותבים" },
-  { view: <DemoPasteList />, target: "pasteSubmit", caption: "8. מוסיפים — והכול נוסף ומותאם לבד" },
+  { view: <DemoAddChoice />, target: "byPaste", caption: "6. הרבה פריטים? \"כמה פריטים בבת אחת\"" },
+  { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "7. לוחצים על המיקרופון ואומרים את כל הרשימה ברצף — או כותבים" },
+  { view: <DemoPasteList />, target: "pasteSubmit", caption: "8. ממשיכים לבדיקה" },
+  { view: <DemoPasteReview />, target: "merge-שרי", ms: 2600, caption: "9. פריט נחתך באמצע? \"חיבור ↑\" מחבר אותו לשורה שמעליו" },
+  { view: <DemoPasteReview merged />, target: "confirmList", caption: "10. מאשרים — והכול נוסף ומותאם לבד" },
   { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3200, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
 ];
 
@@ -5942,19 +5968,64 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
   const [status, setStatus] = useState("");
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState("");
+  // "input" (speak/type) -> "review" (confirm/fix each line) -> submit.
+  // Nothing is searched until the list is confirmed: people pause mid-item
+  // while thinking, and a split like "עגבניות" / "שרי" is far cheaper to
+  // fix here with a tap than after it became two wrong items.
+  const [stage, setStage] = useState("input");
+  const [rows, setRows] = useState([]);
+  const [editingRow, setEditingRow] = useState(null);
   const recRef = useRef(null);
   const wantListeningRef = useRef(false);
+  const silentEndsRef = useRef(0);
   const textareaRef = useRef(null);
-  const allNames = [...new Set(text.split(/[\n,،]+/).map(s => s.trim()).filter(s => s.length >= 2))];
+  const parseLines = s => s.split(/[\n,،]+/).map(x => x.trim()).filter(x => x.length >= 2);
+  const inputCount = parseLines(text).length;
+  const allNames = [...new Set(rows.map(r => r.trim()).filter(r => r.length >= 2))];
   const names = allNames.slice(0, PASTE_LIST_MAX);
   const busy = !!status;
 
   useEffect(() => () => { wantListeningRef.current = false; if (recRef.current) recRef.current.abort(); }, []);
 
-  // One utterance per recognition session (continuous=false), restarted
-  // after each one while the mic is on — so every pause between items
-  // lands as its own line. (continuous=true repeats results on Android.)
-  // Saying "פסיק" also splits, for anyone who says the list in one breath.
+  function goReview() {
+    if (listening) stopListening();
+    setRows(parseLines(text));
+    setEditingRow(null);
+    setStage("review");
+  }
+  function backToInput() {
+    setText(rows.filter(r => r.trim()).join("\n") + (rows.length ? "\n" : ""));
+    setEditingRow(null);
+    setStage("input");
+  }
+  function commitRow(i, value) {
+    const v = value.trim();
+    setRows(prev => v ? prev.map((r, n) => n === i ? v : r) : prev.filter((_, n) => n !== i));
+    setEditingRow(null);
+  }
+  function mergeUp(i) {
+    setRows(prev => prev.slice(0, i - 1).concat([prev[i - 1] + " " + prev[i]], prev.slice(i + 1)));
+    setEditingRow(null);
+  }
+  function splitRow(i) {
+    setRows(prev => prev.slice(0, i).concat(prev[i].trim().split(/\s+/), prev.slice(i + 1)));
+    setEditingRow(null);
+  }
+  function removeRow(i) {
+    setRows(prev => prev.filter((_, n) => n !== i));
+    setEditingRow(null);
+  }
+  function addRow() {
+    setRows(prev => prev.concat([""]));
+    setEditingRow(rows.length);
+  }
+
+  // Desktop: one continuous session — you just keep talking, and each
+  // pause arrives as its own final result (= its own line). Phones: one
+  // utterance per session, restarted immediately — continuous mode repeats
+  // results on Android and is unreliable in mobile Safari. Saying "פסיק"
+  // also splits, for anyone who says the list in one breath.
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
   function addSpoken(phrase) {
     const lines = phrase.replace(/\s*(פסיק|,)\s*/g, "\n").split("\n").map(s => s.trim()).filter(Boolean);
     if (lines.length === 0) return;
@@ -5968,9 +6039,10 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
     }
     const rec = new SpeechRecognitionImpl();
     rec.lang = "he-IL";
-    rec.continuous = false;
+    rec.continuous = !isMobile;
     rec.interimResults = true;
     rec.onresult = e => {
+      silentEndsRef.current = 0;
       let partial = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -5984,7 +6056,10 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
         wantListeningRef.current = false;
         showToast("אין הרשאה למיקרופון — אשרו גישה למיקרופון בהגדרות הדפדפן");
       } else if (e.error === "no-speech") {
-        wantListeningRef.current = false;
+        // A pause to think between items shouldn't switch the mic off —
+        // only a long silence (several empty sessions in a row) does.
+        silentEndsRef.current++;
+        if (silentEndsRef.current >= 3) wantListeningRef.current = false;
       }
     };
     rec.onend = () => {
@@ -5996,6 +6071,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
     };
     recRef.current = rec;
     wantListeningRef.current = true;
+    silentEndsRef.current = 0;
     try { rec.start(); setListening(true); } catch (err) { wantListeningRef.current = false; }
   }
   function stopListening() {
@@ -6057,23 +6133,73 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
     }
   }
 
-  return (
+  const smallBtn = "text-[11px] font-bold px-2 py-1 rounded-lg border flex-shrink-0 ";
+
+  if (stage === "review") return (
     <Modal onClose={busy ? () => {} : onClose} disableClose={busy} footer={
-      <button onClick={submit} disabled={busy || names.length === 0}
+      <div>
+        <button onClick={submit} disabled={busy || names.length === 0}
+          className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+          {busy ? status : `אישור והוספת ${names.length} פריטים`}
+        </button>
+        {!busy && <button onClick={backToInput} className="w-full text-center text-sm text-[#8A7F66] mt-2">‹ חזרה להקלטה / להקלדה</button>}
+      </div>
+    }>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>זו הרשימה? {names.length} פריטים</h3>
+      <p className="text-xs text-[#8A7F66] text-center mb-3 leading-relaxed">
+        הקישו על פריט כדי לתקן. פריט שנחתך באמצע? "חיבור ↑" מחבר אותו לשורה שמעליו.
+      </p>
+      <div className="space-y-1.5">
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center gap-1.5 bg-white border border-[#E0D4B4] rounded-xl px-2 py-1.5">
+            <span className="text-[11px] text-[#A79A7C] w-5 text-center flex-shrink-0">{i + 1}</span>
+            {editingRow === i ? (
+              <input autoFocus defaultValue={r} disabled={busy}
+                onBlur={e => commitRow(i, e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } }}
+                className="flex-1 min-w-0 border border-[#2E4A3B] rounded-lg px-2 py-1 text-sm outline-none" />
+            ) : (
+              <span onClick={() => !busy && setEditingRow(i)} className="flex-1 min-w-0 text-sm text-[#2B2418] py-1 cursor-text break-words">{r}</span>
+            )}
+            {!busy && i > 0 && (
+              <button onClick={() => mergeUp(i)} className={smallBtn + "border-[#DECBA1] text-[#8A5A15] bg-[#FBF0D9]"}>חיבור ↑</button>
+            )}
+            {!busy && r.trim().split(/\s+/).length > 1 && (
+              <button onClick={() => splitRow(i)} className={smallBtn + "border-[#DECBA1] text-[#5B5749] bg-[#F7F2E4]"}>פיצול</button>
+            )}
+            {!busy && (
+              <button onClick={() => removeRow(i)} aria-label="הסרה" className="text-[#B8462F] text-base w-7 h-7 flex items-center justify-center flex-shrink-0">✕</button>
+            )}
+          </div>
+        ))}
+      </div>
+      {!busy && (
+        <button onClick={addRow} className="w-full mt-2 border-2 border-dashed border-[#C7B78E] rounded-xl py-2 text-sm text-[#A0906B]">+ הוספת פריט</button>
+      )}
+      {busy && <div className="sz-progress-track mt-3"><div className="sz-progress-bar" /></div>}
+      {allNames.length > PASTE_LIST_MAX && (
+        <p className="text-[11px] text-[#B8462F] mt-2">עד {PASTE_LIST_MAX} פריטים בכל פעם — יתווספו {PASTE_LIST_MAX} הראשונים</p>
+      )}
+    </Modal>
+  );
+
+  return (
+    <Modal onClose={onClose} footer={
+      <button onClick={goReview} disabled={inputCount === 0}
         className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-        {busy ? status : names.length > 0 ? `הוספת ${names.length} פריטים לרשימה` : "הוספה לרשימה"}
+        {inputCount > 0 ? `המשך לבדיקה (${inputCount} פריטים) ›` : "המשך לבדיקה ›"}
       </button>
     }>
-      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הדבקת רשימה</h3>
+      <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספת כמה פריטים</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-3 leading-relaxed">
-        פריט בכל שורה. אפשר שם כללי כמו "חסה" או "עגבניות שרי" — בכל רשת ייבחר אוטומטית המוצר הזול שמתאים לשם.
+        אמרו את כל הרשימה ברצף, עם הפסקה קצרה בין פריט לפריט — או כתבו פריט בכל שורה. בשלב הבא תראו את הרשימה ותוכלו לתקן לפני שמוסיפים.
       </p>
       <div className="flex gap-3 items-start">
-        <textarea ref={textareaRef} value={text} onChange={e => setText(e.target.value)} rows={8} disabled={busy}
+        <textarea ref={textareaRef} value={text} onChange={e => setText(e.target.value)} rows={8}
           placeholder={"חלב 3%\nלחם\nחסה\nעגבניות שרי\nשניצל"}
           className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none leading-relaxed disabled:opacity-60" />
         <div className="flex flex-col items-center gap-1.5 flex-shrink-0 pt-1">
-          <button type="button" onClick={listening ? stopListening : startListening} disabled={busy}
+          <button type="button" onClick={listening ? stopListening : startListening}
             aria-label={listening ? "עצירת הקלטה" : "הקלטת הרשימה בקול"}
             className={"relative w-16 h-16 rounded-full flex items-center justify-center text-white shadow-lg disabled:opacity-40 " +
               (listening ? "bg-[#B8462F]" : "bg-[#2E4A3B]")}>
@@ -6085,14 +6211,9 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
       </div>
       {listening && (
         <p className="text-sm text-[#B8462F] mt-2 font-semibold">
-          🎙️ {interim || "מקשיב... אמרו פריט, עצרו רגע, ואז את הבא"}
+          🎙️ {interim || "מקשיב... אמרו את הפריטים, עם הפסקה קצרה בין פריט לפריט"}
         </p>
       )}
-      {busy && <div className="sz-progress-track mt-3"><div className="sz-progress-bar" /></div>}
-      {allNames.length > PASTE_LIST_MAX && (
-        <p className="text-[11px] text-[#B8462F] mt-2">עד {PASTE_LIST_MAX} פריטים בכל פעם — יתווספו {PASTE_LIST_MAX} הראשונים</p>
-      )}
-      <p className="text-[11px] text-[#A79A7C] mt-2 leading-relaxed">אחרי ההוספה אפשר לבדוק ולשנות כל פריט בנפרד.</p>
     </Modal>
   );
 }
@@ -6672,8 +6793,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
               className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
               <span className="text-xl">📝</span>
               <span>
-                <div className="text-sm font-semibold text-[#2B2418]">הדבקת רשימה</div>
-                <div className="text-[11px] text-[#8A7F66]">הרבה פריטים בבת אחת — המערכת בוחרת את הזול בכל רשת</div>
+                <div className="text-sm font-semibold text-[#2B2418]">כמה פריטים בבת אחת 🎙️</div>
+                <div className="text-[11px] text-[#8A7F66]">מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת</div>
               </span>
             </button>
           </div>
