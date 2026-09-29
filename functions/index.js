@@ -478,14 +478,7 @@ exports.getUsageStats = onCall(
 // false in the rules (by design, so no client path can tamper with billing/
 // abuse tracking), so this could never be done as a batch of client writes
 // even by an admin.
-exports.deleteUserData = onCall(
-  { timeoutSeconds: 120, memory: '256MiB', region: REGION },
-  async (request) => {
-    await requireAdmin(request);
-    const { targetUid } = request.data || {};
-    if (!targetUid || typeof targetUid !== 'string') throw new HttpsError('invalid-argument', 'targetUid required');
-    if (targetUid === request.auth.uid) throw new HttpsError('invalid-argument', 'לא ניתן להריץ פעולה זו על החשבון שלך');
-
+async function eraseUserData(targetUid) {
     let listsDeleted = 0, itemsDeleted = 0;
     const listsSnap = await db.collection('lists').where('ownerId', '==', targetUid).get();
     for (const listDoc of listsSnap.docs) {
@@ -520,22 +513,41 @@ exports.deleteUserData = onCall(
       feedbackThreadsDeleted: threadsSnap.size,
       categoryCorrectionsDeleted: correctionsSnap.size,
     };
-  }
-);
+}
 
-// Separate from deleteUserData on purpose — this permanently removes the
-// person's actual Google sign-in identity from Firebase Auth. If they sign
-// in again afterward it creates a brand-new account with a new uid, fully
-// disconnected from anything that happened before. There is no undo.
-exports.deleteUserAccount = onCall(
-  { timeoutSeconds: 30, memory: '256MiB', region: REGION },
+exports.deleteUserData = onCall(
+  { timeoutSeconds: 120, memory: '256MiB', region: REGION },
   async (request) => {
     await requireAdmin(request);
     const { targetUid } = request.data || {};
     if (!targetUid || typeof targetUid !== 'string') throw new HttpsError('invalid-argument', 'targetUid required');
     if (targetUid === request.auth.uid) throw new HttpsError('invalid-argument', 'לא ניתן להריץ פעולה זו על החשבון שלך');
-    await admin.auth().deleteUser(targetUid);
-    return { ok: true };
+    return eraseUserData(targetUid);
+  }
+);
+
+// Deletes the user completely: all their data, their users/{uid} profile
+// doc, and their Google sign-in. Removing only the sign-in (as this used
+// to) left the profile doc behind, so the person still showed up in the
+// admin user list as if nothing happened — and a second attempt then
+// failed outright because the sign-in was already gone. Now safe to retry:
+// an already-missing sign-in counts as done. If they sign in again later,
+// it's a brand-new account with a new uid. There is no undo.
+exports.deleteUserAccount = onCall(
+  { timeoutSeconds: 120, memory: '256MiB', region: REGION },
+  async (request) => {
+    await requireAdmin(request);
+    const { targetUid } = request.data || {};
+    if (!targetUid || typeof targetUid !== 'string') throw new HttpsError('invalid-argument', 'targetUid required');
+    if (targetUid === request.auth.uid) throw new HttpsError('invalid-argument', 'לא ניתן להריץ פעולה זו על החשבון שלך');
+    const erased = await eraseUserData(targetUid);
+    await db.collection('users').doc(targetUid).delete();
+    try {
+      await admin.auth().deleteUser(targetUid);
+    } catch (e) {
+      if (!(e && e.code === 'auth/user-not-found')) throw e;
+    }
+    return erased;
   }
 );
 

@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.41";
+const VERSION = "v2.42";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2230,8 +2230,14 @@ function DemoPasteList() {
       <DemoSheet title="הדבקת רשימה" footer={
         <div data-demo="pasteSubmit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">הוספת 5 פריטים לרשימה</div>
       }>
-        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 leading-relaxed">
-          חלב טרי 3%<br />לחם אחיד<br />חסה<br />עגבניות שרי<br />שניצל עוף <span className="sz-demo-caret" />
+        <div className="flex gap-2 items-start">
+          <div className="flex-1 bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 leading-relaxed">
+            חלב טרי 3%<br />לחם אחיד<br />חסה<br />עגבניות שרי<br />שניצל עוף <span className="sz-demo-caret" />
+          </div>
+          <div className="flex flex-col items-center gap-0.5">
+            <div data-demo="mic" className="w-10 h-10 rounded-full bg-[#2E4A3B] text-white flex items-center justify-center"><MicIcon size={20} /></div>
+            <span className="text-[9px] font-bold text-[#2E4A3B]">הקלטה</span>
+          </div>
         </div>
       </DemoSheet>
     </div>
@@ -2245,7 +2251,8 @@ const ADD_ITEMS_DEMO = [
   { view: <DemoPriceMatch auto />, target: "autoPick", caption: "4. לא משנה לכם איזה? \"בחרו לי את הזול בכל רשת\"" },
   { view: <DemoPriceMatch autoDone addAnother />, target: "addAnother", ms: 2400, caption: "5. רוצים עוד מוצר מאותו חיפוש? \"הוספה + בחירת פריט נוסף\"" },
   { view: <DemoAddChoice />, target: "byPaste", caption: "6. הרבה פריטים בבת אחת? \"הדבקת רשימה\"" },
-  { view: <DemoPasteList />, target: "pasteSubmit", ms: 2200, caption: "7. פריט בכל שורה (או מכתיבים בטלפון) — והכול נוסף ומותאם לבד" },
+  { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "7. לוחצים על המיקרופון ואומרים את הפריטים — או פשוט כותבים" },
+  { view: <DemoPasteList />, target: "pasteSubmit", caption: "8. מוסיפים — והכול נוסף ומותאם לבד" },
   { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3200, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
 ];
 
@@ -3475,14 +3482,13 @@ function AdminOptionsScreen({ uid, onBack }) {
     }, () => { setUserActionBusy(null); setToast("שגיאה במחיקת המידע"); });
   }
 
-  // Permanently removes the person's Google sign-in identity — irreversible,
-  // separate from clearUserData on purpose (see the confirm dialog wording).
+  // Deletes the user entirely (data, profile, Google sign-in) — irreversible.
   function deleteUserAccountAction(user) {
     setUserActionBusy(user.id);
-    fns.httpsCallable("deleteUserAccount", { timeout: 30000 })({ targetUid: user.id }).then(() => {
+    fns.httpsCallable("deleteUserAccount", { timeout: 120000 })({ targetUid: user.id }).then(() => {
       setUserActionBusy(null);
-      setToast(`החשבון של ${user.displayName || user.email || user.id} נותק`);
-    }, () => { setUserActionBusy(null); setToast("שגיאה בניתוק החשבון"); });
+      setToast(`${user.displayName || user.email || user.id} נמחק`);
+    }, () => { setUserActionBusy(null); setToast("שגיאה במחיקת המשתמש"); });
   }
 
   function startEditOnlineVendor(key, cfg) {
@@ -4472,7 +4478,7 @@ function AdminOptionsScreen({ uid, onBack }) {
                       </button>
                       <button onClick={() => setConfirmDeleteUserAccount(u)} disabled={userActionBusy === u.id}
                         className="text-[11px] font-bold text-[#B8462F] underline disabled:opacity-40">
-                        ניתוק חשבון
+                        מחיקת משתמש
                       </button>
                       {userActionBusy === u.id && <Spinner2 />}
                     </div>
@@ -4529,7 +4535,7 @@ function AdminOptionsScreen({ uid, onBack }) {
       )}
       {confirmDeleteUserAccount && (
         <ConfirmDialog
-          message={`לנתק לצמיתות את חשבון ההתחברות של ${confirmDeleteUserAccount.displayName || confirmDeleteUserAccount.email || confirmDeleteUserAccount.id}? אם ישוב להתחבר, ייווצר עבורו חשבון חדש לגמרי, ללא קשר לחשבון הנוכחי. פעולה זו אינה ניתנת לביטול.`}
+          message={`למחוק לצמיתות את ${confirmDeleteUserAccount.displayName || confirmDeleteUserAccount.email || confirmDeleteUserAccount.id}? החשבון, ההתחברות, הרשימות, הסניפים וכל ההיסטוריה שלו יימחקו, והוא ייעלם מרשימת המשתמשים. אם יתחבר שוב, ייפתח לו חשבון חדש וריק. פעולה זו אינה ניתנת לביטול.`}
           confirmLabel="ניתוק לצמיתות"
           onConfirm={() => deleteUserAccountAction(confirmDeleteUserAccount)} onClose={() => setConfirmDeleteUserAccount(null)} />
       )}
@@ -5730,15 +5736,84 @@ async function runLimited(items, concurrency, worker) {
 // call reads every chain's full catalog, so searching the whole list at
 // once costs about the same as searching a single item.
 const PASTE_LIST_MAX = 80;
+const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+function MicIcon({ size }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true">
+      <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" />
+    </svg>
+  );
+}
 function PasteListModal({ uid, listId, activeProfiles, categories, onClose, showToast }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState("");
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const recRef = useRef(null);
+  const wantListeningRef = useRef(false);
+  const textareaRef = useRef(null);
   const allNames = [...new Set(text.split(/[\n,،]+/).map(s => s.trim()).filter(s => s.length >= 2))];
   const names = allNames.slice(0, PASTE_LIST_MAX);
   const busy = !!status;
 
+  useEffect(() => () => { wantListeningRef.current = false; if (recRef.current) recRef.current.abort(); }, []);
+
+  // One utterance per recognition session (continuous=false), restarted
+  // after each one while the mic is on — so every pause between items
+  // lands as its own line. (continuous=true repeats results on Android.)
+  // Saying "פסיק" also splits, for anyone who says the list in one breath.
+  function addSpoken(phrase) {
+    const lines = phrase.replace(/\s*(פסיק|,)\s*/g, "\n").split("\n").map(s => s.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    setText(prev => (prev && !prev.endsWith("\n") ? prev + "\n" : prev) + lines.join("\n") + "\n");
+  }
+  function startListening() {
+    if (!SpeechRecognitionImpl) {
+      showToast("הדפדפן הזה לא תומך בהקלטה — אפשר ללחוץ על המיקרופון שבמקלדת");
+      if (textareaRef.current) textareaRef.current.focus();
+      return;
+    }
+    const rec = new SpeechRecognitionImpl();
+    rec.lang = "he-IL";
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.onresult = e => {
+      let partial = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) addSpoken(r[0].transcript);
+        else partial += r[0].transcript;
+      }
+      setInterim(partial);
+    };
+    rec.onerror = e => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        wantListeningRef.current = false;
+        showToast("אין הרשאה למיקרופון — אשרו גישה למיקרופון בהגדרות הדפדפן");
+      } else if (e.error === "no-speech") {
+        wantListeningRef.current = false;
+      }
+    };
+    rec.onend = () => {
+      setInterim("");
+      if (wantListeningRef.current) {
+        try { rec.start(); return; } catch (err) {}
+      }
+      setListening(false);
+    };
+    recRef.current = rec;
+    wantListeningRef.current = true;
+    try { rec.start(); setListening(true); } catch (err) { wantListeningRef.current = false; }
+  }
+  function stopListening() {
+    wantListeningRef.current = false;
+    if (recRef.current) recRef.current.stop();
+    setListening(false);
+  }
+
   async function submit() {
     if (busy || names.length === 0) return;
+    if (listening) stopListening();
     const profiles = activeProfiles || [];
     const vendorIds = [...new Set(profiles.map(p => p.vendor))];
     const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
@@ -5798,18 +5873,33 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
     }>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הדבקת רשימה</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-3 leading-relaxed">
-        פריט בכל שורה (או מופרדים בפסיקים). אפשר שם כללי כמו "חסה" או "עגבניות שרי" — בכל רשת ייבחר אוטומטית המוצר הזול שמתאים לשם.
+        פריט בכל שורה. אפשר שם כללי כמו "חסה" או "עגבניות שרי" — בכל רשת ייבחר אוטומטית המוצר הזול שמתאים לשם.
       </p>
-      <textarea value={text} onChange={e => setText(e.target.value)} rows={9} disabled={busy} autoFocus
-        placeholder={"חלב 3%\nלחם\nחסה\nעגבניות שרי\nשניצל"}
-        className="w-full border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none leading-relaxed disabled:opacity-60" />
+      <div className="flex gap-3 items-start">
+        <textarea ref={textareaRef} value={text} onChange={e => setText(e.target.value)} rows={8} disabled={busy}
+          placeholder={"חלב 3%\nלחם\nחסה\nעגבניות שרי\nשניצל"}
+          className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none leading-relaxed disabled:opacity-60" />
+        <div className="flex flex-col items-center gap-1.5 flex-shrink-0 pt-1">
+          <button type="button" onClick={listening ? stopListening : startListening} disabled={busy}
+            aria-label={listening ? "עצירת הקלטה" : "הקלטת הרשימה בקול"}
+            className={"relative w-16 h-16 rounded-full flex items-center justify-center text-white shadow-lg disabled:opacity-40 " +
+              (listening ? "bg-[#B8462F]" : "bg-[#2E4A3B]")}>
+            {listening && <span className="absolute inset-0 rounded-full bg-[#B8462F] opacity-40 animate-ping" />}
+            <span className="relative"><MicIcon size={30} /></span>
+          </button>
+          <span className={"text-xs font-bold " + (listening ? "text-[#B8462F]" : "text-[#2E4A3B]")}>{listening ? "עצירה" : "הקלטה"}</span>
+        </div>
+      </div>
+      {listening && (
+        <p className="text-sm text-[#B8462F] mt-2 font-semibold">
+          🎙️ {interim || "מקשיב... אמרו פריט, עצרו רגע, ואז את הבא"}
+        </p>
+      )}
       {busy && <div className="sz-progress-track mt-3"><div className="sz-progress-bar" /></div>}
       {allNames.length > PASTE_LIST_MAX && (
         <p className="text-[11px] text-[#B8462F] mt-2">עד {PASTE_LIST_MAX} פריטים בכל פעם — יתווספו {PASTE_LIST_MAX} הראשונים</p>
       )}
-      <p className="text-[11px] text-[#A79A7C] mt-2 leading-relaxed">
-        טיפ: בטלפון אפשר להכתיב במקום להקליד — לוחצים על המיקרופון במקלדת. אחרי ההוספה אפשר לבדוק ולשנות כל פריט בנפרד.
-      </p>
+      <p className="text-[11px] text-[#A79A7C] mt-2 leading-relaxed">אחרי ההוספה אפשר לבדוק ולשנות כל פריט בנפרד.</p>
     </Modal>
   );
 }
