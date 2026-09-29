@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.45";
+const VERSION = "v2.46";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -6117,9 +6117,11 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, show
         Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; });
         if (vendorIds.some(v => !barcodes[v])) partial++;
         const cat = cats[name] || other;
+        const gapTried = {};
+        vendorIds.forEach(v => { if (!barcodes[v]) gapTried[v] = true; });
         batch.set(col.doc(), {
           name, category: cat.label, categoryEmoji: cat.emoji, quantity: 1, unit: "יחידות", note: "",
-          barcodes, matchedNames, addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          barcodes, matchedNames, gapTried, addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
       });
       await batch.commit();
@@ -6418,59 +6420,78 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const effectivePriceMap = useMemo(() => Object.assign({}, priceMap, onlinePriceMap), [priceMap, onlinePriceMap]);
   const effectivePromoMap = useMemo(() => Object.assign({}, promoMap, onlinePromoMap), [promoMap, onlinePromoMap]);
 
+  // Every chain the list shows right now was already searched when an item
+  // is added, so each still-empty chain is recorded as "tried" on the item
+  // itself — the automatic fill below then never second-guesses a chain the
+  // user saw results for and deliberately left empty. Only chains that
+  // appear later (the real "I added a store and its column is empty" case)
+  // are ever filled automatically.
+  function triedMap(barcodes) {
+    const tried = {};
+    visibleProfiles.forEach(p => { if (!(barcodes || {})[p.vendor]) tried[p.vendor] = true; });
+    return tried;
+  }
   function insertItem(payload, done) {
     db.collection("lists").doc(listId).collection("items").add(Object.assign({}, payload, {
+      gapTried: triedMap(payload.barcodes),
       addedBy: uid,
       addedAt: firebase.firestore.FieldValue.serverTimestamp(),
     })).then(() => done());
   }
 
-  // Gaps = an item the user did match somewhere, but not at some chain this
-  // list currently shows (typically: added before that chain was switched
-  // on, or nothing confident was found). Filled with ONE search for every
-  // gapped name together — same cost as a single search, not one per item.
+  // Automatic gap fill — runs on its own, only when there's something new:
+  // an item that was matched somewhere, missing a chain this list shows,
+  // where that chain hasn't been tried for it yet (gapTried, stored on the
+  // item, so it holds across devices and is never repeated). One search
+  // for every such name together; confident picks only. Chains that come
+  // back empty are marked tried, so a normal list open costs nothing.
+  // Judged against enrichedItems, so an online chain the on-demand online
+  // lookup already covered doesn't count as a gap.
   const gapVendorIds = [...new Set(visibleProfiles.map(p => p.vendor))];
-  const gapItems = (items || []).filter(it => Object.keys(it.barcodes || {}).length > 0 && gapVendorIds.some(v => !(it.barcodes || {})[v]));
-  const gapSignature = gapItems.map(it => it.id + ":" + gapVendorIds.filter(v => !(it.barcodes || {})[v]).join(",")).sort().join("|");
-  const gapStorageKey = "sz_gapfill_" + listId;
-  const [gapDismissed, setGapDismissed] = useState(() => { try { return localStorage.getItem(gapStorageKey) || ""; } catch (e) { return ""; } });
-  // Hidden once handled (filled or dismissed) until the set of gaps changes
-  // — otherwise gaps no chain can fill would nag on every visit.
-  const showGapBanner = gapItems.length > 0 && gapDismissed !== gapSignature;
-  function dismissGaps(sig) {
-    try { localStorage.setItem(gapStorageKey, sig); } catch (e) {}
-    setGapDismissed(sig);
-  }
-  async function fillGaps() {
-    if (gapFilling || gapItems.length === 0) return;
+  const pendingGaps = (items === null || onlinePricesLoading) ? [] : enrichedItems
+    .filter(it => Object.keys(it.barcodes || {}).length > 0)
+    .map(it => ({ it, vendors: gapVendorIds.filter(v => !(it.barcodes || {})[v] && !(it.gapTried || {})[v]) }))
+    .filter(g => g.vendors.length > 0);
+  const pendingGapKey = pendingGaps.map(g => g.it.id + ":" + g.vendors.join(",")).sort().join("|");
+  const gapRunKeyRef = useRef("");
+  useEffect(() => {
+    if (!pendingGapKey || gapFilling || gapRunKeyRef.current === pendingGapKey) return;
+    // Short settle delay: the item snapshot, the vendor profiles and the
+    // online lookup load separately — this avoids running on a half-loaded
+    // picture and then again a moment later.
+    const t = setTimeout(() => { gapRunKeyRef.current = pendingGapKey; fillGaps(pendingGaps); }, 1200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line
+  }, [pendingGapKey]);
+  async function fillGaps(gaps) {
     setGapFilling(true);
     try {
-      const names = [...new Set(gapItems.map(it => (it.name || "").trim()).filter(Boolean))];
+      const names = [...new Set(gaps.map(g => (g.it.name || "").trim()).filter(Boolean))];
       const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, profileIds: visibleProfiles.map(p => p.id) });
       const results = (res.data && res.data.results) || {};
       const batch = db.batch();
       let filled = 0;
-      const remaining = [];
-      gapItems.forEach(it => {
+      const filledVendors = new Set();
+      gaps.forEach(({ it, vendors }) => {
         const r = results[(it.name || "").trim()] || {};
-        const missing = gapVendorIds.filter(v => !(it.barcodes || {})[v]);
         const upd = {};
         const got = new Set();
-        missing.forEach(v => { if (r.barcodes && r.barcodes[v]) { upd["barcodes." + v] = r.barcodes[v]; got.add(v); } });
-        const picks = autoPickByVendor(r.candidates, missing.filter(v => !got.has(v)));
+        vendors.forEach(v => { if (r.barcodes && r.barcodes[v]) { upd["barcodes." + v] = r.barcodes[v]; got.add(v); } });
+        const picks = autoPickByVendor(r.candidates, vendors.filter(v => !got.has(v)));
         Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; got.add(v); });
+        vendors.forEach(v => { upd["gapTried." + v] = true; });
+        got.forEach(v => filledVendors.add(v));
         filled += got.size;
-        const left = missing.filter(v => !got.has(v));
-        if (left.length > 0) remaining.push(it.id + ":" + left.join(","));
-        if (got.size > 0) batch.update(db.collection("lists").doc(listId).collection("items").doc(it.id), upd);
+        batch.update(db.collection("lists").doc(listId).collection("items").doc(it.id), upd);
       });
-      if (filled > 0) await batch.commit();
-      dismissGaps(remaining.sort().join("|"));
-      setToast(remaining.length === 0
-        ? `הושלמו ${filled} התאמות — לכל הפריטים יש מוצר בכל הרשתות`
-        : `הושלמו ${filled} התאמות. ב-${remaining.length} פריטים עדיין חסר — לחצו על "—" כדי לראות למה ולבחור ידנית`);
+      await batch.commit();
+      if (filled > 0) {
+        const labels = visibleProfiles.filter(p => filledVendors.has(p.vendor)).map(p => profileLabel(p, visibleProfiles));
+        setToast(`נוספו מחירים ל-${filled} פריטים ב${[...new Set(labels)].join(", ")}`);
+      }
     } catch (e) {
-      setToast(e && e.code === "functions/resource-exhausted" ? e.message : "שגיאה בהשלמה — נסו שוב");
+      // Quiet on purpose — this runs unasked. Nothing is marked tried, so
+      // it simply tries again next time the list opens.
     }
     setGapFilling(false);
   }
@@ -6550,7 +6571,11 @@ function ListScreen({ uid, listId, listName, onBack }) {
               changed = true;
             }
           });
-          if (changed) updateBatch.update(it.ref, { barcodes: it.barcodes, matchedNames: it.matchedNames });
+          const gapTried = {};
+          vendorIds.forEach(tv => { if (!it.barcodes[tv]) gapTried[tv] = true; });
+          updateBatch.update(it.ref, changed
+            ? { barcodes: it.barcodes, matchedNames: it.matchedNames, gapTried }
+            : { gapTried });
           if (vendorIds.some(v => !it.barcodes[v])) gapCount++;
         });
         await updateBatch.commit();
@@ -6566,7 +6591,11 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }
 
   function saveEdit(payload) {
-    db.collection("lists").doc(listId).collection("items").doc(editItem.id).update(payload).then(() => setEditItem(null));
+    // A renamed item is effectively a new search term — its empty chains
+    // become eligible for the automatic fill again.
+    const renamed = (payload.name || "").trim() !== (editItem.name || "").trim();
+    db.collection("lists").doc(listId).collection("items").doc(editItem.id)
+      .update(Object.assign({}, payload, { gapTried: renamed ? {} : triedMap(payload.barcodes) })).then(() => setEditItem(null));
   }
 
   function deleteItem(item) {
@@ -6664,17 +6693,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
       </div>
 
       <div className="flex-1 px-3 pt-3 pb-40 print-items-area">
-        {showGapBanner && (
-          <div className="no-print mb-2 bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2 flex items-center gap-2">
-            <p className="flex-1 text-xs text-[#8A5A15] leading-snug">
-              ל-{gapItems.length} פריטים חסר מוצר ברשת אחת או יותר
-            </p>
-            <button onClick={fillGaps} disabled={gapFilling}
-              className="text-xs font-bold bg-[#2E4A3B] text-[#FBF4E7] rounded-lg px-3 py-1.5 flex-shrink-0 disabled:opacity-50">
-              {gapFilling ? "משלים..." : "השלמה אוטומטית"}
-            </button>
-            <button onClick={() => dismissGaps(gapSignature)} disabled={gapFilling}
-              className="text-[#8A7F66] text-lg leading-none flex-shrink-0" aria-label="הסתרה">×</button>
+        {gapFilling && (
+          <div className="no-print mb-2 bg-[#F3ECD9] rounded-xl px-3 py-2 flex items-center justify-center gap-2 text-xs text-[#5B5749]">
+            <Spinner2 /> משלים מחירים לרשתות שנוספו...
           </div>
         )}
         {items === null && <div className="text-[#8A7F66] text-sm py-6 text-center">טוען...</div>}
