@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.60";
+const VERSION = "v2.61";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2413,7 +2413,7 @@ function DemoAddChoice() {
       <DemoListScreen dim />
       <DemoSheet title="הוספת פריט">
         <div className="space-y-1.5">
-          {[["byName", "🔎", "לפי שם"], ["byPaste", "🎙️", "כמה פריטים בבת אחת"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"]].map(([id, icon, label]) => (
+          {[["byName", "🔎", "לפי שם"], ["byPaste", "🎙️", "כמה פריטים בבת אחת"], ["byCat", "📂", "בחירה לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"]].map(([id, icon, label]) => (
             <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-2">
               <span>{icon}</span><span className="font-semibold">{label}</span>
             </div>
@@ -2534,7 +2534,7 @@ function DemoCategoryGrid() {
   return (
     <div className="h-full relative">
       <DemoListScreen dim />
-      <DemoSheet title="עיון לפי קטגוריה">
+      <DemoSheet title="בחירה לפי קטגוריה">
         <div className="grid grid-cols-2 gap-1.5">
           {cats.map(([id, e, l]) => (
             <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-1.5"><span>{e}</span><span className="font-semibold">{l}</span></div>
@@ -2853,7 +2853,7 @@ const ADD_GUIDE_CHAPTERS = [
     { view: <DemoListScreen item />, target: "addItem", tap: false, ms: 3000, caption: "זהו! ליד הפריט המחיר בכל רשת, והזול בירוק" },
   ] },
   { id: "category", label: "📂 לפי קטגוריה", frames: [
-    { view: <DemoAddChoice />, target: "byCat", caption: "1. לא בטוחים בשם? \"עיון לפי קטגוריה\"" },
+    { view: <DemoAddChoice />, target: "byCat", caption: "1. לא בטוחים בשם? \"בחירה לפי קטגוריה\"" },
     { view: <DemoCategoryGrid />, target: "cat-dairy", caption: "2. בוחרים קטגוריה" },
     { view: <DemoCategoryItems />, target: "catItem1", caption: "3. מסמנים מוצר — רואים מראש את המחיר בכל רשת" },
     { view: <DemoCategoryItems checked />, target: "catAdd", caption: "4. מוסיפים לרשימה, וממשיכים לבחור עוד" },
@@ -5428,7 +5428,7 @@ function CategoryBrowseModal({ categories, activeProfiles, onInsert, onClose, sh
     });
   }
 
-  const title = stage === "categories" ? "עיון לפי קטגוריה"
+  const title = stage === "categories" ? "בחירה לפי קטגוריה"
     : stage === "subcategories" ? `${selectedCat.emoji} ${selectedCat.label}`
     : `${selectedCat.emoji} ${selectedCat.label}` + (selectedSub && selectedSub !== "ALL" ? ` · ${selectedSub.label}` : "");
 
@@ -5922,8 +5922,8 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
           className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
           <span className="text-xl">📂</span>
           <span>
-            <div className="text-sm font-semibold text-[#2B2418]">עיון לפי קטגוריה</div>
-            <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
+            <div className="text-sm font-semibold text-[#2B2418]">בחירה לפי קטגוריה</div>
+            <div className="text-[11px] text-[#8A7F66]">בוחרים מוצרים מתוך רשימה מסודרת לפי קטגוריות</div>
           </span>
         </button>
         <button onClick={() => setMethod("byBarcode")}
@@ -7495,7 +7495,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
               בניית הרשימה הראשונה תיקח זמן, צריך סבלנות, אבל בפעם הבאה פשוט משכפלים אותה ומוסיפים רק מה שהשתנה. ההשקעה ביצירת רשימה מלאה תשתלם לכם — ההבדלים בתמחור הסל בין הרשתות יכולים להיות משמעותיים.
             </p>
             <p className="text-[#A79A7C] text-xs mt-2 max-w-xs mx-auto leading-relaxed">
-              טיפ: השתמשו ב"עיון לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
+              טיפ: השתמשו ב"בחירה לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
             </p>
             {(() => {
               // Admin always sees it (to test), regardless of the one-time
@@ -7582,7 +7582,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
               const opts = [
                 { id: "name", icon: "🔎", title: "לפי שם", desc: "מקלידים שם ובוחרים התאמה", open: () => setShowAdd(true) },
                 { id: "multi", icon: "🎙️", title: "כמה פריטים בבת אחת", desc: listEmpty ? "הכי מהיר להתחלת רשימה — מקליטים או כותבים, והמערכת בוחרת את הזול בכל רשת" : "מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת", open: () => setShowPasteList(true) },
-                { id: "cat", icon: "📂", title: "עיון לפי קטגוריה", desc: "כשלא בטוחים בשם המדויק", open: () => setShowBrowse(true) },
+                { id: "cat", icon: "📂", title: "בחירה לפי קטגוריה", desc: "בוחרים מוצרים מתוך רשימה מסודרת לפי קטגוריות", open: () => setShowBrowse(true) },
                 { id: "scan", icon: "📷", title: "סריקת ברקוד", desc: "מצלמים את הברקוד שעל המוצר", open: () => setShowBarcodeAdd(true) },
               ];
               return opts.map(o => {
@@ -8042,7 +8042,7 @@ function HelpScreen({ onBack }) {
               במסך הבית: "+ רשימה חדשה" — רשימה אחת שמשווה מחירים גם בחנות וגם אונליין, לפי הרשתות הפעילות שלכם, עם אפשרות להחליף תצוגה ולראות גם השוואה בין השתיים. הקנייה עצמה תמיד מתבצעת מחוץ לאפליקציה — בחנות או באתר הרשת. הרשימה נפתחת מיד, בלי שם מוקדם — אפשר לשנות שם בכל שלב מתפריט הרשימה (☰).
             </HelpCard>
             <HelpCard icon="➕" title="5. הוספת פריט">
-              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך למצוא אותו: 🔍 לפי שם — מקלידים שם ובוחרים מתוך התאמה, 📁 עיון לפי קטגוריה — כשלא בטוחים בשם המדויק, או 📷 סריקת ברקוד — מצלמים את הברקוד שעל המוצר והאפליקציה מוצאת אותו אוטומטית בכל רשת פעילה. אחר כך נותנים כמות וקטגוריה. זו אותה מנגנון בדיוק כמו "🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט, לא לפני החיפוש.
+              בתוך רשימה, לחצו "+ הוספת פריט" ובחרו איך להוסיף: 🔎 לפי שם — מקלידים שם ובוחרים מתוך ההתאמות (או "בחרו לי את הזול בכל רשת"), 🎙️ כמה פריטים בבת אחת — מקליטים או כותבים רשימה שלמה, בודקים ומאשרים, 📂 בחירה לפי קטגוריה — בוחרים מוצרים מתוך רשימה מסודרת לפי קטגוריות, או 📷 סריקת ברקוד — מצלמים את הברקוד שעל המוצר והאפליקציה מוצאת אותו בכל רשת פעילה. אותן אפשרויות בדיוק יש גם ב"🔍 חיפוש והוספת פריט" במסך הבית — שם בוחרים לאיזו רשימה מוסיפים רק ברגע שבאמת מוסיפים פריט.
             </HelpCard>
             <HelpCard icon="🔍" title="6. התאמת מחיר לפריט">
               האפליקציה מחפשת את הפריט בכל רשת פעילה. לפעמים לרשתות שונות יש ברקוד שונה לאותו מוצר — כשהחיפוש מכסה כמה רשתות אפשר לסמן (☑) כמה התאמות בבת אחת, אחת לכל רשת, ולשמור הכול יחד.
