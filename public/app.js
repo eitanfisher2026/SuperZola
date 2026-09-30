@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.62";
+const VERSION = "v2.63";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1436,6 +1436,17 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
   );
 }
 
+// The four ways to add an item — ONE definition shared by the in-list
+// "+ הוספת פריט" menu, the home screen's "חיפוש והוספת פריט", and the
+// demo clips, so order and wording can never drift apart between them.
+// Fixed order, by how often each is the right tool.
+const ADD_METHODS = [
+  { id: "name", demoId: "byName", icon: "🔎", title: "לפי שם", desc: "מקלידים שם ובוחרים התאמה" },
+  { id: "multi", demoId: "byPaste", icon: "🎙️", title: "כמה פריטים בבת אחת", desc: "מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת" },
+  { id: "cat", demoId: "byCat", icon: "📂", title: "בחירה לפי קטגוריה", desc: "בוחרים מוצרים מתוך רשימה מסודרת לפי קטגוריות" },
+  { id: "scan", demoId: "byScan", icon: "📷", title: "סריקת ברקוד", desc: "מצלמים את הברקוד שעל המוצר" },
+];
+
 // "I want lettuce, I don't care which" — only search results whose wording
 // genuinely matches are eligible (score >= 800: every search word present
 // and the name starts the same way); approximate/fuzzy hits never are,
@@ -2413,7 +2424,7 @@ function DemoAddChoice() {
       <DemoListScreen dim />
       <DemoSheet title="הוספת פריט">
         <div className="space-y-1.5">
-          {[["byName", "🔎", "לפי שם"], ["byPaste", "🎙️", "כמה פריטים בבת אחת"], ["byCat", "📂", "בחירה לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"]].map(([id, icon, label]) => (
+          {ADD_METHODS.map(m => [m.demoId, m.icon, m.title]).map(([id, icon, label]) => (
             <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-2">
               <span>{icon}</span><span className="font-semibold">{label}</span>
             </div>
@@ -2852,7 +2863,7 @@ const ADD_GUIDE_CHAPTERS = [
     { view: <DemoPriceMatch autoDone addAnother />, target: "finish", caption: "6. או \"סיום והוספה לרשימה\"" },
     { view: <DemoListScreen item />, target: "addItem", tap: false, ms: 3000, caption: "זהו! ליד הפריט המחיר בכל רשת, והזול בירוק" },
   ] },
-  { id: "category", label: "📂 לפי קטגוריה", frames: [
+  { id: "category", label: "📂 בחירה לפי קטגוריה", frames: [
     { view: <DemoAddChoice />, target: "byCat", caption: "1. לא בטוחים בשם? \"בחירה לפי קטגוריה\"" },
     { view: <DemoCategoryGrid />, target: "cat-dairy", caption: "2. בוחרים קטגוריה" },
     { view: <DemoCategoryItems />, target: "catItem1", caption: "3. מסמנים מוצר — רואים מראש את המחיר בכל רשת" },
@@ -2864,15 +2875,16 @@ const ADD_GUIDE_CHAPTERS = [
     { view: <DemoBarcodeScan />, target: "scanFrame", tap: false, ms: 2200, caption: "2. מכוונים את המצלמה לברקוד שעל המוצר" },
     { view: <DemoBarcodeFound />, target: "scanAdd", caption: "3. המוצר נמצא בכל הרשתות — מוסיפים" },
   ] },
-  { id: "many", label: "🎙️ כמה בבת אחת", frames: [
-    { view: <DemoAddChoice />, target: "byPaste", caption: "1. הרבה פריטים? \"כמה פריטים בבת אחת\"" },
-    { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "2. לוחצים על המיקרופון ואומרים את כל הרשימה ברצף — או כותבים" },
-    { view: <DemoPasteList />, target: "pasteSubmit", caption: "3. ממשיכים לבדיקה" },
-    { view: <DemoPasteReview />, target: "merge-שרי", ms: 2600, caption: "4. פריט נחתך באמצע? \"חיבור ↑\" מחבר אותו לשורה שמעליו" },
-    { view: <DemoPasteReview merged />, target: "confirmList", caption: "5. מאשרים — והכול נוסף ומותאם לבד" },
-    { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3000, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
-  ] },
 ];
+// Chapters follow the same order as the add menu itself (ADD_METHODS).
+ADD_GUIDE_CHAPTERS.splice(1, 0, { id: "many", label: "🎙️ כמה בבת אחת", frames: [
+  { view: <DemoAddChoice />, target: "byPaste", caption: "1. הרבה פריטים? \"כמה פריטים בבת אחת\"" },
+  { view: <DemoPasteList />, target: "mic", ms: 2400, caption: "2. לוחצים על המיקרופון ומכתיבים את כל הרשימה ברצף — או כותבים" },
+  { view: <DemoPasteList />, target: "pasteSubmit", caption: "3. ממשיכים לבדיקה — מילים מיותרות מסוננות לבד" },
+  { view: <DemoPasteReview />, target: "merge-שרי", ms: 2600, caption: "4. פריט נחתך באמצע? \"חיבור ↑\" מחבר אותו לשורה שמעליו" },
+  { view: <DemoPasteReview merged />, target: "confirmList", caption: "5. מאשרים — והכול נוסף ומותאם לבד" },
+  { view: <DemoListScreen many />, target: "addItem", tap: false, ms: 3000, caption: "זהו! כל הפריטים ברשימה, עם המחיר הזול בכל אחד" },
+] });
 
 const FEATURES_GUIDE_CHAPTERS = [
   { id: "optimize", label: "🧮 איפה הכי זול", frames: [
@@ -5900,40 +5912,20 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
         {destList ? <React.Fragment>מוסיפים ל"{destList.name}" · <button onClick={() => setDestList(null)} className="underline font-semibold">שינוי</button></React.Fragment>
           : "רשימת היעד תיבחר כשתלחצו להוסיף"}
       </p>
+      {/* Same shared list (ADD_METHODS) as the in-list add menu, so the
+          two can never drift apart in order or wording. */}
       <div className="space-y-2">
-        <button onClick={() => setMethod("byName")}
-          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-          <span className="text-xl">🔎</span>
-          <span>
-            <div className="text-sm font-semibold text-[#2B2418]">לפי שם</div>
-            <div className="text-[11px] text-[#8A7F66]">מקלידים שם ובוחרים התאמה</div>
-          </span>
-        </button>
-        {/* Same fixed order as the in-list add menu. */}
-        <button onClick={startMulti}
-          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-          <span className="text-xl">🎙️</span>
-          <span>
-            <div className="text-sm font-semibold text-[#2B2418]">כמה פריטים בבת אחת</div>
-            <div className="text-[11px] text-[#8A7F66]">מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת</div>
-          </span>
-        </button>
-        <button onClick={() => setMethod("byCategory")}
-          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-          <span className="text-xl">📂</span>
-          <span>
-            <div className="text-sm font-semibold text-[#2B2418]">בחירה לפי קטגוריה</div>
-            <div className="text-[11px] text-[#8A7F66]">בוחרים מוצרים מתוך רשימה מסודרת לפי קטגוריות</div>
-          </span>
-        </button>
-        <button onClick={() => setMethod("byBarcode")}
-          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-          <span className="text-xl">📷</span>
-          <span>
-            <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
-            <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
-          </span>
-        </button>
+        {ADD_METHODS.map(m => (
+          <button key={m.id}
+            onClick={{ name: () => setMethod("byName"), multi: startMulti, cat: () => setMethod("byCategory"), scan: () => setMethod("byBarcode") }[m.id]}
+            className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+            <span className="text-xl">{m.icon}</span>
+            <span>
+              <div className="text-sm font-semibold text-[#2B2418]">{m.title}</div>
+              <div className="text-[11px] text-[#8A7F66]">{m.desc}</div>
+            </span>
+          </button>
+        ))}
       </div>
     </Modal>
     {listPickerOverlay}
@@ -7579,13 +7571,8 @@ function ListScreen({ uid, listId, listName, onBack }) {
           <div className="space-y-2">
             {(() => {
               const listEmpty = (items || []).length === 0;
-              const opts = [
-                { id: "name", icon: "🔎", title: "לפי שם", desc: "מקלידים שם ובוחרים התאמה", open: () => setShowAdd(true) },
-                { id: "multi", icon: "🎙️", title: "כמה פריטים בבת אחת", desc: listEmpty ? "הכי מהיר להתחלת רשימה — מקליטים או כותבים, והמערכת בוחרת את הזול בכל רשת" : "מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת", open: () => setShowPasteList(true) },
-                { id: "cat", icon: "📂", title: "בחירה לפי קטגוריה", desc: "בוחרים מוצרים מתוך רשימה מסודרת לפי קטגוריות", open: () => setShowBrowse(true) },
-                { id: "scan", icon: "📷", title: "סריקת ברקוד", desc: "מצלמים את הברקוד שעל המוצר", open: () => setShowBarcodeAdd(true) },
-              ];
-              return opts.map(o => {
+              const openers = { name: () => setShowAdd(true), multi: () => setShowPasteList(true), cat: () => setShowBrowse(true), scan: () => setShowBarcodeAdd(true) };
+              return ADD_METHODS.map(m => Object.assign({}, m, { open: openers[m.id] })).map(o => {
                 const highlight = listEmpty && o.id === "multi";
                 return (
                   <button key={o.id} onClick={() => { setShowAddChoice(false); o.open(); }}
