@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.57";
+const VERSION = "v2.58";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -560,6 +560,18 @@ const VENDOR_ORDER_URL = {
 // Clipboard API needs a secure context, which a plain string copy from an
 // older in-app browser or WebView sometimes lacks — this falls back to the
 // classic hidden-textarea + execCommand trick so "העתקה" still works there.
+// Worded as a personal recommendation, not an ad — it's sent from one
+// friend to another, usually on WhatsApp. `text` overrides the default
+// (e.g. with a real savings figure from the optimizer).
+const SHARE_URL = "https://superzola.web.app";
+function shareSuperZola(showToast, text) {
+  const msg = text || "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒";
+  if (navigator.share) {
+    navigator.share({ title: "סופר זולה", text: msg, url: SHARE_URL }).catch(() => {});
+  } else {
+    copyToClipboard(msg + "\n" + SHARE_URL).then(() => showToast("הקישור הועתק — אפשר להדביק בוואטסאפ 🔗"), () => showToast(SHARE_URL));
+  }
+}
 function copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     return navigator.clipboard.writeText(text);
@@ -982,24 +994,58 @@ function Loading() {
   );
 }
 
+// The first thing anyone opening a shared link sees — it used to be just
+// the logo and a Google button, with nothing saying what the app does or
+// why to sign in. Now: what it is, a live clip of it working, the three
+// benefits, and the sign-in pinned to the bottom so it's always in reach.
 function SignInScreen({ error }) {
   const [showPrivacy, setShowPrivacy] = useState(false);
+  const benefits = [
+    ["🛒", "בונים רשימת קניות", "מקלידים, בוחרים מקטגוריה, סורקים ברקוד — או פשוט אומרים אותה בקול"],
+    ["💰", "רואים את המחיר בכל רשת", "לפי המחירים הרשמיים שהרשתות מפרסמות, מתעדכנים כל יום"],
+    ["🧮", "מגלים איפה הסל כולו הכי זול", "בסופר אחד, בפיצול לשני סופרים, או אונליין כולל משלוח"],
+  ];
   return (
-    <div className="min-h-dvh flex flex-col items-center justify-center gap-8 bg-[#FBF4E7] px-6">
-      <AppIcon size={72} />
-      <h1 className="text-3xl" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>סופר זולה</h1>
-      <button
-        className="bg-[#2E4A3B] text-[#FBF4E7] px-7 py-3.5 rounded-2xl font-bold text-[15px] shadow-sm"
-        onClick={signIn}
-      >
-        התחברות עם Google
-      </button>
-      {error && (
-        <div className="bg-[#FBEAE5] border border-[#E0B0A5] rounded-xl px-4 py-2.5 max-w-xs text-center">
-          <p className="text-xs text-[#B8462F]">ההתחברות נכשלה: {error}</p>
+    <div className="min-h-dvh bg-[#FBF4E7]">
+      <div className="max-w-md mx-auto px-5 pt-10 pb-40 flex flex-col items-center">
+        <AppIcon size={64} />
+        <h1 className="text-3xl mt-3" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>סופר זולה</h1>
+        <p className="text-[15px] text-[#5B5749] text-center mt-2 leading-snug" style={{ textWrap: "balance" }}>
+          רשימת הקניות שלכם — ואיפה היא הכי זולה
+        </p>
+
+        <div className="mt-6 w-full">
+          <DemoPlayer frames={LIST_DEMO} />
         </div>
-      )}
-      <button onClick={() => setShowPrivacy(true)} className="text-xs text-[#A79A7C] underline">מדיניות פרטיות</button>
+
+        <div className="mt-6 w-full space-y-2.5">
+          {benefits.map(([icon, title, desc]) => (
+            <div key={title} className="flex items-start gap-3 bg-white border border-[#E0D4B4] rounded-2xl px-4 py-3">
+              <span className="text-xl flex-shrink-0 mt-0.5">{icon}</span>
+              <span>
+                <span className="block text-sm font-bold text-[#2B2418]">{title}</span>
+                <span className="block text-xs text-[#8A7F66] leading-snug mt-0.5">{desc}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-[#8A7F66] text-center mt-4">חינם, בלי פרסומות.</p>
+        <button onClick={() => setShowPrivacy(true)} className="text-xs text-[#A79A7C] underline mt-3">מדיניות פרטיות</button>
+      </div>
+
+      <div className="fixed bottom-0 inset-x-0 bg-[#FBF4E7]/95 border-t border-[#E5D8B5] px-5 pt-3 pb-5">
+        <div className="max-w-md mx-auto">
+          {error && (
+            <div className="bg-[#FBEAE5] border border-[#E0B0A5] rounded-xl px-4 py-2 mb-2 text-center">
+              <p className="text-xs text-[#B8462F]">ההתחברות נכשלה: {error}</p>
+            </div>
+          )}
+          <button className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3.5 rounded-2xl font-bold text-[15px] shadow-sm" onClick={signIn}>
+            מתחילים — כניסה עם Google
+          </button>
+          <p className="text-[11px] text-[#A79A7C] text-center mt-1.5">בלי סיסמה חדשה — רק החשבון שכבר יש לכם</p>
+        </div>
+      </div>
       {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
     </div>
   );
@@ -3182,17 +3228,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
     }
   }
 
-  function shareApp() {
-    const url = "https://superzola.web.app";
-    // Worded as a personal recommendation, not an ad — it's sent from one
-    // friend to another, usually on WhatsApp.
-    const text = "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒";
-    if (navigator.share) {
-      navigator.share({ title: "סופר זולה", text, url }).catch(() => {});
-    } else {
-      copyToClipboard(text + "\n" + url).then(() => setToast("הקישור הועתק — אפשר להדביק בוואטסאפ 🔗"), () => setToast(url));
-    }
-  }
+  function shareApp() { shareSuperZola(setToast); }
 
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
@@ -6317,6 +6353,36 @@ function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, 
   const bestOnline = cheapestOf(onlinePlans);
   const delta = (bestInstore && bestOnline) ? bestInstore.totalCost - bestOnline.totalCost : null;
 
+  // "You're saving ₪X here" — the moment someone actually sees the payoff
+  // is when a recommendation to a friend is most natural. Fair by design:
+  // only stores that price EVERY item are compared, against the best
+  // complete in-store plan; shown only for a real saving (₪15+ and 5%+),
+  // and once dismissed or used it stays away for three weeks.
+  const savingsShare = (() => {
+    if (!plans || !bestInstore || bestInstore.missingItems.length > 0) return null;
+    const totals = instorePool.map(p => {
+      let sum = 0, missing = 0;
+      items.forEach(item => {
+        const e = itemProfilePrices(item, [p], priceMap, promoMap)[0];
+        const eff = e ? ((e.promo && e.promo.active) ? e.promo.price : e.price) : null;
+        if (eff == null) missing++; else sum += eff * (item.quantity || 1);
+      });
+      return { p, sum, missing };
+    }).filter(t => t.missing === 0);
+    if (totals.length < 2) return null;
+    const priciest = totals.reduce((a, t) => t.sum > a.sum ? t : a);
+    const saving = priciest.sum - bestInstore.totalCost;
+    if (saving < 15 || saving / priciest.sum < 0.05) return null;
+    return { saving, vs: profileLabel(priciest.p, instorePool) };
+  })();
+  const [shareNudgeHidden, setShareNudgeHidden] = useState(() => {
+    try { return Date.now() - Number(localStorage.getItem("sz_savings_share_at") || 0) < 21 * 24 * 3600 * 1000; } catch (e) { return true; }
+  });
+  function hideShareNudge() {
+    try { localStorage.setItem("sz_savings_share_at", String(Date.now())); } catch (e) {}
+    setShareNudgeHidden(true);
+  }
+
   return (
     <Modal onClose={onClose}>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>אופטימיזציית קניות</h3>
@@ -6367,6 +6433,18 @@ function OptimizerModal({ uid, list, items, allActiveProfiles, hiddenVendorIds, 
               )}
               {onlinePool.length === 0 && (
                 <p className="text-center text-[#A79A7C] text-xs mt-3">הוסיפו רשת אונליין (⚙️ ← רשתות להשוואת מחירים) כדי להשוות גם מולה</p>
+              )}
+              {savingsShare && !shareNudgeHidden && (
+                <div className="mt-4 border-t border-[#E5D8B5] pt-3 flex items-center gap-2">
+                  <p className="flex-1 text-xs text-[#3F5A38] leading-snug">
+                    💚 הסל הזה זול ב-₪{savingsShare.saving.toFixed(0)} מאשר ב{savingsShare.vs}. מכירים מישהו שזה יעזור לו?{" "}
+                    <button onClick={() => {
+                      hideShareNudge();
+                      shareSuperZola(showToast, `השוויתי את רשימת הקניות שלי בסופר זולה — אותו סל יצא ₪${savingsShare.saving.toFixed(0)} זול יותר ברשת הזולה. שווה לנסות 🛒`);
+                    }} className="font-bold underline">שתפו</button>
+                  </p>
+                  <button onClick={hideShareNudge} aria-label="סגירה" className="text-[#A79A7C] text-base leading-none flex-shrink-0">×</button>
+                </div>
               )}
             </React.Fragment>
           )}
