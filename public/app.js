@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.59";
+const VERSION = "v2.60";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2413,7 +2413,7 @@ function DemoAddChoice() {
       <DemoListScreen dim />
       <DemoSheet title="הוספת פריט">
         <div className="space-y-1.5">
-          {[["byName", "🔎", "לפי שם"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"], ["byPaste", "🎙️", "כמה פריטים בבת אחת"]].map(([id, icon, label]) => (
+          {[["byName", "🔎", "לפי שם"], ["byPaste", "🎙️", "כמה פריטים בבת אחת"], ["byCat", "📂", "עיון לפי קטגוריה"], ["byScan", "📷", "סריקת ברקוד"]].map(([id, icon, label]) => (
             <div key={id} data-demo={id} className="bg-white border border-[#E0D4B4] rounded-lg px-2 py-2 flex items-center gap-2">
               <span>{icon}</span><span className="font-semibold">{label}</span>
             </div>
@@ -5909,6 +5909,15 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
             <div className="text-[11px] text-[#8A7F66]">מקלידים שם ובוחרים התאמה</div>
           </span>
         </button>
+        {/* Same fixed order as the in-list add menu. */}
+        <button onClick={startMulti}
+          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
+          <span className="text-xl">🎙️</span>
+          <span>
+            <div className="text-sm font-semibold text-[#2B2418]">כמה פריטים בבת אחת</div>
+            <div className="text-[11px] text-[#8A7F66]">מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת</div>
+          </span>
+        </button>
         <button onClick={() => setMethod("byCategory")}
           className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
           <span className="text-xl">📂</span>
@@ -5923,14 +5932,6 @@ function FindItemModal({ uid, categories, onClose, onOpenList, showToast }) {
           <span>
             <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
             <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
-          </span>
-        </button>
-        <button onClick={startMulti}
-          className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-          <span className="text-xl">📝</span>
-          <span>
-            <div className="text-sm font-semibold text-[#2B2418]">כמה פריטים בבת אחת 🎙️</div>
-            <div className="text-[11px] text-[#8A7F66]">מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת</div>
           </span>
         </button>
       </div>
@@ -7569,39 +7570,36 @@ function ListScreen({ uid, listId, listName, onBack }) {
       {showAddChoice && (
         <Modal onClose={() => setShowAddChoice(false)}>
           <h3 className="text-lg text-center mb-4" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספת פריט</h3>
+          {/* Fixed order, by how often each is the right tool: by name (the
+              usual one-or-two-item add), several at once, category, barcode
+              last (needs the product in hand + camera). The order never
+              changes — positions are what people remember — but on an empty
+              list "several at once" is highlighted in place, since starting
+              a list is where people give up. */}
           <div className="space-y-2">
-            <button onClick={() => { setShowAddChoice(false); setShowAdd(true); }}
-              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-              <span className="text-xl">🔎</span>
-              <span>
-                <div className="text-sm font-semibold text-[#2B2418]">לפי שם</div>
-                <div className="text-[11px] text-[#8A7F66]">מקלידים שם ובוחרים התאמה</div>
-              </span>
-            </button>
-            <button onClick={() => { setShowAddChoice(false); setShowBrowse(true); }}
-              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-              <span className="text-xl">📂</span>
-              <span>
-                <div className="text-sm font-semibold text-[#2B2418]">עיון לפי קטגוריה</div>
-                <div className="text-[11px] text-[#8A7F66]">כשלא בטוחים בשם המדויק</div>
-              </span>
-            </button>
-            <button onClick={() => { setShowAddChoice(false); setShowBarcodeAdd(true); }}
-              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-              <span className="text-xl">📷</span>
-              <span>
-                <div className="text-sm font-semibold text-[#2B2418]">סריקת ברקוד</div>
-                <div className="text-[11px] text-[#8A7F66]">מצלמים את הברקוד שעל המוצר</div>
-              </span>
-            </button>
-            <button onClick={() => { setShowAddChoice(false); setShowPasteList(true); }}
-              className="w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]">
-              <span className="text-xl">📝</span>
-              <span>
-                <div className="text-sm font-semibold text-[#2B2418]">כמה פריטים בבת אחת 🎙️</div>
-                <div className="text-[11px] text-[#8A7F66]">מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת</div>
-              </span>
-            </button>
+            {(() => {
+              const listEmpty = (items || []).length === 0;
+              const opts = [
+                { id: "name", icon: "🔎", title: "לפי שם", desc: "מקלידים שם ובוחרים התאמה", open: () => setShowAdd(true) },
+                { id: "multi", icon: "🎙️", title: "כמה פריטים בבת אחת", desc: listEmpty ? "הכי מהיר להתחלת רשימה — מקליטים או כותבים, והמערכת בוחרת את הזול בכל רשת" : "מקליטים או כותבים רשימה — המערכת בוחרת את הזול בכל רשת", open: () => setShowPasteList(true) },
+                { id: "cat", icon: "📂", title: "עיון לפי קטגוריה", desc: "כשלא בטוחים בשם המדויק", open: () => setShowBrowse(true) },
+                { id: "scan", icon: "📷", title: "סריקת ברקוד", desc: "מצלמים את הברקוד שעל המוצר", open: () => setShowBarcodeAdd(true) },
+              ];
+              return opts.map(o => {
+                const highlight = listEmpty && o.id === "multi";
+                return (
+                  <button key={o.id} onClick={() => { setShowAddChoice(false); o.open(); }}
+                    className={"w-full text-right flex items-center gap-3 px-4 py-3.5 rounded-xl border " +
+                      (highlight ? "border-2 border-[#2E4A3B] bg-[#EEF5EC]" : "border-[#E0D4B4] bg-white hover:bg-[#FBF4E7]")}>
+                    <span className="text-xl">{o.icon}</span>
+                    <span>
+                      <div className="text-sm font-semibold text-[#2B2418]">{o.title}{highlight && <span className="text-[10px] font-bold text-[#256A3F] bg-white border border-[#B9D9B0] rounded-full px-1.5 mr-1.5">מומלץ להתחלה</span>}</div>
+                      <div className="text-[11px] text-[#8A7F66]">{o.desc}</div>
+                    </span>
+                  </button>
+                );
+              });
+            })()}
           </div>
           <button onClick={() => { setShowAddChoice(false); setShowAddDemo(true); }}
             className="w-full text-center text-sm font-semibold text-[#2E4A3B] underline mt-4">🎬 איך מוסיפים פריטים? הדגמה קצרה</button>
