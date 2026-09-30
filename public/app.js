@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.58";
+const VERSION = "v2.59";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -3718,6 +3718,15 @@ function VendorsScreen({ uid, onBack }) {
   const [addingOnlineKey, setAddingOnlineKey] = useState("");
   const onlineVendors = useOnlineVendors();
   const limits = useAppLimits();
+  // Reached from the onboarding guide's "pick branches" step: a pinned
+  // "continue" bar takes you back into the guide (on to step 3 once there's
+  // at least one branch) — there was no visible way back from here before.
+  const guideState = readOnboardingState();
+  const fromGuide = !!(guideState && guideState.open);
+  function continueGuide(hasBranches) {
+    if (hasBranches) writeOnboardingState(Object.assign({}, guideState, { step: 3 }));
+    onBack();
+  }
   const isEditorOrAdmin = role === "editor" || role === "admin";
 
   useEffect(() => {
@@ -3806,12 +3815,26 @@ function VendorsScreen({ uid, onBack }) {
 
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
-      <div className="bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
+      <div className="sticky top-0 z-20 bg-[#26361F] px-4 pt-4 pb-3 flex items-center gap-2">
         <BackButton onClick={onBack} />
         <h1 className="text-xl" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשתות להשוואת מחירים</h1>
       </div>
 
-      <div className="p-4 space-y-6">
+      {fromGuide && (() => {
+        const branchCount = (profiles || []).filter(p => p.active && (p.mode || "instore") === "instore").length;
+        return (
+          <div className="fixed bottom-0 inset-x-0 z-20 bg-[#FBF4E7]/95 border-t border-[#E5D8B5] px-4 pt-3 pb-5">
+            <button onClick={() => continueGuide(branchCount > 0)}
+              className="w-full max-w-md mx-auto block bg-[#2E4A3B] text-[#FBF4E7] py-3.5 rounded-2xl font-bold text-[15px]">
+              {branchCount === 0 ? "‹ חזרה למדריך"
+                : branchCount === 1 ? "✓ נבחר סניף אחד — המשך במדריך ›"
+                : `✓ נבחרו ${branchCount} סניפים — המשך במדריך ›`}
+            </button>
+          </div>
+        );
+      })()}
+
+      <div className={"p-4 space-y-6" + (fromGuide ? " pb-28" : "")}>
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-lg" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>סניפים פיזיים</h2>
