@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.63";
+const VERSION = "v2.64";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -563,9 +563,16 @@ const VENDOR_ORDER_URL = {
 // Worded as a personal recommendation, not an ad — it's sent from one
 // friend to another, usually on WhatsApp. `text` overrides the default
 // (e.g. with a real savings figure from the optimizer).
-const SHARE_URL = "https://superzola.web.app";
-function shareSuperZola(showToast, text) {
-  const msg = text || "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒";
+// The ?s= suffix is only there because WhatsApp caches a link's preview
+// card per exact URL and never refreshes it — bump it whenever the
+// og:title/description/image in index.html change, so shared links show
+// the current preview instead of the stale one.
+const SHARE_URL = "https://superzola.web.app/?s=2";
+function shareSuperZola(showToast, text, asOwner) {
+  // The admin sharing their own app shouldn't say "I found an app".
+  const msg = text || (asOwner
+    ? "בניתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — אשמח שתנסו ותגידו לי מה חשבתם 🛒"
+    : "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒");
   if (navigator.share) {
     navigator.share({ title: "סופר זולה", text: msg, url: SHARE_URL }).catch(() => {});
   } else {
@@ -3240,7 +3247,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
     }
   }
 
-  function shareApp() { shareSuperZola(setToast); }
+  function shareApp() { shareSuperZola(setToast, null, isAdmin); }
 
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
