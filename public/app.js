@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.64";
+const VERSION = "v2.65";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -6883,7 +6883,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
           className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none leading-relaxed disabled:opacity-60" />
         <div className="flex flex-col items-center gap-1.5 flex-shrink-0 pt-1">
           <button type="button" onClick={listening ? stopListening : startListening}
-            aria-label={listening ? "עצירת הקלטה" : "הקלטת הרשימה בקול"}
+            aria-label={listening ? "עצירת הקלטה" : "הכתבת הרשימה"}
             className={"relative w-16 h-16 rounded-full flex items-center justify-center text-white shadow-lg disabled:opacity-40 " +
               (listening ? "bg-[#B8462F]" : "bg-[#2E4A3B]")}>
             {listening && <span className="absolute inset-0 rounded-full bg-[#B8462F] opacity-40 animate-ping" />}
