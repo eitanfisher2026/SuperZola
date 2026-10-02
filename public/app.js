@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.78";
+const VERSION = "v2.79";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -567,7 +567,7 @@ const VENDOR_ORDER_URL = {
 // card per exact URL and never refreshes it — bump it whenever the
 // og:title/description/image in index.html change, so shared links show
 // the current preview instead of the stale one.
-const SHARE_URL = "https://superzola.web.app/?s=3";
+const SHARE_URL = "https://superzola.web.app/?s=4";
 function shareSuperZola(showToast, text) {
   // One wording for everyone, the admin included — so what the admin sees
   // when trying the share is exactly what every user sends. Kept to the
@@ -1022,8 +1022,8 @@ function SignInScreen({ error }) {
   const [showPrivacy, setShowPrivacy] = useState(false);
   const benefits = [
     ["🛒", "בונים רשימת קניות", "מקלידים, בוחרים לפי קטגוריה, סורקים ברקוד — או פשוט מכתיבים את כל הרשימה"],
-    ["💰", "רואים את המחיר בכל רשת", "לפי המחירים הרשמיים שהרשתות מפרסמות, מתעדכנים כל יום"],
-    ["🧮", "מגלים איפה הסל כולו הכי זול", "בסופר אחד, בפיצול לשני סופרים, או אונליין כולל משלוח"],
+    ["💰", "רואים את מחיר המדף בסניף שלכם", "רמי לוי, אושר עד, יוחננוף, שופרסל, ויקטורי, קרפור ועוד — בוחרים את הסניפים שבהם אתם קונים. המחירים הרשמיים של הרשתות, מתעדכנים כל יום"],
+    ["🧮", "מגלים איפה הסל כולו הכי זול", "בסופר אחד או בפיצול לשני סופרים — ואם רוצים, גם באתרי המשלוחים"],
   ];
   return (
     <div className="min-h-dvh bg-[#FBF4E7]">
@@ -7273,11 +7273,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
   // visibility, the optimizer's pools, the on-demand online fetch) treats
   // the disabled side exactly as if the user had zero active vendors there.
   const pricePreference = (userDoc || {}).pricePreference || "both";
-  const preferenceFilteredProfiles = pricePreference === "instoreOnly"
+  const preferredProfiles = pricePreference === "instoreOnly"
     ? activeProfiles.filter(p => (p.mode || "instore") === "instore")
     : pricePreference === "onlineOnly"
     ? activeProfiles.filter(p => p.mode === "online")
     : activeProfiles;
+  const preferenceFilteredProfiles = preferredProfiles.length > 0 ? preferredProfiles : activeProfiles;
+  const effectivePreference = preferredProfiles.length > 0 ? pricePreference : "both";
   const hasInstoreActive = preferenceFilteredProfiles.some(p => (p.mode || "instore") === "instore");
   const hasOnlineActive = preferenceFilteredProfiles.some(p => p.mode === "online");
   // A user with vendors active on only one side has nothing to toggle —
@@ -7373,7 +7375,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [onlinePromoMap, setOnlinePromoMap] = useState({});
   const [onlinePricesLoading, setOnlinePricesLoading] = useState(false);
   const onlineProfilesVisible = activeProfiles.filter(p => p.mode === "online" && hiddenVendorIds.indexOf(p.id) === -1);
-  const wantsOnline = pricePreference !== "instoreOnly" && (effectivePriceView === "online" || showOptimizer);
+  const wantsOnline = effectivePreference !== "instoreOnly" && (effectivePriceView === "online" || showOptimizer);
   const knownBarcodesKey = [...new Set((items || []).flatMap(it => Object.values(it.barcodes || {}).map(barcodeValue).filter(Boolean)))].sort().join(",");
 
   const onlineRequestSeq = useRef(0);
