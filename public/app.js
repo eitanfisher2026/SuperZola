@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.75";
+const VERSION = "v2.76";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2727,7 +2727,7 @@ function DemoPasteList() {
     <div className="h-full relative">
       <DemoListScreen dim />
       <DemoSheet title="הוספת כמה פריטים" footer={
-        <div data-demo="pasteSubmit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">המשך לבדיקה (6 פריטים) ›</div>
+        <div data-demo="pasteSubmit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-2 font-semibold">המשך — הפרדה לפריטים ובדיקה ›</div>
       }>
         <div className="flex gap-2 items-start">
           <div className="flex-1 bg-white border border-[#C7B78E] rounded-lg px-2 py-1.5 leading-relaxed">
@@ -7164,11 +7164,21 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
 
   return (
     <Modal onClose={onClose} footer={
-      <button onClick={goReview} disabled={inputCount === 0 || stage === "parsing"}
-        className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-60">
-        {stage === "parsing" ? "✨ מסדר את הרשימה ומנקה מילים מיותרות..."
-          : inputCount > 0 ? `המשך לבדיקה (${inputCount} פריטים) ›` : "המשך לבדיקה ›"}
-      </button>
+      <div>
+        {/* A dictated list arrives as a few long lines with several items
+            in each — counting lines there ("2 פריטים") reads as if most of
+            what was said got lost. The real split happens in the next
+            step, so say that instead of a number. */}
+        {usedMicRef.current && inputCount > 0 && stage !== "parsing" && (
+          <p className="text-[11px] text-[#5B7A55] text-center mb-2 leading-snug">✓ נקלט. אין צורך לסדר — בשלב הבא נפריד את מה שנאמר לפריטים ותוכלו לתקן.</p>
+        )}
+        <button onClick={goReview} disabled={inputCount === 0 || stage === "parsing"}
+          className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-60">
+          {stage === "parsing" ? "✨ מפריד לפריטים ומנקה מילים מיותרות..."
+            : usedMicRef.current ? "המשך — הפרדה לפריטים ובדיקה ›"
+            : inputCount > 0 ? `המשך לבדיקה (${inputCount} פריטים) ›` : "המשך לבדיקה ›"}
+        </button>
+      </div>
     }>
       <h3 className="text-lg text-center mb-1" style={{ fontFamily: "'Suez One', serif", color: "#26361F" }}>הוספת כמה פריטים</h3>
       <p className="text-xs text-[#8A7F66] text-center mb-3 leading-relaxed">
