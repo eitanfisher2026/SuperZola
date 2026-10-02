@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.65";
+const VERSION = "v2.66";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1040,17 +1040,21 @@ function SignInScreen({ error }) {
         <button onClick={() => setShowPrivacy(true)} className="text-xs text-[#A79A7C] underline mt-3">מדיניות פרטיות</button>
       </div>
 
-      <div className="fixed bottom-0 inset-x-0 bg-[#FBF4E7]/95 border-t border-[#E5D8B5] px-5 pt-3 pb-5">
+      {/* Solid, not translucent: with a see-through bar the benefit cards
+          scrolling underneath showed as faint outlines, and the small line
+          under the button read like a second, greyed-out button. The
+          explanation now sits ABOVE the one real button, as plain text. */}
+      <div className="fixed bottom-0 inset-x-0 bg-[#FBF4E7] border-t border-[#DECBA1] shadow-[0_-6px_16px_rgba(46,74,59,0.08)] px-5 pt-3 pb-5">
         <div className="max-w-md mx-auto">
           {error && (
             <div className="bg-[#FBEAE5] border border-[#E0B0A5] rounded-xl px-4 py-2 mb-2 text-center">
               <p className="text-xs text-[#B8462F]">ההתחברות נכשלה: {error}</p>
             </div>
           )}
+          <p className="text-xs text-[#5B5749] text-center mb-2">נכנסים עם חשבון Google שכבר יש לכם — בלי הרשמה ובלי סיסמה חדשה</p>
           <button className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3.5 rounded-2xl font-bold text-[15px] shadow-sm" onClick={signIn}>
-            מתחילים — כניסה עם Google
+            כניסה עם Google ›
           </button>
-          <p className="text-[11px] text-[#A79A7C] text-center mt-1.5">בלי סיסמה חדשה — רק החשבון שכבר יש לכם</p>
         </div>
       </div>
       {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
@@ -2621,26 +2625,34 @@ function DemoBarcodeFound() {
 }
 
 // The full list screen, for the "everything you can do" chapters.
-function DemoListFull({ replaced }) {
+// replaced: the milk was swapped at one chain. promoActive: the hummus
+// quantity was raised to 3, so its "3 for ₪20" promotion now applies.
+// spotlightToggle: rings the list/table switch for the chapter about it.
+function DemoListFull({ replaced, promoActive, spotlightToggle }) {
   const rows = [
     { name: "חלב טרי 3%", nameId: "itemName", chips: [[replaced ? "רמי לוי ₪6.30" : "רמי לוי ₪6.60", "g", "milkChip"], ["שופרסל ₪7.40", ""]] },
-    { name: "חומוס 400 גרם", chips: [["יוחננוף ₪8.90", "", "promoChip", "🏷️ 3 ב-₪20"], ["רמי לוי ₪9.50", ""]] },
+    promoActive
+      ? { name: "חומוס 400 גרם", nameId: "hummusName", qty: 3, chips: [["יוחננוף ₪6.67*", "g", "promoChip"], ["רמי לוי ₪9.50", ""]] }
+      : { name: "חומוס 400 גרם", nameId: "hummusName", chips: [["יוחננוף ₪8.90", "", "promoChip", "🏷️ 3 ב-₪20"], ["רמי לוי ₪9.50", ""]] },
     { name: "חסה", chips: [["שופרסל ₪4.90", "g"], ["חצי חינם: —", "gap", "gapChip"]] },
   ];
   return (
     <div className="h-full flex flex-col text-[11px] text-[#2B2418]">
       <div className="bg-[#26361F] px-2.5 py-2 flex items-center gap-1.5">
         <span className="flex-1 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</span>
-        <span className="flex bg-white/10 rounded-full p-0.5 text-[9px] font-bold">
-          <span className="bg-[#F3ECD9] text-[#26361F] rounded-full px-1.5 py-0.5">רשימה</span>
-          <span data-demo="toggleTable" className="text-[#C9BE9E] px-1.5 py-0.5">טבלה</span>
+        <span data-demo="toggle" className={"flex bg-white/10 rounded-full p-0.5 text-[9px] font-bold " + (spotlightToggle ? "ring-2 ring-[#E3A939]" : "")}>
+          <span className="bg-[#F3ECD9] text-[#26361F] rounded-full px-1.5 py-0.5">📋 רשימה</span>
+          <span data-demo="toggleTable" className="text-[#C9BE9E] px-1.5 py-0.5">📊 טבלה</span>
         </span>
         <span data-demo="menu" className="text-[#F3ECD9] bg-white/10 rounded-full w-5 h-5 flex items-center justify-center">☰</span>
       </div>
       <div className="flex-1 p-2 space-y-1.5">
         {rows.map(r => (
           <div key={r.name} className="border-b border-dotted border-[#E0D4B4] pb-1.5">
-            <div className="text-[12px] text-[#B8462F] underline mb-0.5"><span data-demo={r.nameId}>{r.name}</span></div>
+            <div className="text-[12px] text-[#B8462F] underline mb-0.5 flex justify-between">
+              <span data-demo={r.nameId}>{r.name}</span>
+              {r.qty && <span className="sz-demo-fade no-underline text-[9px] font-medium text-[#8A7F66] bg-[#EFE4C6] rounded-full px-1.5">({r.qty})</span>}
+            </div>
             <div className="flex flex-wrap gap-1 text-[9px]">
               {r.chips.map(([t, kind, id, promo]) => (
                 <span key={t} data-demo={id} className={"rounded px-1 py-0.5 font-semibold " + (kind === "g" ? "bg-[#DCEFD8] text-[#256A3F]" : kind === "gap" ? "bg-[#F3ECD9] text-[#A79A7C] border border-dashed border-[#DECBA1]" : "bg-[#F3ECD9]")}>
@@ -2683,7 +2695,14 @@ function DemoTable() {
   const rows = [["חלב טרי 3%", "₪6.60", "₪7.40", "₪6.90", 0], ["חומוס", "₪9.50", "₪9.90", "₪8.90*", 2], ["חסה", "₪5.20", "₪4.90", "₪5.40", 1]];
   return (
     <div className="h-full flex flex-col text-[10px] text-[#2B2418]">
-      <div className="bg-[#26361F] px-2.5 py-2 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</div>
+      <div className="bg-[#26361F] px-2.5 py-2 flex items-center gap-1.5">
+        <span className="flex-1 text-[13px]" style={{ fontFamily: "'Suez One', serif", color: "#F3ECD9" }}>רשימה #1</span>
+        <span className="flex bg-white/10 rounded-full p-0.5 text-[9px] font-bold ring-2 ring-[#E3A939]">
+          <span data-demo="toggleList" className="text-[#C9BE9E] px-1.5 py-0.5">📋 רשימה</span>
+          <span className="bg-[#F3ECD9] text-[#26361F] rounded-full px-1.5 py-0.5">📊 טבלה</span>
+        </span>
+        <span className="text-[#F3ECD9] bg-white/10 rounded-full w-5 h-5 flex items-center justify-center text-[11px]">☰</span>
+      </div>
       <div className="sz-demo-fade p-2">
         <table className="w-full bg-white border border-[#E0D4B4] text-center">
           <thead><tr className="bg-[#F3ECD9]"><th className="text-right px-1 py-1">פריט</th><th>רמי לוי</th><th>שופרסל</th><th>יוחננוף</th></tr></thead>
@@ -2757,22 +2776,30 @@ function DemoReplacePicker() {
     </div>
   );
 }
-function DemoEditItem() {
+// hummus: the promotions chapter's version — the quantity raised to 3 so
+// the "3 for ₪20" promotion applies; qty shows the number in the field.
+function DemoEditItem({ hummus, qty }) {
   return (
     <div className="h-full relative">
-      <DemoListFull replaced />
+      {hummus ? <DemoListFull /> : <DemoListFull replaced />}
       <DemoSheet title="עריכת פריט" footer={
-        <div className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">שמירת שינויים</div>
+        <div data-demo="saveEdit" className="mt-2 text-center bg-[#2E4A3B] text-[#FBF4E7] rounded-lg py-1.5 font-semibold">שמירת שינויים</div>
       }>
         <div className="text-[9px] text-[#8A7F66]">שם</div>
-        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 mb-1.5">חלב טרי 3%</div>
+        <div className="bg-white border border-[#C7B78E] rounded-lg px-2 py-1 mb-1.5">{hummus ? "חומוס 400 גרם" : "חלב טרי 3%"}</div>
         <div className="text-[9px] text-[#8A7F66]">כמות</div>
         <div className="flex items-center gap-1 mb-1.5">
           <span className="w-6 h-6 rounded-md bg-[#EFE4C6] flex items-center justify-center">−</span>
-          <span className="flex-1 bg-white border border-[#C7B78E] rounded-lg py-1 text-center">2</span>
+          <span className="flex-1 bg-white border border-[#C7B78E] rounded-lg py-1 text-center font-bold">{qty || 2}</span>
           <span data-demo="qtyPlus" className="w-6 h-6 rounded-md bg-[#E3A939]/25 text-[#8A5A15] flex items-center justify-center font-bold">+</span>
         </div>
-        <div className="bg-[#26361F] text-[#F3ECD9] rounded-lg px-2 py-1 text-[9px]">✓ הותאם ב-3 מתוך 3 רשתות · הכי זול: <b className="text-[#E3A939]">רמי לוי ₪6.30</b></div>
+        <div className="bg-[#26361F] text-[#F3ECD9] rounded-lg px-2 py-1 text-[9px]">
+          {hummus
+            ? (qty >= 3
+              ? <span>✓ המבצע חל · הכי זול: <b className="text-[#E3A939]">יוחננוף ₪6.67*</b></span>
+              : <span>הכי זול: <b className="text-[#E3A939]">יוחננוף ₪8.90</b> · 🏷️ 3 ב-₪20</span>)
+            : <span>✓ הותאם ב-3 מתוך 3 רשתות · הכי זול: <b className="text-[#E3A939]">רמי לוי ₪6.30</b></span>}
+        </div>
       </DemoSheet>
     </div>
   );
@@ -2898,9 +2925,11 @@ const FEATURES_GUIDE_CHAPTERS = [
     { view: <DemoListFull />, target: "optimizer", caption: "1. \"אופטימיזציה והשוואה\" — איפה הסל כולו הכי זול" },
     { view: <DemoOptimizer />, target: "optimizer", tap: false, ms: 4200, caption: "חנות אחת, פיצול לשתי חנויות, או אונליין כולל משלוח — הכול זה מול זה" },
   ] },
-  { id: "table", label: "📊 טבלה", frames: [
-    { view: <DemoListFull />, target: "toggleTable", caption: "1. עוברים לתצוגת \"טבלה\"" },
-    { view: <DemoTable />, target: "toggleTable", tap: false, ms: 4000, caption: "כל הרשתות זו לצד זו, עם סה\"כ לכל רשת — הזול בירוק" },
+  { id: "table", label: "📊 רשימה מול טבלה", frames: [
+    { view: <DemoListFull spotlightToggle />, target: "toggle", tap: false, ms: 3800, caption: "למעלה יש שני מצבי תצוגה. \"רשימה\": פריט אחרי פריט, לפי קטגוריות — נוח בזמן הקנייה" },
+    { view: <DemoListFull spotlightToggle />, target: "toggleTable", caption: "1. לוחצים \"טבלה\"" },
+    { view: <DemoTable />, target: "toggleList", tap: false, ms: 4200, caption: "\"טבלה\": כל הרשתות זו לצד זו, עם סה\"כ לכל רשת — נוח כדי להחליט איפה לקנות" },
+    { view: <DemoTable />, target: "toggleList", caption: "2. \"רשימה\" מחזיר לתצוגה הרגילה" },
   ] },
   { id: "check", label: "🔍 בדיקה ועריכת פריט", frames: [
     { view: <DemoListFull />, target: "milkChip", caption: "1. לוחצים על מחיר של רשת — רואים בדיוק איזה מוצר נבחר שם" },
@@ -2909,11 +2938,17 @@ const FEATURES_GUIDE_CHAPTERS = [
     { view: <DemoListFull replaced />, target: "itemName", ms: 2600, caption: "4. לחיצה על שם הפריט: עריכת השם, הכמות וההערה" },
     { view: <DemoEditItem />, target: "qtyPlus", ms: 3200, caption: "משנים כמות — מבצע שחל מכמות מסוימת מתעדכן לבד במחיר" },
   ] },
-  { id: "prices", label: "🏷️ מבצעים וחוסרים", frames: [
+  { id: "prices", label: "🏷️ מבצעים", frames: [
     { view: <DemoListFull />, target: "promoChip", caption: "1. מבצע מסומן 🏷️ ליד המחיר — לחיצה מסבירה אותו" },
-    { view: <DemoPriceInfo />, target: "promoChip", tap: false, ms: 3600, caption: "רואים מאיזו כמות המבצע חל, ומה יהיה המחיר ליחידה" },
-    { view: <DemoListFull />, target: "gapChip", caption: "2. רשת בלי מוצר מסומנת \"—\"" },
-    { view: <DemoPriceInfo gap />, target: "gapChip", tap: false, ms: 3600, caption: "לחיצה עליה מסבירה למה לא נבחר מוצר, ומאפשרת לבחור" },
+    { view: <DemoPriceInfo />, target: "promoChip", tap: false, ms: 3800, caption: "המבצע \"3 ב-₪20\" חל רק מ-3 יחידות — וברשימה יש כרגע 1" },
+    { view: <DemoListFull />, target: "hummusName", caption: "2. כדי לקבל את המבצע מגדילים כמות: לוחצים על שם הפריט" },
+    { view: <DemoEditItem hummus qty={1} />, target: "qtyPlus", caption: "3. לוחצים על + עד שמגיעים ל-3" },
+    { view: <DemoEditItem hummus qty={3} />, target: "saveEdit", caption: "4. המבצע חל — שומרים" },
+    { view: <DemoListFull promoActive />, target: "promoChip", tap: false, ms: 4000, caption: "המחיר ירד למחיר המבצע (מסומן *), ועכשיו יוחננוף הכי זול" },
+  ] },
+  { id: "gaps", label: "➖ רשת בלי מוצר", frames: [
+    { view: <DemoListFull />, target: "gapChip", caption: "1. רשת שלא נבחר בה מוצר מסומנת \"—\"" },
+    { view: <DemoPriceInfo gap />, target: "gapChip", tap: false, ms: 3800, caption: "לחיצה עליה מסבירה למה לא נבחר מוצר, ומאפשרת לבחור אחד" },
   ] },
   { id: "lists", label: "📋 ניהול רשימות", frames: [
     { view: <DemoListFull />, target: "menu", caption: "1. התפריט ☰ של הרשימה" },
@@ -7418,14 +7453,14 @@ function ListScreen({ uid, listId, listName, onBack }) {
         {visibleProfiles.length > 0 && (
           <div className="flex bg-white/10 rounded-full p-0.5 flex-shrink-0">
             <button onClick={() => setViewMode("list")}
-              className={"text-xs px-3 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+              className={"text-xs px-2.5 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
                 (viewMode !== "table" ? "bg-[#F3ECD9] text-[#26361F]" : "text-[#C9BE9E]")}>
-              רשימה
+              📋 רשימה
             </button>
             <button onClick={() => setViewMode("table")}
-              className={"text-xs px-3 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
+              className={"text-xs px-2.5 py-1.5 rounded-full font-bold whitespace-nowrap transition " +
                 (viewMode === "table" ? "bg-[#F3ECD9] text-[#26361F]" : "text-[#C9BE9E]")}>
-              טבלה
+              📊 טבלה
             </button>
           </div>
         )}
@@ -7485,16 +7520,19 @@ function ListScreen({ uid, listId, listName, onBack }) {
         {items !== null && items.length === 0 && (
           <div className="text-center py-6 px-4">
             <p className="text-[#8A7F66] text-sm">הרשימה ריקה</p>
-            {/* Sets expectations up front, before the effort of building a
-                first real list — otherwise someone who gives up midway
-                never sees the payoff. Real wording from a beta user's own
-                reaction ("looks nice, but a lot of effort") and Eitan's
-                reply to her. */}
-            <p className="text-[#A79A7C] text-xs mt-1.5 max-w-xs mx-auto leading-relaxed">
-              בניית הרשימה הראשונה תיקח זמן, צריך סבלנות, אבל בפעם הבאה פשוט משכפלים אותה ומוסיפים רק מה שהשתנה. ההשקעה ביצירת רשימה מלאה תשתלם לכם — ההבדלים בתמחור הסל בין הרשתות יכולים להיות משמעותיים.
+            {/* The empty list is where new users gave up ("looks nice, but
+                a lot of effort"). It used to ask for patience and point at
+                category browsing; dictating the whole list is now the fast
+                way in, so that's what leads — as the one prominent action. */}
+            <p className="text-[#5B5749] text-sm mt-2 max-w-xs mx-auto leading-relaxed">
+              הדרך הכי מהירה להתחיל: להכתיב את הרשימה. אומרים את המוצרים אחד אחרי השני, והמערכת מוצאת לכל אחד את הזול בכל רשת.
             </p>
-            <p className="text-[#A79A7C] text-xs mt-2 max-w-xs mx-auto leading-relaxed">
-              טיפ: השתמשו ב"בחירה לפי קטגוריה" בהוספת פריט — זה יקצר את התהליך.
+            <button onClick={() => setShowPasteList(true)}
+              className="mt-3 w-full max-w-xs mx-auto flex items-center justify-center gap-2 bg-[#2E4A3B] text-[#FBF4E7] rounded-xl py-3 text-sm font-bold">
+              <MicIcon size={18} /> הכתבת רשימה (או הקלדה)
+            </button>
+            <p className="text-[#A79A7C] text-xs mt-2.5 max-w-xs mx-auto leading-relaxed">
+              בפעם הבאה פשוט משכפלים את הרשימה ומעדכנים רק מה שהשתנה.
             </p>
             {(() => {
               // Admin always sees it (to test), regardless of the one-time
