@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.76";
+const VERSION = "v2.77";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -568,11 +568,10 @@ const VENDOR_ORDER_URL = {
 // og:title/description/image in index.html change, so shared links show
 // the current preview instead of the stale one.
 const SHARE_URL = "https://superzola.web.app/?s=2";
-function shareSuperZola(showToast, text, asOwner) {
-  // The admin sharing their own app shouldn't say "I found an app".
-  const msg = text || (asOwner
-    ? "בניתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — אשמח שתנסו ותגידו לי מה חשבתם 🛒"
-    : "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒");
+function shareSuperZola(showToast, text) {
+  // One wording for everyone, the admin included — so what the admin sees
+  // when trying the share is exactly what every user sends.
+  const msg = text || "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒";
   if (navigator.share) {
     navigator.share({ title: "סופר זולה", text: msg, url: SHARE_URL }).catch(() => {});
   } else {
@@ -3498,7 +3497,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
     }
   }
 
-  function shareApp() { shareSuperZola(setToast, null, isAdmin); }
+  function shareApp() { shareSuperZola(setToast); }
 
   // Tapping "+" creates an auto-named list immediately and jumps straight
   // into it — no naming step up front. Renaming later (from the list's own
