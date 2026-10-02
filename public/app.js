@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.68";
+const VERSION = "v2.69";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -6661,10 +6661,20 @@ function cleanItemLine(line) {
   let words = line.trim().split(/\s+/).filter(Boolean)
     .map(w => (w.length > 2 && w[0] === "ו" && !KEEP_LEADING_VAV.has(w)) ? w.slice(1) : w)
     .filter(w => !FILLER_WORDS.has(w));
+  // Only a size ("שלושה אחוז", "1.5 ליטר") — not a quantity of anything;
+  // tidyRows joins it to the product said just before it.
+  if (words.length > 0 && isSizeOnly(words.join(" "))) {
+    const size = words.map(w => NUMBER_WORDS[w] != null ? String(NUMBER_WORDS[w]) : w).join(" ").replace(/(\d) אחוז(ים)?/, "$1%");
+    return { text: size, qty: 1 };
+  }
   let qty = 1;
   if (words.length > 1) {
     const n = /^\d+(\.\d+)?$/.test(words[0]) ? parseFloat(words[0]) : NUMBER_WORDS[words[0]];
-    if (n && n > 0 && n < 100) {
+    // "12 ביצים" is one pack of 12, not twelve packs — the number is the
+    // pack size and belongs in the name.
+    if (n && COUNTED_PACK_WORDS.has(words[1]) && COUNTED_PACK_SIZES.has(n)) {
+      words = words.slice(1).concat([String(n)]);
+    } else if (n && n > 0 && n < 100) {
       qty = n;
       words = words.slice(1);
       if (words.length > 1 && PACK_WORDS.has(words[0])) words = words.slice(1);
@@ -6672,6 +6682,38 @@ function cleanItemLine(line) {
   }
   const text = words.join(" ").trim();
   return text.length >= 2 ? { text, qty } : null;
+}
+const COUNTED_PACK_WORDS = new Set(["ביצים", "ביצי"]);
+const COUNTED_PACK_SIZES = new Set([6, 10, 12, 18, 30]);
+// Safety net over both the AI and the rule-based cleanup: a row that is
+// only a number / percent / size ("3%", "חמישה אחוז", "1.5 ליטר") is not a
+// product — speech recognition cut it off from the product said just
+// before it ("קוטג'" … "3%"). It joins that row, or is dropped when there
+// is nothing to join; an egg row's "quantity" of a pack size (12, 18, 30)
+// goes back into the name as the pack size.
+const SIZE_WORDS = new Set(["אחוז", "אחוזים", "ליטר", "ליטרים", "גרם", "קילו", "קג", "מל", "וחצי", "חצי", "יחידות"]);
+function isSizeOnly(text) {
+  const words = text.replace(/["'׳״]/g, "").trim().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every(w => /^[\d.,%]+$/.test(w) || SIZE_WORDS.has(w) || NUMBER_WORDS[w] != null);
+}
+function tidyRows(rows) {
+  const out = [];
+  rows.forEach(r => {
+    const text = (r.text || "").trim();
+    if (!text) return;
+    if (isSizeOnly(text)) {
+      const prev = out[out.length - 1];
+      if (prev && !/\d/.test(prev.text)) prev.text = prev.text + " " + text;
+      return;
+    }
+    const words = text.split(/\s+/);
+    if (words.length === 1 && COUNTED_PACK_WORDS.has(words[0]) && COUNTED_PACK_SIZES.has(r.qty)) {
+      out.push({ text: text + " " + r.qty, qty: 1 });
+      return;
+    }
+    out.push({ text, qty: r.qty || 1 });
+  });
+  return out;
 }
 
 function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAdded, showToast }) {
@@ -6717,13 +6759,13 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
         const res = await fns.httpsCallable("parseShoppingList", { timeout: 30000 })({ text: lines.join("\n") });
         const items = res.data && res.data.items;
         if (Array.isArray(items) && items.length > 0) {
-          setRows(items.map(it => ({ text: it.name, qty: it.quantity || 1 })));
+          setRows(tidyRows(items.map(it => ({ text: it.name, qty: it.quantity || 1 }))));
           setStage("review");
           return;
         }
       } catch (e) {}
     }
-    setRows(lines.map(cleanItemLine).filter(Boolean));
+    setRows(tidyRows(lines.map(cleanItemLine).filter(Boolean)));
     setStage("review");
   }
   function backToInput() {
