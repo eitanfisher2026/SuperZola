@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.71";
+const VERSION = "v2.72";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2068,14 +2068,14 @@ function ItemNameField({ value, onChange, onEnter, autoFocus, showToast }) {
         style={listening ? { color: "#B8462F" } : undefined}
         onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } }}
         className="flex-1 min-w-0 bg-transparent py-3 text-right outline-none" />
-      {value && !listening && (
-        <button type="button" onClick={clear} aria-label="מחיקת השם"
-          className="w-8 h-8 flex items-center justify-center text-[#A79A7C] text-lg flex-shrink-0">✕</button>
-      )}
       <button type="button" onClick={toggleMic} aria-label={listening ? "עצירת ההקלטה" : "הכתבת שם הפריט"}
         className={"w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 " + (listening ? "bg-[#B8462F] text-white animate-pulse" : "bg-[#EEF5EC] text-[#2E4A3B]")}>
         <MicIcon size={18} />
       </button>
+      {value && !listening && (
+        <button type="button" onClick={clear} aria-label="מחיקת השם"
+          className="w-8 h-8 mr-1 flex items-center justify-center text-[#A79A7C] text-lg flex-shrink-0">✕</button>
+      )}
     </div>
   );
 }
