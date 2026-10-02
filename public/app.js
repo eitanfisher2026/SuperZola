@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.77";
+const VERSION = "v2.78";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -567,11 +567,14 @@ const VENDOR_ORDER_URL = {
 // card per exact URL and never refreshes it — bump it whenever the
 // og:title/description/image in index.html change, so shared links show
 // the current preview instead of the stale one.
-const SHARE_URL = "https://superzola.web.app/?s=2";
+const SHARE_URL = "https://superzola.web.app/?s=3";
 function shareSuperZola(showToast, text) {
   // One wording for everyone, the admin included — so what the admin sees
-  // when trying the share is exactly what every user sends.
-  const msg = text || "מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒";
+  // when trying the share is exactly what every user sends. Kept to the
+  // personal nudge only: the link preview right above it already carries
+  // the name, the picture and what the app does — repeating that here made
+  // one message say the same thing three times.
+  const msg = text || "שווה לנסות לפני הקנייה הבאה 🛒";
   if (navigator.share) {
     navigator.share({ title: "סופר זולה", text: msg, url: SHARE_URL }).catch(() => {});
   } else {
@@ -3071,7 +3074,7 @@ function DemoHomeShare({ sheet }) {
         <div className="absolute inset-0 bg-black/30 flex items-end">
           <div className="sz-demo-fade w-full bg-white rounded-t-2xl px-2.5 pt-2 pb-3 text-[11px] text-[#2B2418]">
             <div className="w-8 h-1 bg-[#DDD] rounded-full mx-auto mb-2" />
-            <div className="bg-[#F3F3F3] rounded-lg px-2 py-1.5 mb-2 leading-snug text-[10px]">מצאתי אפליקציה שמשווה את המחיר של רשימת הקניות בין הסופרים ומראה איפה הכי זול — שווה לנסות 🛒</div>
+            <div className="bg-[#F3F3F3] rounded-lg px-2 py-1.5 mb-2 leading-snug text-[10px]">שווה לנסות לפני הקנייה הבאה 🛒</div>
             <div className="flex justify-around text-center text-[9px]">
               {[["wa", "💬", "וואטסאפ"], ["", "✉️", "מייל"], ["", "🔗", "העתקה"], ["", "⋯", "עוד"]].map(([id, e, l]) => (
                 <div key={l} data-demo={id || undefined} className="flex flex-col items-center gap-0.5">
