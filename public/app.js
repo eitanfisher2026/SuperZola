@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.70";
+const VERSION = "v2.71";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2021,6 +2021,65 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   );
 }
 
+// The item-name box with two shortcuts inside it: ✕ empties it in one tap,
+// and the mic ADDS what is said to what's already there ("קוטג'" + "שלושה
+// אחוז" -> "קוטג' 3%") — a new name is ✕ and then the mic, so nothing is
+// ever wiped by accident and nothing needs deleting letter by letter.
+function ItemNameField({ value, onChange, onEnter, autoFocus, showToast }) {
+  const [listening, setListening] = useState(false);
+  const inputRef = useRef(null);
+  const recRef = useRef(null);
+  useEffect(() => () => { if (recRef.current) recRef.current.abort(); }, []);
+  function clear() {
+    onChange("");
+    if (inputRef.current) inputRef.current.focus();
+  }
+  function toggleMic() {
+    if (listening) { if (recRef.current) recRef.current.stop(); return; }
+    if (!SpeechRecognitionImpl) {
+      showToast("הדפדפן הזה לא תומך בהקלטה — אפשר ללחוץ על המיקרופון שבמקלדת");
+      if (inputRef.current) inputRef.current.focus();
+      return;
+    }
+    const base = (value || "").trim();
+    const rec = new SpeechRecognitionImpl();
+    rec.lang = "he-IL";
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.onresult = e => {
+      let said = "";
+      for (let i = 0; i < e.results.length; i++) said += e.results[i][0].transcript;
+      said = said.replace(/[.,!?]+$/g, "").trim();
+      // A spoken size comes out the way it's written on the shelf.
+      if (said && isSizeOnly(said)) said = (cleanItemLine(said) || { text: said }).text;
+      if (said) onChange(base ? base + " " + said : said);
+    };
+    rec.onerror = e => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") showToast("אין הרשאה למיקרופון — אשרו גישה למיקרופון בהגדרות הדפדפן");
+    };
+    rec.onend = () => setListening(false);
+    recRef.current = rec;
+    try { rec.start(); setListening(true); } catch (err) {}
+  }
+  return (
+    <div className={"flex items-center border bg-white rounded-xl pr-4 pl-1.5 " + (listening ? "border-[#B8462F]" : "border-[#C7B78E]")}>
+      <input ref={inputRef} autoFocus={autoFocus} value={value} onChange={e => onChange(e.target.value)}
+        placeholder={listening ? "מקשיב... אמרו את שם הפריט" : ""}
+        style={listening ? { color: "#B8462F" } : undefined}
+        onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } }}
+        className="flex-1 min-w-0 bg-transparent py-3 text-right outline-none" />
+      {value && !listening && (
+        <button type="button" onClick={clear} aria-label="מחיקת השם"
+          className="w-8 h-8 flex items-center justify-center text-[#A79A7C] text-lg flex-shrink-0">✕</button>
+      )}
+      <button type="button" onClick={toggleMic} aria-label={listening ? "עצירת ההקלטה" : "הכתבת שם הפריט"}
+        className={"w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 " + (listening ? "bg-[#B8462F] text-white animate-pulse" : "bg-[#EEF5EC] text-[#2E4A3B]")}>
+        <MicIcon size={18} />
+      </button>
+    </div>
+  );
+}
+
 function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onSave, onClose, showToast, initialDraft, initialPriceMap, initialPromoMap, closeLabel }) {
   const isEdit = mode === "edit";
   const [step, setStep] = useState(1);
@@ -2245,15 +2304,13 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
         <div className="space-y-3">
           <div>
             <label className="text-xs text-[#8A7F66] block mb-1">שם</label>
-            <input autoFocus={!isEdit} value={draft.name} onChange={e => set({ name: e.target.value })}
-              onKeyDown={e => {
-                if (e.key !== "Enter" || !draft.name.trim()) return;
-                e.preventDefault();
+            <ItemNameField autoFocus={!isEdit} value={draft.name} onChange={name => set({ name })} showToast={showToast}
+              onEnter={() => {
+                if (!draft.name.trim()) return;
                 if (isEdit) { if (needsPriceSearch) setStep(2); else if (!saving) finish(); }
                 else if (pricingEnabled) setStep(2);
                 else if (!saving) finish();
-              }}
-              className="w-full border border-[#C7B78E] bg-white rounded-xl px-4 py-3 text-right outline-none" />
+              }} />
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
