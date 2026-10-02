@@ -368,6 +368,7 @@ exports.parseShoppingList = onCall(
 - הסר ו' החיבור מתחילת שם מוצר ("וחלב" → "חלב"), אבל לא כשה-ו' היא חלק מהשם עצמו (וופל, וניל, ויסקי, וודקה).
 - אם נאמרו כמה מוצרים ברצף באותה שורה, הפרד אותם לפריטים נפרדים.
 - אם נאמרה כמות ("שתי חבילות חלב", "3 עגבניות"), החזר אותה במספר בשדה quantity, והשאר בשם רק את המוצר. גודל אריזה הוא חלק מהשם ("חלב 2 ליטר" נשאר כך). בלי כמות: quantity=1.
+- מספרים שהם חלק מתיאור המוצר כתוב בספרות, ואחוזים בסימן %, כמו שכתוב על המדף: "חלב שלושה אחוז" → "חלב 3%", "גבינה חמישה אחוז" → "גבינה 5%", "קולה אחד וחצי ליטר" → "קולה 1.5 ליטר".
 - אל תמציא מוצרים, אל תתרגם ואל "תתקן" שמות — שמור על הניסוח של המשתמש.
 
 החזר JSON בלבד, בלי שום טקסט נוסף, בפורמט: [{"name":"...","quantity":1}]
@@ -2029,7 +2030,8 @@ exports.getBasketPrices = onCall(
     const relevantProfiles = activeProfiles.filter(p => Array.isArray(barcodesByVendor[p.vendor]) && barcodesByVendor[p.vendor].length > 0);
     const prices = {};
     const promoPrices = {};
-    if (relevantProfiles.length === 0) return { prices, promoPrices, profiles: activeProfiles };
+    const names = {};
+    if (relevantProfiles.length === 0) return { prices, promoPrices, names, profiles: activeProfiles };
 
     if (force) {
       const catalogByBranch = {};
@@ -2079,14 +2081,20 @@ exports.getBasketPrices = onCall(
         readCatalogItemsBatch(dKey, barcodesByVendor[p.vendor]),
       ]);
       const promoMap = (promoSnap.data() || {}).byBarcode || {};
-      prices[p.id] = {}; promoPrices[p.id] = {};
+      prices[p.id] = {}; promoPrices[p.id] = {}; names[p.id] = {};
       barcodesByVendor[p.vendor].forEach((barcode) => {
         const price = itemsByBarcode[barcode]?.price ?? null;
         prices[p.id][barcode] = price;
         promoPrices[p.id][barcode] = effectivePromoInfo(promoMap[barcode], price);
+        // The product's real name (and unit) at this chain — already read
+        // here for the price, so it costs nothing extra. Lets the app show
+        // exactly which product a price belongs to, instead of the user's
+        // own generic word for the item ("לחם").
+        const it = itemsByBarcode[barcode];
+        if (it && it.name) names[p.id][barcode] = it.unit ? { name: it.name, unit: it.unit } : { name: it.name };
       });
     }));
-    return { prices, promoPrices, profiles: activeProfiles };
+    return { prices, promoPrices, names, profiles: activeProfiles };
   }
 );
 

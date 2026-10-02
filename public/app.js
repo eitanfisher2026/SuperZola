@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.67";
+const VERSION = "v2.68";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1134,7 +1134,7 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                   return (
                     <td key={p.id} className={"text-center px-3 py-2 border-b border-[#F0E9D4] " + cellClass}
                       onClick={ev => {
-                        if (!bc && onShowMissing && Object.keys(item.barcodes || {}).length > 0) { ev.stopPropagation(); onShowMissing(item, p); return; }
+                        if (!bc && onShowMissing) { ev.stopPropagation(); onShowMissing(item, p); return; }
                         if (!onShowVendorPick || !byId[p.id]) return;
                         ev.stopPropagation(); onShowVendorPick(item, byId[p.id]);
                       }}>
@@ -1179,14 +1179,24 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
 // for at that vendor. With "pick the cheapest for me" each chain can hold a
 // different product under one shared item name, so the list alone doesn't
 // say what's being compared.
-function VendorPickModal({ item, entry, activeProfiles, onEdit, onChangeHere, onClose }) {
+function VendorPickModal({ item, entry, activeProfiles, nameMap, priceMap, onEdit, onChangeHere, onRepick, repicking, onClose }) {
   const p = entry.profile;
   const bc = itemVendorBarcode(item, p.vendor);
-  const matchedName = itemVendorMatchedName(item, p.vendor);
   const qty = item.quantity || 1;
   const promo = entry.promo;
   const mixed = itemHasMixedVendorMatches(item, (activeProfiles || []).map(x => x.vendor));
   const label = profileLabel(p, activeProfiles);
+  // The product's real name comes from each chain's own catalog (nameMap) —
+  // the item's own name is only the user's word for it ("לחם") and says
+  // nothing about WHICH product a price belongs to.
+  const infoAt = prof => {
+    const b = itemVendorBarcode(item, prof.vendor);
+    const cat = b && nameMap && nameMap[prof.id] && nameMap[prof.id][b];
+    return { barcode: b, name: (cat && cat.name) || itemVendorMatchedName(item, prof.vendor) || null, unit: (cat && cat.unit) || "" };
+  };
+  const here = infoAt(p);
+  const auto = !!(item.autoPicked && item.autoPicked[p.vendor]);
+  const picked = (activeProfiles || []).filter(x => itemVendorBarcode(item, x.vendor));
   return (
     <Modal onClose={onClose} footer={
       <div>
@@ -1202,8 +1212,8 @@ function VendorPickModal({ item, entry, activeProfiles, onEdit, onChangeHere, on
       <div className="bg-white border border-[#E0D4B4] rounded-2xl p-4 space-y-2">
         <div>
           <div className="text-[11px] text-[#8A7F66]">המוצר ברשת הזו</div>
-          <div className="text-[15px] font-bold text-[#2B2418]">{matchedName || itemDisplayName(item)}</div>
-          <div className="text-[11px] text-[#A79A7C]">ברקוד {bc}</div>
+          <div className="text-[15px] font-bold text-[#2B2418]">{here.name || "שם המוצר לא זמין כרגע"}</div>
+          <div className="text-[11px] text-[#A79A7C]">{here.unit ? here.unit + " · " : ""}ברקוד {bc}</div>
         </div>
         <div className="pt-2 border-t border-[#F0E9D4]">
           {entry.price == null ? (
@@ -1224,11 +1234,40 @@ function VendorPickModal({ item, entry, activeProfiles, onEdit, onChangeHere, on
             </div>
           )}
         </div>
+        {/* Items saved before picks were tracked have no autoPicked map at
+            all — say nothing rather than claim a manual choice. */}
+        {(auto || item.autoPicked) && (
+          <div className="pt-2 border-t border-[#F0E9D4] text-xs text-[#5B5749] leading-relaxed">
+            {auto
+              ? `למה דווקא המוצר הזה? הוא נבחר אוטומטית לפי השם "${itemDisplayName(item)}": קודם מוצר שנמכר בכמה שיותר מהרשתות שלכם, ומבין אלה הזול ביותר.`
+              : "המוצר הזה נבחר ידנית."}
+          </div>
+        )}
       </div>
-      {mixed && (
-        <p className="text-[11px] text-[#8A7F66] mt-3 leading-relaxed">
-          בכל רשת נבחר מוצר קצת אחר (למשל מותג או גודל אריזה שונים) — כדאי לבדוק כשמשווים. "שינוי המוצר" מחליף רק ברשת הזו.
-        </p>
+      {picked.length > 1 && (
+        <div className={"mt-3 rounded-2xl px-3 py-2.5 border " + (mixed ? "bg-[#FBF0D9] border-[#E9D8A6]" : "bg-[#EEF5EC] border-[#B9D9B0]")}>
+          <div className={"text-xs font-bold mb-1.5 " + (mixed ? "text-[#8A5A15]" : "text-[#2E4A3B]")}>
+            {mixed ? "⚠️ לא בכל הרשתות נבחר אותו מוצר — ההשוואה אינה בין מוצרים זהים" : "✓ אותו מוצר בכל הרשתות"}
+          </div>
+          <div className="space-y-1">
+            {picked.map(x => {
+              const info = infoAt(x);
+              const price = priceMap && priceMap[x.id] ? priceMap[x.id][info.barcode] : null;
+              return (
+                <div key={x.id} className={"flex items-baseline justify-between gap-2 text-xs " + (x.id === p.id ? "font-bold text-[#2B2418]" : "text-[#5B5749]")}>
+                  <span className="min-w-0"><span className="text-[#8A7F66]">{profileLabel(x, activeProfiles)}:</span> {info.name || "—"}</span>
+                  <span className="flex-shrink-0" style={{ fontVariantNumeric: "tabular-nums" }}>{price != null ? "₪" + price.toFixed(2) : ""}</span>
+                </div>
+              );
+            })}
+          </div>
+          {mixed && onRepick && (
+            <button onClick={() => onRepick(item)} disabled={repicking}
+              className="w-full mt-2.5 bg-[#2E4A3B] text-[#FBF4E7] rounded-xl py-2 text-xs font-bold disabled:opacity-50">
+              {repicking ? "מחפש מוצר משותף..." : "🔄 בחרו מחדש — אותו מוצר לכל הרשתות"}
+            </button>
+          )}
+        </div>
       )}
     </Modal>
   );
@@ -1242,7 +1281,7 @@ function VendorPickModal({ item, entry, activeProfiles, onEdit, onChangeHere, on
 // replace: the same picker reached from "שינוי המוצר" on a chain that
 // already has a product — swaps it at that one chain only; every other
 // chain on the item keeps its own pick untouched.
-function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, showToast, replace }) {
+function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, showToast, replace, nameMap }) {
   const v = profile.vendor;
   const label = profileLabel(profile, activeProfiles);
   const currentBarcode = itemVendorBarcode(item, v);
@@ -1271,12 +1310,20 @@ function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, sh
 
   // Dotted field paths — only this one chain's entry changes, nothing else
   // on the item (including any not-yet-saved online overlay) is rewritten.
-  function choose(c) {
+  // isAuto: the "pick the cheapest for me" button — recorded as an automatic
+  // pick and NOT written to the shared name→product cache, which is only
+  // for products a person actually chose.
+  function choose(c, isAuto) {
     if (saving) return;
     setSaving(true);
+    const upd = { ["barcodes." + v]: c.barcode, ["matchedNames." + v]: c.name,
+      ["autoPicked." + v]: isAuto ? true : firebase.firestore.FieldValue.delete() };
+    // First product this item gets anywhere: let the automatic fill try the
+    // other chains again — it now has a concrete product to look for there.
+    if (Object.keys(item.barcodes || {}).length === 0) upd.gapTried = { [v]: true };
     db.collection("lists").doc(listId).collection("items").doc(item.id)
-      .update({ ["barcodes." + v]: c.barcode, ["matchedNames." + v]: c.name }).then(() => {
-        fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: c.barcode, matchedName: c.name, vendors: [v] }).catch(() => {});
+      .update(upd).then(() => {
+        if (!isAuto) fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: c.barcode, matchedName: c.name, vendors: [v] }).catch(() => {});
         showToast(`נבחר ב${label}: ${c.name}`);
         onClose();
       }, () => { setSaving(false); showToast("שגיאה בשמירה"); });
@@ -1304,7 +1351,7 @@ function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, sh
       </p>
       {replace && (
         <div className="text-xs bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2 mb-3 text-[#3F5A38]">
-          כרגע: <b>{itemVendorMatchedName(item, v) || itemDisplayName(item)}</b>
+          כרגע: <b>{(nameMap && nameMap[profile.id] && nameMap[profile.id][currentBarcode] && nameMap[profile.id][currentBarcode].name) || itemVendorMatchedName(item, v) || itemDisplayName(item)}</b>
         </div>
       )}
       <form onSubmit={e => { e.preventDefault(); search(query); }} className="flex gap-2 mb-3">
@@ -1320,7 +1367,7 @@ function MissingVendorModal({ item, profile, activeProfiles, listId, onClose, sh
         <p className={"text-sm rounded-xl px-3 py-2.5 mb-3 leading-relaxed " + (list.length === 0 ? "bg-[#FBEAE5] text-[#8A3B26]" : "bg-[#F7F2E4] text-[#5B5749]")}>{reason}</p>
       )}
       {!loading && auto && auto.barcode !== currentBarcode && (
-        <button onClick={() => choose(auto)} disabled={saving}
+        <button onClick={() => choose(auto, true)} disabled={saving}
           className="w-full mb-2 bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-xl py-2.5 px-3 text-sm font-bold disabled:opacity-40">
           ✨ בחרו לי את הזול: {auto.name} · ₪{effPrice(auto).toFixed(2)}
         </button>
@@ -1390,6 +1437,14 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
               <span>💬</span><span>הוסף הערה</span>
             </button>
           ) : null}
+          {!hasAnyBarcode && onShowMissing && (activeProfiles || []).length > 0 && (
+            <div className="mt-1">
+              <span role="button" onClick={ev => { ev.stopPropagation(); onShowMissing(item, activeProfiles[0]); }}
+                className="inline-block text-[11px] font-semibold px-1.5 py-0.5 rounded leading-tight cursor-pointer bg-[#F3ECD9] text-[#A79A7C] border border-dashed border-[#DECBA1]">
+                לא נמצא מחיר · חיפוש מוצר
+              </span>
+            </div>
+          )}
           {(pricedEntries.length > 0 || missingProfiles.length > 0) && (
             <div className="flex items-center gap-1.5 flex-wrap mt-1">
               {pricedEntries.map(e => {
@@ -1494,6 +1549,21 @@ function autoPickByVendor(candidateList, vendorIds) {
     remaining = remaining.filter(v => best.covered.indexOf(v) === -1);
   }
   return picks;
+}
+
+// Filling chains on an item that already has a product elsewhere: a chain
+// first gets that SAME product (same barcode) if it sells it, and only
+// otherwise the general auto-pick — so a later-added chain lines up with
+// what's already being compared instead of introducing a different product.
+function pickForVendors(candidates, vendors, existingBarcodes) {
+  const existing = new Set((existingBarcodes || []).filter(Boolean).map(String));
+  const picks = {};
+  const rest = [];
+  (vendors || []).forEach(v => {
+    const same = (candidates || []).find(c => existing.has(String(c.barcode)) && c.prices && c.prices[v] != null);
+    if (same) picks[v] = same; else rest.push(v);
+  });
+  return Object.assign(picks, autoPickByVendor(candidates, rest));
 }
 
 // ── ITEM WIZARD (add + edit) ─────────────────────────────────────────────────
@@ -1612,8 +1682,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     setDraft(prev => {
       const nb = Object.assign({}, replacing ? {} : (prev.barcodes || {}));
       const nn = Object.assign({}, replacing ? {} : (prev.matchedNames || {}));
-      vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; });
-      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+      const ap = Object.assign({}, replacing ? {} : (prev.autoPicked || {}));
+      vendorsToConfirm.forEach(v => { nb[v] = c.barcode; nn[v] = c.name; delete ap[v]; });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn, autoPicked: ap });
     });
     setPriceMap(prev => {
       const next = Object.assign({}, replacing ? {} : prev);
@@ -1655,8 +1726,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     setDraft(prev => {
       const nb = Object.assign({}, prev.barcodes || {});
       const nn = Object.assign({}, prev.matchedNames || {});
-      vendorsToConfirm.forEach(v => { if (nb[v] === c.barcode) { delete nb[v]; delete nn[v]; } });
-      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+      const ap = Object.assign({}, prev.autoPicked || {});
+      vendorsToConfirm.forEach(v => { if (nb[v] === c.barcode) { delete nb[v]; delete nn[v]; delete ap[v]; } });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn, autoPicked: ap });
     });
   }
 
@@ -1675,8 +1747,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     setDraft(prev => {
       const nb = Object.assign({}, replacing ? {} : (prev.barcodes || {}));
       const nn = Object.assign({}, replacing ? {} : (prev.matchedNames || {}));
-      autoPickVendors.forEach(v => { nb[v] = autoPicks[v].barcode; nn[v] = autoPicks[v].name; });
-      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+      const ap = Object.assign({}, replacing ? {} : (prev.autoPicked || {}));
+      autoPickVendors.forEach(v => { nb[v] = autoPicks[v].barcode; nn[v] = autoPicks[v].name; ap[v] = true; });
+      return Object.assign({}, prev, { barcodes: nb, matchedNames: nn, autoPicked: ap });
     });
     setPriceMap(prev => {
       const next = Object.assign({}, replacing ? {} : prev);
@@ -1698,17 +1771,11 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       return next;
     });
     setReplacing(false);
-    const vendorsByBarcode = {};
-    autoPickVendors.forEach(v => { (vendorsByBarcode[autoPicks[v].barcode] = vendorsByBarcode[autoPicks[v].barcode] || []).push(v); });
-    Object.entries(vendorsByBarcode).forEach(([bc, vs], n) => {
-      const c = autoPicks[vs[0]];
-      fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: bc, matchedName: c.name, vendors: vs }).then(res => {
-        if (n !== 0) return;
-        const label = res.data && res.data.category;
-        const cat = label && categories && categories.find(cc => cc.label === label);
-        if (cat) setDraft(prev => Object.assign({}, prev, { category: cat.label, categoryEmoji: cat.emoji }));
-      }).catch(() => {});
-    });
+    // Deliberately NOT sent to confirmItemBarcode: that writes the shared
+    // "a person confirmed this name -> product" memory everyone's searches
+    // reuse. An automatic guess isn't a confirmation — recording it there
+    // made one user's auto-pick turn up as a "confirmed" product in other
+    // people's lists. Only a product someone picks by hand is recorded.
     const missed = (candidates.vendors || []).length - autoPickVendors.length;
     showToast(missed > 0
       ? `נבחר הזול ב-${autoPickVendors.length} רשתות — ב-${missed} לא נמצאה התאמה ודאית, אפשר לבחור ידנית`
@@ -1959,7 +2026,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   const [step, setStep] = useState(1);
   const blankDraft = () => {
     const other = categories.find(c => c.id === "other") || categories[categories.length - 1];
-    return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
+    return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {}, autoPicked: {} };
   };
   const [draft, setDraft] = useState(() => {
     if (!isEdit || !item) return Object.assign({}, blankDraft(), initialDraft || {});
@@ -2022,7 +2089,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   const toPayload = (d) => ({
     name: d.name.trim(), category: d.category, categoryEmoji: d.categoryEmoji,
     quantity: parseFloat(d.quantity) || 1, unit: d.unit, note: d.note.trim(),
-    barcodes: d.barcodes || {}, matchedNames: d.matchedNames || {},
+    barcodes: d.barcodes || {}, matchedNames: d.matchedNames || {}, autoPicked: d.autoPicked || {},
   });
 
   function finish() {
@@ -6773,7 +6840,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
         const BATCH = 6;
         for (let i = 0; i < total; i += BATCH) {
           const chunk = names.slice(i, i + BATCH);
-          const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: chunk, profileIds: profiles.map(p => p.id) });
+          const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: chunk, force: true, profileIds: profiles.map(p => p.id) });
           Object.assign(results, (res.data || {}).results || {});
           matched += chunk.length;
           report();
@@ -6797,20 +6864,24 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
       let partial = 0;
       names.forEach(name => {
         const r = results[name] || {};
-        // Barcodes already confirmed for this exact name (by anyone) come
-        // back ready-made; only the vendors still missing get auto-picked.
+        // One rule for ALL chains together (force: true skips the shared
+        // name->product memory). Mixing in remembered picks for some chains
+        // and auto-picking only the rest put a different product at every
+        // chain under one name — e.g. "לחם" at ₪21.90 in one chain and
+        // ₪4.90 in another — which is exactly what same-product-first
+        // exists to prevent.
         const barcodes = {};
-        Object.entries(r.barcodes || {}).forEach(([v, raw]) => { const bc = barcodeValue(raw); if (bc) barcodes[v] = bc; });
         const matchedNames = {};
-        const picks = autoPickByVendor(r.candidates, vendorIds.filter(v => !barcodes[v]));
-        Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; });
+        const autoPicked = {};
+        const picks = autoPickByVendor(r.candidates, vendorIds);
+        Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; autoPicked[v] = true; });
         if (vendorIds.some(v => !barcodes[v])) partial++;
         const cat = cats[name] || other;
         const gapTried = {};
         vendorIds.forEach(v => { if (!barcodes[v]) gapTried[v] = true; });
         batch.set(col.doc(), {
           name, category: cat.label, categoryEmoji: cat.emoji, quantity: qtyByName[name] || 1, unit: "יחידות", note: "",
-          barcodes, matchedNames, gapTried, addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          barcodes, matchedNames, autoPicked, gapTried, addedBy: uid, addedAt: firebase.firestore.FieldValue.serverTimestamp(),
         });
       });
       await batch.commit();
@@ -6968,6 +7039,11 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [confirmDeleteItem, setConfirmDeleteItem] = useState(null);
   const [priceMap, setPriceMap] = useState({});
   const [promoMap, setPromoMap] = useState({});
+  // { profileId: { barcode: { name, unit } } } — each product's real name
+  // at that chain, from the same call that fetches its price.
+  const [nameMap, setNameMap] = useState({});
+  const [onlineNameMap, setOnlineNameMap] = useState({});
+  const [repicking, setRepicking] = useState(false);
   const [pricesLoading, setPricesLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
@@ -7068,6 +7144,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
       if (seq !== priceRequestSeq.current) return;
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
+      setNameMap(res.data.names || {});
       setPricesLoading(false);
     }).catch(() => { if (seq === priceRequestSeq.current) setPricesLoading(false); });
   }
@@ -7124,6 +7201,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         });
       });
       setOnlineOverlay(overlay);
+      setOnlineNameMap(res.data.names || {});
       setOnlinePriceMap(prices);
       setOnlinePromoMap(promoPrices);
       setOnlinePricesLoading(false);
@@ -7146,6 +7224,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
   }), [items, onlineOverlay]);
   const effectivePriceMap = useMemo(() => Object.assign({}, priceMap, onlinePriceMap), [priceMap, onlinePriceMap]);
   const effectivePromoMap = useMemo(() => Object.assign({}, promoMap, onlinePromoMap), [promoMap, onlinePromoMap]);
+  const effectiveNameMap = useMemo(() => Object.assign({}, nameMap, onlineNameMap), [nameMap, onlineNameMap]);
 
   // Self-repair: v2.37-v2.46 could save a shared-cache entry object
   // ({ barcode, name, matchedAt }) in place of a barcode string, which made
@@ -7216,11 +7295,39 @@ function ListScreen({ uid, listId, listName, onBack }) {
     return () => clearTimeout(t);
     // eslint-disable-next-line
   }, [pendingGapKey]);
+  // "Pick again — same product everywhere": a fresh search of the item's
+  // name over every chain on screen, ignoring whatever each chain holds
+  // now, so same-product-first applies across all of them at once.
+  async function repickItem(item) {
+    if (repicking) return;
+    setRepicking(true);
+    try {
+      const name = (item.name || "").trim();
+      const vendors = [...new Set(visibleProfiles.map(p => p.vendor))];
+      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: [name], force: true, profileIds: visibleProfiles.map(p => p.id) });
+      const r = ((res.data && res.data.results) || {})[name] || {};
+      const picks = autoPickByVendor(r.candidates, vendors);
+      const got = Object.keys(picks);
+      if (got.length === 0) {
+        setToast("לא נמצאה התאמה ודאית לשם הזה — אפשר לבחור ידנית בכל רשת");
+      } else {
+        const upd = {};
+        got.forEach(v => { upd["barcodes." + v] = picks[v].barcode; upd["matchedNames." + v] = picks[v].name; upd["autoPicked." + v] = true; });
+        await db.collection("lists").doc(listId).collection("items").doc(item.id).update(upd);
+        const same = new Set(got.map(v => String(picks[v].barcode))).size === 1;
+        setToast(same ? `נבחר אותו מוצר בכל הרשתות: ${picks[got[0]].name}` : "אין מוצר אחד שנמכר בכל הרשתות — נבחר המשותף לכמה שיותר מהן");
+      }
+      setVendorPick(null);
+    } catch (e) {
+      setToast(e && e.code === "functions/resource-exhausted" ? e.message : "שגיאה בחיפוש");
+    }
+    setRepicking(false);
+  }
   async function fillGaps(gaps) {
     setGapFilling(true);
     try {
       const names = [...new Set(gaps.map(g => (g.it.name || "").trim()).filter(Boolean))];
-      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, profileIds: visibleProfiles.map(p => p.id) });
+      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, force: true, profileIds: visibleProfiles.map(p => p.id) });
       const results = (res.data && res.data.results) || {};
       const batch = db.batch();
       let filled = 0;
@@ -7229,9 +7336,10 @@ function ListScreen({ uid, listId, listName, onBack }) {
         const r = results[(it.name || "").trim()] || {};
         const upd = {};
         const got = new Set();
-        vendors.forEach(v => { const bc = barcodeValue(r.barcodes && r.barcodes[v]); if (bc) { upd["barcodes." + v] = bc; got.add(v); } });
-        const picks = autoPickByVendor(r.candidates, vendors.filter(v => !got.has(v)));
-        Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; got.add(v); });
+        // The same product the item already has elsewhere wins if the
+        // new chain sells it; otherwise the general auto-pick.
+        const picks = pickForVendors(r.candidates, vendors, Object.values(it.barcodes || {}).map(barcodeValue));
+        Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; upd["autoPicked." + v] = true; got.add(v); });
         vendors.forEach(v => { upd["gapTried." + v] = true; });
         got.forEach(v => filledVendors.add(v));
         filled += got.size;
@@ -7303,7 +7411,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         setStarterStatus("מתאים מחירים לרשתות שלך...");
         const uniqueNames = [...new Set(namesNeedingWork.map(it => it.name))];
         const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({
-          items: uniqueNames, profileIds: activeProfiles.map(p => p.id),
+          items: uniqueNames, force: true, profileIds: activeProfiles.map(p => p.id),
         });
         const results = (res.data || {}).results || {};
         const updateBatch = db.batch();
@@ -7311,31 +7419,19 @@ function ListScreen({ uid, listId, listName, onBack }) {
           const r = results[it.name];
           if (!r) return;
           const missing = vendorIds.filter(v => !it.barcodes[v]);
-          let changed = false;
-          missing.forEach(v => {
-            // Prefer a previously-confirmed mapping (server cache, keyed by
-            // exact name — filled whenever anyone actually picks a match for
-            // that name) over a fresh guess. Only fall back to this call's
-            // own candidates when nothing confirmed exists yet, and only at
-            // a score high enough to mean "same wording", never an
-            // approximate/fuzzy hit — a wrong silent price is worse than a
-            // blank one.
-            if (barcodeValue(r.barcodes && r.barcodes[v])) {
-              it.barcodes[v] = barcodeValue(r.barcodes[v]);
-              changed = true;
-              return;
-            }
-            const best = (r.candidates || []).find(c => !c.fuzzyLayer && c.score >= 800 && c.prices[v] != null);
-            if (best) {
-              it.barcodes[v] = best.barcode;
-              it.matchedNames[v] = best.name;
-              changed = true;
-            }
-          });
+          // The template's own product wins at a chain that sells it;
+          // otherwise the general auto-pick (confident matches only). The
+          // shared name->product memory isn't consulted (force above) — it
+          // holds whatever someone once chose for that name, which put
+          // unrelated products side by side under one item.
+          const picks = pickForVendors(r.candidates, missing, Object.values(it.barcodes).map(barcodeValue));
+          const autoPicked = {};
+          Object.entries(picks).forEach(([v, c]) => { it.barcodes[v] = c.barcode; it.matchedNames[v] = c.name; autoPicked[v] = true; });
+          const changed = Object.keys(picks).length > 0;
           const gapTried = {};
           vendorIds.forEach(tv => { if (!it.barcodes[tv]) gapTried[tv] = true; });
           updateBatch.update(it.ref, changed
-            ? { barcodes: it.barcodes, matchedNames: it.matchedNames, gapTried }
+            ? { barcodes: it.barcodes, matchedNames: it.matchedNames, autoPicked, gapTried }
             : { gapTried });
           if (vendorIds.some(v => !it.barcodes[v])) gapCount++;
         });
@@ -7656,12 +7752,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
       )}
       {vendorPick && (
         <VendorPickModal item={vendorPick.item} entry={vendorPick.entry} activeProfiles={visibleProfiles}
+          nameMap={effectiveNameMap} priceMap={effectivePriceMap} onRepick={repickItem} repicking={repicking}
           onEdit={setEditItem} onChangeHere={(it, p) => setMissingPick({ item: it, profile: p, replace: true })}
           onClose={() => setVendorPick(null)} />
       )}
       {missingPick && (
         <MissingVendorModal item={missingPick.item} profile={missingPick.profile} activeProfiles={visibleProfiles}
-          listId={listId} replace={!!missingPick.replace} onClose={() => setMissingPick(null)} showToast={setToast} />
+          listId={listId} replace={!!missingPick.replace} nameMap={effectiveNameMap} onClose={() => setMissingPick(null)} showToast={setToast} />
       )}
       {showAdd && (
         <ItemWizard uid={uid} mode="add" categories={categories} activeProfiles={visibleProfiles} onInsert={insertItem} onClose={() => setShowAdd(false)} showToast={setToast} />
