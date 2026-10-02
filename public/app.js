@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.74";
+const VERSION = "v2.75";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -654,6 +654,17 @@ function itemVendorMatchedName(item, vendorId) {
 // shared name, not the same product at different vendors. Only counts
 // vendors in relevantVendorIds so a stale barcode from a vendor no longer
 // active can't trigger a false warning.
+// "same": one barcode everywhere. "equivalent": different barcodes, but
+// every one of them was chosen by meaning as the parallel product (produce,
+// eggs, meat — each chain has its own code for the very same thing), so
+// there is nothing to warn about. "different": anything else — a manual or
+// older pick sits next to another product, worth a look.
+function itemMatchKind(item, relevantVendorIds) {
+  if (!itemHasMixedVendorMatches(item, relevantVendorIds)) return "same";
+  const ap = item.autoPicked || {};
+  const withProduct = (relevantVendorIds || Object.keys(item.barcodes || {})).filter(v => itemVendorBarcode(item, v));
+  return withProduct.every(v => ap[v] === 2) ? "equivalent" : "different";
+}
 function itemHasMixedVendorMatches(item, relevantVendorIds) {
   const barcodes = item.barcodes || {};
   const vendorIds = relevantVendorIds || Object.keys(barcodes);
@@ -1115,7 +1126,7 @@ function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, onEdi
                 <td className={"sticky right-0 z-10 px-3 py-2 border-b border-[#F0E9D4] text-right text-[#B8462F] underline decoration-[#E7A796] underline-offset-2 " +
                   (isNewItem && isNewItem(item) ? "bg-[#FFF8E6] outline-2 outline-dashed outline-[#E3A939] -outline-offset-2" : "bg-white")}>
                   {isNewItem && isNewItem(item) && <span className="no-underline text-[10px] font-bold text-[#8A5A15] ml-1">✦</span>}
-                  {itemHasMixedVendorMatches(item, activeProfiles.map(p => p.vendor)) && (
+                  {itemMatchKind(item, activeProfiles.map(p => p.vendor)) === "different" && (
                     <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
                   )}
                   {itemDisplayName(item)}{qty !== 1 && <span className="text-[#A79A7C] no-underline"> ({qty})</span>}
@@ -1197,6 +1208,7 @@ function VendorPickModal({ item, entry, activeProfiles, nameMap, priceMap, onEdi
   const here = infoAt(p);
   const auto = !!(item.autoPicked && item.autoPicked[p.vendor]);
   const picked = (activeProfiles || []).filter(x => itemVendorBarcode(item, x.vendor));
+  const kind = itemMatchKind(item, (activeProfiles || []).map(x => x.vendor));
   return (
     <Modal onClose={onClose} footer={
       <div>
@@ -1245,9 +1257,11 @@ function VendorPickModal({ item, entry, activeProfiles, nameMap, priceMap, onEdi
         )}
       </div>
       {picked.length > 1 && (
-        <div className={"mt-3 rounded-2xl px-3 py-2.5 border " + (mixed ? "bg-[#FBF0D9] border-[#E9D8A6]" : "bg-[#EEF5EC] border-[#B9D9B0]")}>
-          <div className={"text-xs font-bold mb-1.5 " + (mixed ? "text-[#8A5A15]" : "text-[#2E4A3B]")}>
-            {mixed ? "⚠️ לא בכל הרשתות נבחר אותו מוצר — ההשוואה אינה בין מוצרים זהים" : "✓ אותו מוצר בכל הרשתות"}
+        <div className={"mt-3 rounded-2xl px-3 py-2.5 border " + (kind === "different" ? "bg-[#FBF0D9] border-[#E9D8A6]" : kind === "equivalent" ? "bg-[#F7F2E4] border-[#E0D4B4]" : "bg-[#EEF5EC] border-[#B9D9B0]")}>
+          <div className={"text-xs font-bold mb-1.5 " + (kind === "different" ? "text-[#8A5A15]" : kind === "equivalent" ? "text-[#5B5749]" : "text-[#2E4A3B]")}>
+            {kind === "different" ? "⚠️ לא בכל הרשתות נבחר אותו מוצר — ההשוואה אינה בין מוצרים זהים"
+              : kind === "equivalent" ? "≈ המוצר המקביל בכל רשת (לכל רשת שם וקוד משלה)"
+              : "✓ אותו מוצר בכל הרשתות"}
           </div>
           <div className="space-y-1">
             {picked.map(x => {
@@ -1261,10 +1275,16 @@ function VendorPickModal({ item, entry, activeProfiles, nameMap, priceMap, onEdi
               );
             })}
           </div>
-          {mixed && onRepick && (
+          {kind === "different" && onRepick && (
             <button onClick={() => onRepick(item)} disabled={repicking}
               className="w-full mt-2.5 bg-[#2E4A3B] text-[#FBF4E7] rounded-xl py-2 text-xs font-bold disabled:opacity-50">
               {repicking ? "מחפש מוצר משותף..." : "🔄 בחרו מחדש — אותו מוצר לכל הרשתות"}
+            </button>
+          )}
+          {kind === "equivalent" && onRepick && (
+            <button onClick={() => onRepick(item)} disabled={repicking}
+              className="w-full mt-2 text-center text-[11px] text-[#8A7F66] underline disabled:opacity-50">
+              {repicking ? "בוחר מחדש..." : "משהו לא נראה מקביל? בחירה מחדש בכל הרשתות"}
             </button>
           )}
         </div>
@@ -1423,7 +1443,7 @@ function ItemRow({ item, activeProfiles, priceMap, promoMap, onDelete, onEdit, o
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0" onClick={() => onEdit(item)}>
           <span className="text-[15px] cursor-pointer text-[#B8462F] underline decoration-[#E7A796] underline-offset-2">
-            {itemHasMixedVendorMatches(item, (activeProfiles || []).map(p => p.vendor)) && (
+            {itemMatchKind(item, (activeProfiles || []).map(p => p.vendor)) === "different" && (
               <span className="text-[#E3A939] font-bold no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>
             )}
             {itemDisplayName(item)}
@@ -1562,7 +1582,7 @@ function pickForVendors(r, vendors, existingBarcodes) {
   const rest = [];
   (vendors || []).forEach(v => {
     const same = candidates.find(c => existing.has(String(c.barcode)) && c.prices && c.prices[v] != null);
-    if (same) picks[v] = same; else rest.push(v);
+    if (same) picks[v] = Object.assign({}, same, { byMeaning: true }); else rest.push(v);
   });
   return Object.assign(picks, picksFromResult(r, rest));
 }
@@ -1580,10 +1600,14 @@ function picksFromResult(r, vendorIds) {
   (vendorIds || []).forEach(v => {
     const bc = r.picks[v];
     const c = bc && (r.candidates || []).find(x => String(x.barcode) === String(bc) && x.prices && x.prices[v] != null);
-    if (c) picks[v] = c;
+    if (c) picks[v] = Object.assign({}, c, { byMeaning: true });
   });
   return picks;
 }
+// What gets stored in item.autoPicked[vendor]: 2 = chosen by meaning (the
+// server's choice, or the very same barcode extended to another chain),
+// true = the older rule-based guess.
+function pickMark(c) { return c && c.byMeaning ? 2 : true; }
 
 // ── ITEM WIZARD (add + edit) ─────────────────────────────────────────────────
 // Item details first, price matching as its own explicit step — replaces
@@ -1617,7 +1641,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   const matchedVendorIds = Object.keys(draft.barcodes || {});
   const hasAnyMatch = matchedVendorIds.length > 0;
   const activeVendorIds = (activeProfiles || []).map(p => p.vendor);
-  const mixedMatches = itemHasMixedVendorMatches(draft, activeVendorIds);
+  const mixedMatches = itemMatchKind(draft, activeVendorIds) === "different";
   const scopeLabel = searchScope ? vendorLabel(searchScope) : null;
 
   const runSearch = (vendorId, queryOverride) => {
@@ -1768,7 +1792,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       const nb = Object.assign({}, replacing ? {} : (prev.barcodes || {}));
       const nn = Object.assign({}, replacing ? {} : (prev.matchedNames || {}));
       const ap = Object.assign({}, replacing ? {} : (prev.autoPicked || {}));
-      autoPickVendors.forEach(v => { nb[v] = autoPicks[v].barcode; nn[v] = autoPicks[v].name; ap[v] = true; });
+      autoPickVendors.forEach(v => { nb[v] = autoPicks[v].barcode; nn[v] = autoPicks[v].name; ap[v] = pickMark(autoPicks[v]); });
       return Object.assign({}, prev, { barcodes: nb, matchedNames: nn, autoPicked: ap });
     });
     setPriceMap(prev => {
@@ -1884,7 +1908,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
           ) : (
             <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
           )}
-          {candidates.list.length > 1 && autoPickVendors.length > 0 && (
+          {candidates.list.length > 1 && (
             <button type="button" onClick={autoPick} disabled={autoPicking}
               className="w-full mb-2 bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-xl py-2.5 text-sm font-bold disabled:opacity-60">
               {autoPicking ? "בוחר..." : "✨ לא משנה לי איזה — בחרו לי את המוצר הרגיל בכל רשת"}
@@ -7041,7 +7065,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
         const matchedNames = {};
         const autoPicked = {};
         const picks = picksFromResult(r, vendorIds);
-        Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; autoPicked[v] = true; });
+        Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; autoPicked[v] = pickMark(c); });
         if (vendorIds.some(v => !barcodes[v])) partial++;
         const cat = cats[name] || other;
         const gapTried = {};
@@ -7479,10 +7503,20 @@ function ListScreen({ uid, listId, listName, onBack }) {
         setToast("לא נמצאה התאמה ודאית לשם הזה — אפשר לבחור ידנית בכל רשת");
       } else {
         const upd = {};
-        got.forEach(v => { upd["barcodes." + v] = picks[v].barcode; upd["matchedNames." + v] = picks[v].name; upd["autoPicked." + v] = true; });
+        got.forEach(v => { upd["barcodes." + v] = picks[v].barcode; upd["matchedNames." + v] = picks[v].name; upd["autoPicked." + v] = pickMark(picks[v]); });
+        // A chain where nothing fits is emptied, not left holding the old
+        // product — that leftover is exactly what "pick again" is fixing.
+        // It stays a tappable "—" (and isn't refilled automatically).
+        let cleared = 0;
+        if (r.picks) vendors.filter(v => !picks[v] && itemVendorBarcode(item, v)).forEach(v => {
+          const del = firebase.firestore.FieldValue.delete();
+          upd["barcodes." + v] = del; upd["matchedNames." + v] = del; upd["autoPicked." + v] = del; upd["gapTried." + v] = true;
+          cleared++;
+        });
         await db.collection("lists").doc(listId).collection("items").doc(item.id).update(upd);
         const same = new Set(got.map(v => String(picks[v].barcode))).size === 1;
-        setToast(same ? `נבחר אותו מוצר בכל הרשתות: ${picks[got[0]].name}` : "אין מוצר אחד שנמכר בכל הרשתות — נבחר המשותף לכמה שיותר מהן");
+        setToast((same ? `נבחר אותו מוצר: ${picks[got[0]].name}` : "נבחר בכל רשת המוצר המקביל")
+          + (cleared > 0 ? ` — ב-${cleared} רשתות לא נמצא מוצר מתאים` : ""));
       }
       setVendorPick(null);
     } catch (e) {
@@ -7506,7 +7540,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         // The same product the item already has elsewhere wins if the
         // new chain sells it; otherwise the general auto-pick.
         const picks = pickForVendors(r, vendors, Object.values(it.barcodes || {}).map(barcodeValue));
-        Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; upd["autoPicked." + v] = true; got.add(v); });
+        Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; upd["autoPicked." + v] = pickMark(c); got.add(v); });
         vendors.forEach(v => { upd["gapTried." + v] = true; });
         got.forEach(v => filledVendors.add(v));
         filled += got.size;
@@ -7593,7 +7627,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
           // unrelated products side by side under one item.
           const picks = pickForVendors(r, missing, Object.values(it.barcodes).map(barcodeValue));
           const autoPicked = {};
-          Object.entries(picks).forEach(([v, c]) => { it.barcodes[v] = c.barcode; it.matchedNames[v] = c.name; autoPicked[v] = true; });
+          Object.entries(picks).forEach(([v, c]) => { it.barcodes[v] = c.barcode; it.matchedNames[v] = c.name; autoPicked[v] = pickMark(c); });
           const changed = Object.keys(picks).length > 0;
           const gapTried = {};
           vendorIds.forEach(tv => { if (!it.barcodes[tv]) gapTried[tv] = true; });

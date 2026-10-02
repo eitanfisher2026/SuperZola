@@ -1421,9 +1421,12 @@ function hebrewNumberForms(t) {
     const b = t.slice(0, -2);
     out.add(withFinal(b)); out.add(b + 'ה');
     if (t.endsWith('ות')) out.add(b + 'ת');
+    // "ביצים" is listed as "ביצי משק", "עגבניות" as "עגבניות שרי"/"עגבני".
+    if (t.endsWith('ים')) out.add(b + 'י');
   } else if (t.length >= 3) {
     const b = noFinal(t);
     out.add(b + 'ים'); out.add(b + 'ות');
+    if (t.length >= 4 && t.endsWith('י')) out.add(t + 'ם');
     if (t.endsWith('ה')) { out.add(t.slice(0, -1) + 'ות'); out.add(t.slice(0, -1) + 'ים'); }
   }
   out.delete(t);
@@ -1675,10 +1678,11 @@ async function addAutoPicks(request, results, vendorIds, catalogsByVendor, promo
   let ai;
   try { ai = makeAI(config); } catch (e) { return giveUp(); }
 
-  const chunks = [];
-  for (let i = 0; i < need.length; i += AUTO_PICK_NAMES_PER_CALL) chunks.push(need.slice(i, i + AUTO_PICK_NAMES_PER_CALL));
-  const stats = { calls: 0, input: 0, output: 0 };
+  const stats = { calls: 0, input: 0, output: 0, retried: 0 };
   const batch = db.batch();
+  const runRound = async (entries, isRetry) => {
+  const chunks = [];
+  for (let i = 0; i < entries.length; i += AUTO_PICK_NAMES_PER_CALL) chunks.push(entries.slice(i, i + AUTO_PICK_NAMES_PER_CALL));
   await Promise.all(chunks.map(async (chunk) => {
     try {
       const { text, usage } = await callAI(ai, autoPickPrompt(chunk, letters), 1500);
@@ -1711,9 +1715,27 @@ async function addAutoPicks(request, results, vendorIds, catalogsByVendor, promo
       });
     } catch (err) {
       console.error('addAutoPicks: chunk failed', err && err.message);
-      chunk.forEach(e => { delete results[e.name].picks; });
+      // A failed first round leaves the name to the client's own fallback;
+      // a failed second round just keeps what the first one decided.
+      if (!isRetry) chunk.forEach(e => { delete results[e.name].picks; });
     }
   }));
+  };
+  await runRound(need, false);
+  // Second look at chains left empty although they had candidates and the
+  // other chains did get a product: asked alone, with what was chosen
+  // elsewhere spelled out, the answer is far more often the parallel
+  // product than "nothing" — which is what made the same name come back
+  // with two chains one time and four the next.
+  const again = [];
+  need.forEach(e => {
+    const picks = results[e.name].picks;
+    if (!picks) return;
+    const empty = e.vendors.filter(v => !picks[v]);
+    const chosen = e.allVendors.filter(v => picks[v]).map(v => (catalogsByVendor[v][picks[v]] || {}).name).filter(Boolean);
+    if (empty.length > 0 && chosen.length > 0) again.push({ name: e.name, vendors: empty, allVendors: e.allVendors, known: [...new Set(chosen)], cands: e.cands });
+  });
+  if (again.length > 0) { stats.retried = again.length; await runRound(again, true); }
   await batch.commit().catch(() => {});
   return stats;
 }
