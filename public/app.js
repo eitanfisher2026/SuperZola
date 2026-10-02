@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.69";
+const VERSION = "v2.70";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -2146,6 +2146,16 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
   }
 
   const matchedVendorIds = Object.keys(draft.barcodes || {});
+  const needsPriceSearch = isEdit && pricingEnabled && matchedVendorIds.length === 0;
+  // Renamed an item that already has products: those still belong to the
+  // old name until searched again.
+  const renamedWithMatches = isEdit && pricingEnabled && matchedVendorIds.length > 0 && !!item
+    && draft.name.trim() !== (item.name || "").trim() && draft.name.trim().length >= 2;
+  function searchAgainByNewName() {
+    set({ barcodes: {}, matchedNames: {}, autoPicked: {} });
+    setPriceMap({}); setPromoMap({});
+    setStep(2);
+  }
   let cheapest = null;
   itemProfilePrices(draft, activeProfiles, priceMap, promoMap).forEach(e => {
     const eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
@@ -2156,10 +2166,25 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
     <Modal onClose={onClose} disableClose={!isEdit} closeLabel={!isEdit ? (closeLabel || "חזרה לרשימה") : undefined} footer={
       step === 1 ? (
         isEdit ? (
+          needsPriceSearch ? (
+            // No product behind this item yet: the obvious next move is to
+            // look for one, so that is the main button — saving as-is is
+            // the quiet alternative, same as when adding a new item.
+            <div className="space-y-2">
+              <button onClick={() => setStep(2)} disabled={!draft.name.trim()}
+                className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+                🔍 חיפוש מחירים ל"{draft.name.trim()}" ←
+              </button>
+              <button onClick={finish} disabled={!draft.name.trim() || saving} className="w-full text-center text-xs text-[#8A7F66] underline">
+                {saving ? "שומר..." : "שמירה בלי מחירים"}
+              </button>
+            </div>
+          ) : (
           <button onClick={finish} disabled={!draft.name.trim() || saving}
             className="w-full bg-[#2E4A3B] text-[#FBF4E7] py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
             {saving ? <Spinner /> : "שמירת שינויים"}
           </button>
+          )
         ) : (
           <div className="space-y-2">
             {pricingEnabled ? (
@@ -2224,7 +2249,7 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
               onKeyDown={e => {
                 if (e.key !== "Enter" || !draft.name.trim()) return;
                 e.preventDefault();
-                if (isEdit) { if (!saving) finish(); }
+                if (isEdit) { if (needsPriceSearch) setStep(2); else if (!saving) finish(); }
                 else if (pricingEnabled) setStep(2);
                 else if (!saving) finish();
               }}
@@ -2291,9 +2316,19 @@ function ItemWizard({ uid, mode, item, categories, activeProfiles, onInsert, onS
                   {cheapest && <span> · הכי זול: <b className="text-[#E3A939]">{profileLabel(cheapest.profile, activeProfiles)} {formatPrice(cheapest.price)}</b></span>}
                 </div>
               ) : (
-                <p className="text-xs text-[#8A7F66] mb-2">לא הותאם מחיר עדיין</p>
+                <p className="text-xs bg-[#FBF0D9] border border-[#E9D8A6] text-[#8A5A15] rounded-xl px-3 py-2.5 leading-relaxed">
+                  לפריט הזה עוד לא נמצא מוצר ברשתות, ולכן אין לו מחירים. אפשר לתקן את השם למעלה, ואז ללחוץ על "חיפוש מחירים" למטה.
+                </p>
               )}
-              <button onClick={() => setStep(2)} className="text-xs font-bold text-[#2E4A3B]">→ ניהול השוואת מחירים</button>
+              {renamedWithMatches && (
+                <div className="bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2.5 mb-2">
+                  <p className="text-xs text-[#8A5A15] leading-relaxed mb-2">שיניתם את השם — המחירים הם עדיין של המוצר הקודם.</p>
+                  <button onClick={searchAgainByNewName} className="w-full bg-[#2E4A3B] text-[#FBF4E7] rounded-xl py-2 text-xs font-bold">🔍 חיפוש מחירים מחדש לפי "{draft.name.trim()}"</button>
+                </div>
+              )}
+              {matchedVendorIds.length > 0 && (
+                <button onClick={() => setStep(2)} className="text-xs font-bold text-[#2E4A3B]">→ ניהול השוואת מחירים</button>
+              )}
             </div>
           )}
         </div>
