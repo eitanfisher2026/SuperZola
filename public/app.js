@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.73";
+const VERSION = "v2.74";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1239,7 +1239,7 @@ function VendorPickModal({ item, entry, activeProfiles, nameMap, priceMap, onEdi
         {(auto || item.autoPicked) && (
           <div className="pt-2 border-t border-[#F0E9D4] text-xs text-[#5B5749] leading-relaxed">
             {auto
-              ? `למה דווקא המוצר הזה? הוא נבחר אוטומטית לפי השם "${itemDisplayName(item)}": קודם מוצר שנמכר בכמה שיותר מהרשתות שלכם, ומבין אלה הזול ביותר.`
+              ? `למה דווקא המוצר הזה? הוא נבחר אוטומטית כמוצר הרגיל והנפוץ שמתאים לשם "${itemDisplayName(item)}" — אותו מוצר, או המקביל לו, בכל רשת.`
               : "המוצר הזה נבחר ידנית."}
           </div>
         )}
@@ -1555,15 +1555,34 @@ function autoPickByVendor(candidateList, vendorIds) {
 // first gets that SAME product (same barcode) if it sells it, and only
 // otherwise the general auto-pick — so a later-added chain lines up with
 // what's already being compared instead of introducing a different product.
-function pickForVendors(candidates, vendors, existingBarcodes) {
+function pickForVendors(r, vendors, existingBarcodes) {
+  const candidates = (r && r.candidates) || [];
   const existing = new Set((existingBarcodes || []).filter(Boolean).map(String));
   const picks = {};
   const rest = [];
   (vendors || []).forEach(v => {
-    const same = (candidates || []).find(c => existing.has(String(c.barcode)) && c.prices && c.prices[v] != null);
+    const same = candidates.find(c => existing.has(String(c.barcode)) && c.prices && c.prices[v] != null);
     if (same) picks[v] = same; else rest.push(v);
   });
-  return Object.assign(picks, autoPickByVendor(candidates, rest));
+  return Object.assign(picks, picksFromResult(r, rest));
+}
+
+// One searched name's result -> the product to use at each chain. The
+// server's own choice (r.picks, asked for with autoPick: true) decides by
+// what the shopper MEANS — "בצל" is plain dry onion at every chain, not the
+// fried-onion pack that happens to share a barcode across chains — and
+// leaves a chain empty rather than putting an unrelated product there. The
+// rule-based autoPickByVendor above is only the fallback for when the
+// server made no choice at all (AI unavailable).
+function picksFromResult(r, vendorIds) {
+  if (!r || !r.picks) return autoPickByVendor(r && r.candidates, vendorIds);
+  const picks = {};
+  (vendorIds || []).forEach(v => {
+    const bc = r.picks[v];
+    const c = bc && (r.candidates || []).find(x => String(x.barcode) === String(bc) && x.prices && x.prices[v] != null);
+    if (c) picks[v] = c;
+  });
+  return picks;
 }
 
 // ── ITEM WIZARD (add + edit) ─────────────────────────────────────────────────
@@ -1617,7 +1636,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
       setIsResolving(false);
       setHasSearched(true);
       const r = (res.data.results || {})[q];
-      setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
+      setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [], payload, q });
     }, () => { setIsResolving(false); showToast("שגיאה בחיפוש"); });
   };
 
@@ -1742,8 +1761,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   // Same commit path as ticking the boxes by hand, just one vendor at a
   // time with that vendor's own cheapest pick — so the checkboxes below
   // simply show what got chosen, and any of them can be changed.
-  function autoPick() {
-    if (autoPickVendors.length === 0) return;
+  function applyAutoPicks(autoPicks) {
+    const autoPickVendors = Object.keys(autoPicks);
+    if (autoPickVendors.length === 0) { showToast("לא נמצא מוצר שמתאים בוודאות — אפשר לבחור ידנית"); return; }
     setDraft(prev => {
       const nb = Object.assign({}, replacing ? {} : (prev.barcodes || {}));
       const nn = Object.assign({}, replacing ? {} : (prev.matchedNames || {}));
@@ -1778,8 +1798,21 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     // people's lists. Only a product someone picks by hand is recorded.
     const missed = (candidates.vendors || []).length - autoPickVendors.length;
     showToast(missed > 0
-      ? `נבחר הזול ב-${autoPickVendors.length} רשתות — ב-${missed} לא נמצאה התאמה ודאית, אפשר לבחור ידנית`
-      : `נבחר הזול בכל ${autoPickVendors.length} הרשתות — אפשר לשנות`);
+      ? `נבחר מוצר ב-${autoPickVendors.length} רשתות — ב-${missed} לא נמצא מוצר מתאים, אפשר לבחור ידנית`
+      : `נבחר מוצר בכל ${autoPickVendors.length} הרשתות — אפשר לשנות`);
+  }
+  // The choice itself is asked from the server only now, on the press —
+  // most searches here end in a manual pick, so asking on every search
+  // would pay for a choice nobody wanted.
+  const [autoPicking, setAutoPicking] = useState(false);
+  function autoPick() {
+    if (autoPicking || !candidates) return;
+    setAutoPicking(true);
+    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(Object.assign({}, candidates.payload, { autoPick: true })).then(res => {
+      setAutoPicking(false);
+      const r = ((res.data && res.data.results) || {})[candidates.q];
+      applyAutoPicks(r ? picksFromResult(r, candidates.vendors) : autoPicks);
+    }, () => { setAutoPicking(false); applyAutoPicks(autoPicks); });
   }
 
   const vendorEffectivePrices = {};
@@ -1852,9 +1885,9 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
             <p className="text-xs text-[#A79A7C] mb-1">נמצאו {candidates.list.length} תוצאות עבור "{searchQuery}"</p>
           )}
           {candidates.list.length > 1 && autoPickVendors.length > 0 && (
-            <button type="button" onClick={autoPick}
-              className="w-full mb-2 bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-xl py-2.5 text-sm font-bold">
-              ✨ לא משנה לי איזה — בחרו לי את הזול בכל רשת
+            <button type="button" onClick={autoPick} disabled={autoPicking}
+              className="w-full mb-2 bg-[#FBF0D9] border border-[#E3A939] text-[#8A5A15] rounded-xl py-2.5 text-sm font-bold disabled:opacity-60">
+              {autoPicking ? "בוחר..." : "✨ לא משנה לי איזה — בחרו לי את המוצר הרגיל בכל רשת"}
             </button>
           )}
           {candidates.list.length > 0 && (candidates.vendors || []).length > 1 && (
@@ -6974,7 +7007,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
         const BATCH = 6;
         for (let i = 0; i < total; i += BATCH) {
           const chunk = names.slice(i, i + BATCH);
-          const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: chunk, force: true, profileIds: profiles.map(p => p.id) });
+          const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: chunk, force: true, autoPick: true, profileIds: profiles.map(p => p.id) });
           Object.assign(results, (res.data || {}).results || {});
           matched += chunk.length;
           report();
@@ -7007,7 +7040,7 @@ function PasteListModal({ uid, listId, activeProfiles, categories, onClose, onAd
         const barcodes = {};
         const matchedNames = {};
         const autoPicked = {};
-        const picks = autoPickByVendor(r.candidates, vendorIds);
+        const picks = picksFromResult(r, vendorIds);
         Object.entries(picks).forEach(([v, c]) => { barcodes[v] = c.barcode; matchedNames[v] = c.name; autoPicked[v] = true; });
         if (vendorIds.some(v => !barcodes[v])) partial++;
         const cat = cats[name] || other;
@@ -7438,9 +7471,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
     try {
       const name = (item.name || "").trim();
       const vendors = [...new Set(visibleProfiles.map(p => p.vendor))];
-      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: [name], force: true, profileIds: visibleProfiles.map(p => p.id) });
+      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: [name], force: true, autoPick: true, profileIds: visibleProfiles.map(p => p.id) });
       const r = ((res.data && res.data.results) || {})[name] || {};
-      const picks = autoPickByVendor(r.candidates, vendors);
+      const picks = picksFromResult(r, vendors);
       const got = Object.keys(picks);
       if (got.length === 0) {
         setToast("לא נמצאה התאמה ודאית לשם הזה — אפשר לבחור ידנית בכל רשת");
@@ -7461,7 +7494,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
     setGapFilling(true);
     try {
       const names = [...new Set(gaps.map(g => (g.it.name || "").trim()).filter(Boolean))];
-      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, force: true, profileIds: visibleProfiles.map(p => p.id) });
+      const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({ items: names, force: true, autoPick: true, profileIds: visibleProfiles.map(p => p.id) });
       const results = (res.data && res.data.results) || {};
       const batch = db.batch();
       let filled = 0;
@@ -7472,7 +7505,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         const got = new Set();
         // The same product the item already has elsewhere wins if the
         // new chain sells it; otherwise the general auto-pick.
-        const picks = pickForVendors(r.candidates, vendors, Object.values(it.barcodes || {}).map(barcodeValue));
+        const picks = pickForVendors(r, vendors, Object.values(it.barcodes || {}).map(barcodeValue));
         Object.entries(picks).forEach(([v, c]) => { upd["barcodes." + v] = c.barcode; upd["matchedNames." + v] = c.name; upd["autoPicked." + v] = true; got.add(v); });
         vendors.forEach(v => { upd["gapTried." + v] = true; });
         got.forEach(v => filledVendors.add(v));
@@ -7545,7 +7578,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
         setStarterStatus("מתאים מחירים לרשתות שלך...");
         const uniqueNames = [...new Set(namesNeedingWork.map(it => it.name))];
         const res = await fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })({
-          items: uniqueNames, force: true, profileIds: activeProfiles.map(p => p.id),
+          items: uniqueNames, force: true, autoPick: true, profileIds: activeProfiles.map(p => p.id),
         });
         const results = (res.data || {}).results || {};
         const updateBatch = db.batch();
@@ -7558,7 +7591,7 @@ function ListScreen({ uid, listId, listName, onBack }) {
           // shared name->product memory isn't consulted (force above) — it
           // holds whatever someone once chose for that name, which put
           // unrelated products side by side under one item.
-          const picks = pickForVendors(r.candidates, missing, Object.values(it.barcodes).map(barcodeValue));
+          const picks = pickForVendors(r, missing, Object.values(it.barcodes).map(barcodeValue));
           const autoPicked = {};
           Object.entries(picks).forEach(([v, c]) => { it.barcodes[v] = c.barcode; it.matchedNames[v] = c.name; autoPicked[v] = true; });
           const changed = Object.keys(picks).length > 0;

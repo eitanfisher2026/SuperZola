@@ -1405,12 +1405,39 @@ function tokensNearMatch(a, b) {
 // nameTokens/nearSets are optional precomputed shortcuts from a MatchIndex
 // (see buildMatchIndex) — same result either way, just without redoing the
 // same work for every product on every searched name.
-function scoreCatalogName(name, q, qTokens, nameTokensPre, nearSets) {
+// Singular/plural forms of one Hebrew word. A shopper writes "עגבניות",
+// "בננות", "מלפפונים"; the catalogs mostly list produce in the singular
+// ("עגבניה", "בננה", "מלפפון") — and the other way round. These are the same
+// word, not a "close" one, so they match without the approximate flag; a
+// literal match still ranks a notch higher (see the 990/890/790 tiers).
+const HEB_FINAL = { 'כ': 'ך', 'מ': 'ם', 'נ': 'ן', 'פ': 'ף', 'צ': 'ץ' };
+const HEB_UNFINAL = { 'ך': 'כ', 'ם': 'מ', 'ן': 'נ', 'ף': 'פ', 'ץ': 'צ' };
+function hebrewNumberForms(t) {
+  const out = new Set();
+  if (!/^[\u05D0-\u05EA]+$/.test(t)) return out;
+  const withFinal = b => b.slice(0, -1) + (HEB_FINAL[b[b.length - 1]] || b[b.length - 1]);
+  const noFinal = b => b.slice(0, -1) + (HEB_UNFINAL[b[b.length - 1]] || b[b.length - 1]);
+  if (t.length >= 5 && (t.endsWith('ות') || t.endsWith('ים'))) {
+    const b = t.slice(0, -2);
+    out.add(withFinal(b)); out.add(b + 'ה');
+    if (t.endsWith('ות')) out.add(b + 'ת');
+  } else if (t.length >= 3) {
+    const b = noFinal(t);
+    out.add(b + 'ים'); out.add(b + 'ות');
+    if (t.endsWith('ה')) { out.add(t.slice(0, -1) + 'ות'); out.add(t.slice(0, -1) + 'ים'); }
+  }
+  out.delete(t);
+  return out;
+}
+function scoreCatalogName(name, q, qTokens, nameTokensPre, nearSets, formSets) {
   const nameTokens = nameTokensPre || name.split(' ').filter(Boolean);
   if (name === q) return { score: 1000, approx: false };
+  const forms = formSets || qTokens.map(hebrewNumberForms);
+  const same = (nt, i) => nt === qTokens[i] || forms[i].has(nt);
 
   function matchToken(t, i) {
     if (nameTokens.includes(t)) return 'exact';
+    if (forms[i].size > 0 && nameTokens.some(nt => forms[i].has(nt))) return 'form';
     if (t.length < 4) return null;
     const near = nearSets && nearSets[i];
     if (near ? nameTokens.some(nt => near.has(nt)) : nameTokens.some(nt => tokensNearMatch(nt, t))) return 'near';
@@ -1430,7 +1457,11 @@ function scoreCatalogName(name, q, qTokens, nameTokensPre, nearSets) {
   const penalty = anyNear ? 50 : 0;
   if (overlapCount > 0 && overlapCount === qTokens.length) {
     if (nameTokens.slice(0, qTokens.length).join(' ') === q) return { score: 900 - penalty, approx: anyNear };
+    if (qTokens.every((t, i) => nameTokens[i] !== undefined && same(nameTokens[i], i))) {
+      return { score: (nameTokens.length === qTokens.length ? 990 : 890) - penalty, approx: anyNear };
+    }
     if (nameTokens[0] === qTokens[0]) return { score: 800 - penalty, approx: anyNear };
+    if (same(nameTokens[0], 0)) return { score: 790 - penalty, approx: anyNear };
     return { score: 700 - penalty, approx: anyNear };
   }
   if (qTokens.length > 1) return null;
@@ -1484,6 +1515,7 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor, index)
   const q = normalizeItemName(query);
   const qTokens = q.split(' ').filter(Boolean);
   const nearSets = index ? qTokens.map(t => nearTokensOf(index, t)) : null;
+  const formSets = qTokens.map(hebrewNumberForms);
   const vendorNames = Object.keys(catalogsByVendor);
   const byBarcode = {};
   for (const vendor of vendorNames) {
@@ -1491,11 +1523,12 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor, index)
       const pre = index && index.norm.get(item.name);
       const name = pre ? pre.name : normalizeItemName(item.name);
       if (!name) continue;
-      const result = scoreCatalogName(name, q, qTokens, pre && pre.tokens, nearSets);
+      const result = scoreCatalogName(name, q, qTokens, pre && pre.tokens, nearSets, formSets);
       if (result === null) continue;
-      if (!byBarcode[barcode]) byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', bestScore: -1, approx: false, prices: {} };
+      if (!byBarcode[barcode]) byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', bestScore: -1, approx: false, prices: {}, longName: '' };
       const entry = byBarcode[barcode];
       entry.prices[vendor] = item.price;
+      if (item.name && item.name.length > entry.longName.length) entry.longName = item.name;
       if (result.score > entry.bestScore) {
         entry.bestScore = result.score; entry.approx = result.approx;
         entry.name = item.name; entry.unit = item.unit; entry.manufacturer = item.manufacturer || '';
@@ -1506,7 +1539,10 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor, index)
     for (const vendor of vendorNames) {
       if (entry.prices[vendor] === undefined) {
         const other = (catalogsByVendor[vendor] || {})[entry.barcode];
-        if (other) entry.prices[vendor] = other.price;
+        if (other) {
+          entry.prices[vendor] = other.price;
+          if (other.name && other.name.length > entry.longName.length) entry.longName = other.name;
+        }
       }
     }
   }
@@ -1519,6 +1555,10 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor, index)
     }
     return {
       barcode: entry.barcode, name: entry.name, unit: entry.unit, manufacturer: entry.manufacturer,
+      // Feeds cut names short (often at 20 characters), and one chain's
+      // stump ("במבה") can hide what the product really is ("במבה מאנצ'
+      // צ'דר 60 ג") — the fullest name any chain gives this same barcode.
+      longName: entry.longName && entry.longName !== entry.name ? entry.longName : undefined,
       score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
       prices: entry.prices, promoPrices,
       // 1 = found only via the always-on letter-tolerance match, undefined
@@ -1529,8 +1569,153 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor, index)
       fuzzyLayer: entry.approx ? 1 : undefined,
     };
   });
-  list.sort((a, b) => b.score - a.score);
+  // Within a tier the plainer name comes first (fewer words) — a bare word
+  // like "בצל" has dozens of equally-scored "starts with it" products, and
+  // the plain ones ("בצל יבש") must survive the cut, not whichever came
+  // first in catalog order.
+  const words = n => normalizeItemName(n).split(' ').filter(Boolean).length;
+  list.sort((a, b) => (b.score - a.score) || (words(a.name) - words(b.name)));
   return list.slice(0, 40);
+}
+
+// ── AUTOMATIC PRODUCT CHOICE ────────────────────────────────────────────────
+// Which product a shopper MEANS by a bare word ("בצל" = plain dry onion, not
+// the fried/frozen/green/snack products that merely start with the word) is
+// a judgment about meaning, not about names or barcodes — name scoring ranks
+// them all the same, and "the barcode sold at most chains" actively prefers
+// packaged products over produce (each chain has its own code for produce).
+// So the choice is made once per name per chain by the AI, out of the real
+// candidates, and remembered for everyone (autoPicks/{nameKey}) — a common
+// word costs one small call ever, not one per user.
+const AUTO_PICK_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const AUTO_PICK_NONE_TTL_MS = 2 * 24 * 60 * 60 * 1000;
+const AUTO_PICK_NAMES_PER_CALL = 8;
+function autoPickPrompt(entries, letters) {
+  const blocks = entries.map((e, i) => {
+    const sections = e.vendors.map(v => {
+      const lines = [];
+      e.cands.forEach((cand, k) => {
+        if (cand.prices[v] == null) return;
+        lines.push(k + ' | ' + (cand.longName || cand.name) + (cand.unit ? ' | ' + cand.unit : '') + ' | ' + cand.prices[v]);
+      });
+      return 'רשת ' + letters[v] + ':' + '\n' + lines.join('\n');
+    });
+    return '### ' + (i + 1) + '. "' + e.name + '"'
+      + (e.known.length ? '\n' + 'כבר נבחר ברשתות אחרות: ' + e.known.join(' ; ') : '') + '\n' + sections.join('\n');
+  });
+  return `אתה בוחר מוצרים בסופרמרקט ישראלי. קונה כתב ברשימת הקניות שם של פריט. לכל פריט מצורפים, לכל רשת בנפרד (הרשתות מסומנות באותיות), המוצרים המועמדים שנמכרים בה: מספר מועמד | שם | יחידה | מחיר. מועמד עם אותו מספר בכמה רשתות הוא בדיוק אותו מוצר. לכל פריט ולכל רשת בחר את המועמד שהקונה מתכוון אליו.
+
+כללים:
+1. בחר את המוצר הבסיסי והנפוץ שהשם מתאר. "בצל" הוא בצל יבש טרי — לא בצל ירוק, אדום, מטוגן, קפוא, אבקה או חטיף בטעם בצל. "חלב" הוא חלב טרי רגיל 3% בליטר. "לחם" הוא לחם אחיד פרוס. "ביצים" הן ביצים טריות בתבנית. "במבה" היא במבה רגילה, לא במילוי ולא בטעמים.
+2. מוצר מקטגוריה אחרת מזו שהקונה מתכוון אליה פסול: אם הכוונה לירק או פרי טרי, אל תבחר מוצר קפוא, משומר, מיובש, מעובד, תבלין, רוטב או חטיף.
+3. כבד כל פרט שנכתב בשם: גודל, אחוז שומן, מותג, סוג, מספר יחידות.
+4. אותו מוצר בכל הרשתות: העדף מועמד שמופיע (באותו מספר) בכמה רשתות. כשלכל רשת קוד משלה (פירות, ירקות, בשר), בחר בכל רשת את המוצר המקביל — אותו סוג ואותו גודל ככל האפשר.
+5. בין מועמדים שקולים באמת — הזול.
+6. לכל רשת בחר רק מספר שמופיע ברשימה של אותה רשת.
+7. אם ברשת אין מועמד מתאים, החזר null לרשת הזו. עדיף בלי מוצר מאשר מוצר לא קשור.
+שמות בקטלוג קטועים לפעמים באמצע מילה.
+
+החזר JSON בלבד, בלי שום טקסט נוסף: מספר הפריט → אות הרשת → מספר המועמד (או null). לדוגמה: {"1":{"A":3,"B":null},"2":{"A":0}}
+
+${blocks.join('\n' + '\n')}`;
+}
+// Fills results[name].picks = { vendor: barcode | null } for every name that
+// was actually searched. On any AI trouble the name is left WITHOUT picks —
+// the client then falls back to its own rule-based choice.
+async function addAutoPicks(request, results, vendorIds, catalogsByVendor, promoPricesByVendor) {
+  const names = Object.keys(results).filter(n => Array.isArray(results[n].candidates));
+  if (names.length === 0) return { calls: 0 };
+  const docs = await db.getAll(...names.map(n => db.collection('autoPicks').doc(itemNameKey(n))));
+  const now = Date.now();
+  const letters = {};
+  vendorIds.forEach((v, i) => { letters[v] = String.fromCharCode(65 + i); });
+  const need = [];
+  names.forEach((name, i) => {
+    const r = results[name];
+    const cached = (docs[i].exists && docs[i].data().picks) || {};
+    const picks = {};
+    const known = [];
+    const missing = [];
+    vendorIds.forEach(v => {
+      const e = cached[v];
+      const item = e && e.barcode && catalogsByVendor[v] && catalogsByVendor[v][e.barcode];
+      if (item && now - (e.at || 0) < AUTO_PICK_TTL_MS) { picks[v] = String(e.barcode); known.push(item.name); }
+      else if (e && e.barcode === null && now - (e.at || 0) < AUTO_PICK_NONE_TTL_MS) picks[v] = null;
+      else missing.push(v);
+    });
+    // A remembered product that isn't among this search's candidates still
+    // has to be something the client can show and price.
+    Object.keys(picks).forEach(v => {
+      const bc = picks[v];
+      if (!bc || r.candidates.some(cand => cand.barcode === bc)) return;
+      const src = catalogsByVendor[v][bc];
+      const prices = {};
+      const promoPrices = {};
+      vendorIds.forEach(v2 => {
+        const it = catalogsByVendor[v2] && catalogsByVendor[v2][bc];
+        if (!it) return;
+        prices[v2] = it.price;
+        const info = effectivePromoInfo(promoPricesByVendor[v2] && promoPricesByVendor[v2][bc], it.price);
+        if (info) promoPrices[v2] = info;
+      });
+      r.candidates.push({ barcode: bc, name: src.name, unit: src.unit, manufacturer: src.manufacturer || '', score: 800, prices, promoPrices });
+    });
+    r.picks = picks;
+    const cands = r.candidates.filter(cand => !cand.fuzzyLayer && cand.score >= 700).slice(0, 30);
+    const askVendors = missing.filter(v => cands.some(cand => cand.prices[v] != null));
+    missing.filter(v => askVendors.indexOf(v) === -1).forEach(v => { picks[v] = null; });
+    if (askVendors.length > 0) need.push({ name, vendors: askVendors, allVendors: vendorIds, known: [...new Set(known)], cands });
+  });
+  if (need.length === 0) return { calls: 0 };
+
+  const giveUp = () => { need.forEach(e => { delete results[e.name].picks; }); return { calls: 0, gaveUp: true }; };
+  if (request.auth && (await monthlyCostSoFar(request.auth.uid)) >= FREE_TIER_MONTHLY_AI_CAP_USD) return giveUp();
+  const config = await getAppAiConfig();
+  if (!config) return giveUp();
+  let ai;
+  try { ai = makeAI(config); } catch (e) { return giveUp(); }
+
+  const chunks = [];
+  for (let i = 0; i < need.length; i += AUTO_PICK_NAMES_PER_CALL) chunks.push(need.slice(i, i + AUTO_PICK_NAMES_PER_CALL));
+  const stats = { calls: 0, input: 0, output: 0 };
+  const batch = db.batch();
+  await Promise.all(chunks.map(async (chunk) => {
+    try {
+      const { text, usage } = await callAI(ai, autoPickPrompt(chunk, letters), 1500);
+      stats.calls++; stats.input += (usage && usage.input_tokens) || 0; stats.output += (usage && usage.output_tokens) || 0;
+      await recordCost(request, ai, (usage && usage.input_tokens) || 0, (usage && usage.output_tokens) || 0);
+      const s = String(text || '');
+      const parsed = JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1));
+      chunk.forEach((e, i) => {
+        const ans = parsed[String(i + 1)] || {};
+        const save = {};
+        // What the other chains got, by name — a chain the AI left empty
+        // still gets its own product of that very name if it has one.
+        const chosenNames = new Set(e.vendors.map(v => { const k = ans[letters[v]]; return Number.isInteger(k) && e.cands[k] ? normalizeItemName(e.cands[k].name) : null; }).filter(Boolean));
+        e.vendors.forEach(v => {
+          const idx = ans[letters[v]];
+          let cand = Number.isInteger(idx) ? e.cands[idx] : null;
+          // Chose a product this chain doesn't sell: take the chain's own
+          // product of the very same name if it has one (produce has a
+          // separate code per chain), otherwise nothing.
+          if (cand && cand.prices[v] == null) {
+            const wanted = normalizeItemName(cand.name);
+            cand = e.cands.find(x => x.prices[v] != null && normalizeItemName(x.name) === wanted) || null;
+          }
+          if (!cand) cand = e.cands.find(x => x.prices[v] != null && chosenNames.has(normalizeItemName(x.name))) || null;
+          const ok = cand && cand.prices[v] != null;
+          results[e.name].picks[v] = ok ? cand.barcode : null;
+          save[v] = ok ? { barcode: cand.barcode, name: cand.name, at: now } : { barcode: null, at: now };
+        });
+        batch.set(db.collection('autoPicks').doc(itemNameKey(e.name)), { name: e.name, picks: save }, { merge: true });
+      });
+    } catch (err) {
+      console.error('addAutoPicks: chunk failed', err && err.message);
+      chunk.forEach(e => { delete results[e.name].picks; });
+    }
+  }));
+  await batch.commit().catch(() => {});
+  return stats;
 }
 
 // Character-bigram Dice coefficient — a whole-name similarity measure,
@@ -1680,8 +1865,8 @@ exports.resolveItemBarcodes = onCall(
   async (request) => {
     requireSignedIn(request);
     await enforceDailyCap(request.auth.uid, 'resolveItemBarcodes');
-    const { items, force, vendors, profileIds } = request.data || {};
-    console.log('resolveItemBarcodes: start', { uid: request.auth.uid, items, force, vendors, profileIds });
+    const { items, force, vendors, profileIds, autoPick } = request.data || {};
+    console.log('resolveItemBarcodes: start', { uid: request.auth.uid, items, force, vendors, profileIds, autoPick });
     if (!Array.isArray(items) || items.length === 0) throw new HttpsError('invalid-argument', 'items array required');
 
     const allActiveProfiles = await getUserActiveProfiles(request.auth.uid);
@@ -1786,6 +1971,13 @@ exports.resolveItemBarcodes = onCall(
       console.log('resolveItemBarcodes: name', name, 'candidates found', candidates.length,
         'layer1Exact', candidates.length - layer1ApproxCount - layer2Count, 'layer1Approx', layer1ApproxCount, 'layer2', layer2Count);
       results[name] = { barcodes, missingVendors, searchedVendors, candidates };
+    }
+    // autoPick: also say which candidate to use at each chain (see
+    // addAutoPicks). Never fails the search itself.
+    if (autoPick) {
+      const stats = await addAutoPicks(request, results, vendorIds, catalogsByVendor, promoPricesByVendor)
+        .catch(e => { console.error('resolveItemBarcodes: autoPick failed', e && e.message); Object.values(results).forEach(r => { delete r.picks; }); return null; });
+      console.log('resolveItemBarcodes: autoPick', stats);
     }
     console.log('resolveItemBarcodes: done', Object.keys(results).length, 'names processed');
     return { results };
@@ -2101,4 +2293,3 @@ exports.getBasketPrices = onCall(
     return { prices, promoPrices, names, profiles: activeProfiles };
   }
 );
-
