@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.72";
+const VERSION = "v2.73";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -7631,9 +7631,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
   // "✦ חדש" frame — mainly for items added from outside the list (the home
   // search, another device), so you can see what arrived and where it
   // landed. The "last seen" mark is set on entering and again on leaving,
-  // so items added during a visit stay marked for that visit only. A list
-  // never opened here before marks nothing (everything would be "new").
+  // so items added during a visit stay marked for that visit only.
   const seenKey = "sz_seen_" + listId;
+  const visitStartRef = useRef(Date.now());
   const prevSeenRef = useRef(null);
   if (prevSeenRef.current === null) {
     try { prevSeenRef.current = Number(localStorage.getItem(seenKey)) || 0; } catch (e) { prevSeenRef.current = 0; }
@@ -7641,21 +7641,42 @@ function ListScreen({ uid, listId, listName, onBack }) {
   useEffect(() => {
     const mark = () => { try { localStorage.setItem(seenKey, String(Date.now())); } catch (e) {} };
     mark();
-    return mark;
+    // Leaving isn't always an unmount: the app gets closed, reloaded for a
+    // new version, or sent to the background — none of which run cleanup.
+    const onHide = () => { if (document.visibilityState === "hidden") mark(); };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", mark);
+    return () => { document.removeEventListener("visibilitychange", onHide); window.removeEventListener("pagehide", mark); mark(); };
     // eslint-disable-next-line
   }, [listId]);
-  function addedSinceLastSeen(it) {
-    if (!prevSeenRef.current) return false;
-    const t = it.addedAt && it.addedAt.toMillis ? it.addedAt.toMillis() : null;
-    return t === null || t > prevSeenRef.current;
-  }
-  // When EVERYTHING in the list is new — it was just built by copying
-  // another list, loading the starter list, or filling an empty list in one
-  // go — marking every single row says nothing. The mark only means
-  // something when new items sit among older ones.
-  const wholeListIsNew = (items || []).length > 0 && items.every(addedSinceLastSeen);
+  const addedMillis = it => (it.addedAt && it.addedAt.toMillis ? it.addedAt.toMillis() : Infinity);
+  // New = added since the list was last seen here. When that covers the
+  // WHOLE list (it was built during this very visit, or copied / loaded in
+  // one go) marking every row says nothing — then only the latest round of
+  // adding counts: whatever came after the last real pause (a minute+)
+  // between additions, and only if it happened during this visit. A list
+  // filled in a single go has no such pause, and a list simply never
+  // opened here before has nothing added this visit — neither marks
+  // anything; "חסה" added a few minutes after the rest is marked.
+  const newItemIds = useMemo(() => {
+    const all = items || [];
+    const ids = new Set();
+    if (all.length === 0) return ids;
+    const since = all.filter(it => addedMillis(it) > prevSeenRef.current);
+    if (since.length < all.length) { since.forEach(it => ids.add(it.id)); return ids; }
+    const sorted = all.slice().sort((a, b) => addedMillis(a) - addedMillis(b));
+    let start = -1;
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = addedMillis(sorted[i - 1]);
+      const cur = addedMillis(sorted[i]) === Infinity ? Date.now() : addedMillis(sorted[i]);
+      if (cur - prev > 60000) start = i;
+    }
+    if (start > 0 && addedMillis(sorted[start]) > visitStartRef.current - 5000) sorted.slice(start).forEach(it => ids.add(it.id));
+    return ids;
+    // eslint-disable-next-line
+  }, [items]);
   function isNewItem(it) {
-    return !wholeListIsNew && addedSinceLastSeen(it);
+    return newItemIds.has(it.id);
   }
 
   // The home screen's "N פריטים" comes from itemCount on the list doc (free
