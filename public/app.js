@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.66";
+const VERSION = "v2.67";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -7414,10 +7414,18 @@ function ListScreen({ uid, listId, listName, onBack }) {
     return mark;
     // eslint-disable-next-line
   }, [listId]);
-  function isNewItem(it) {
+  function addedSinceLastSeen(it) {
     if (!prevSeenRef.current) return false;
     const t = it.addedAt && it.addedAt.toMillis ? it.addedAt.toMillis() : null;
     return t === null || t > prevSeenRef.current;
+  }
+  // When EVERYTHING in the list is new — it was just built by copying
+  // another list, loading the starter list, or filling an empty list in one
+  // go — marking every single row says nothing. The mark only means
+  // something when new items sit among older ones.
+  const wholeListIsNew = (items || []).length > 0 && items.every(addedSinceLastSeen);
+  function isNewItem(it) {
+    return !wholeListIsNew && addedSinceLastSeen(it);
   }
 
   // The home screen's "N פריטים" comes from itemCount on the list doc (free
