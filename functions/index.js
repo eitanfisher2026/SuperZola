@@ -1433,6 +1433,46 @@ exports.refreshActiveVendorCatalogs = onSchedule(
 // small and store openings are rare, so weekly for every vendor (not just
 // ones someone's actively tracking) is cheap and keeps this from silently
 // going stale again.
+// A chain's price file isn't always there when the nightly run looks: אושר
+// עד's folder on the price portal held only store lists whenever it was
+// checked (from 2026-09-02 on), while an open-source scraper of the same
+// portal saw its price test fail and then pass again — files that come and
+// go during the day. So every few hours, branches in use whose prices are
+// more than a day old get another try. Cheap: a branch that's fresh is
+// skipped, and a refresh writes only what changed.
+exports.retryStaleCatalogs = onSchedule(
+  { schedule: 'every 4 hours', region: REGION, timeoutSeconds: 540, memory: '2GiB' },
+  async () => {
+    if (await isSystemPaused()) { console.log('retryStaleCatalogs: system paused, skipping'); return; }
+    const snap = await db.collectionGroup('vendorProfiles').get();
+    const pairs = {};
+    snap.forEach(doc => {
+      const p = doc.data();
+      if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) pairs[`${p.vendor}:${p.branchId}`] = p;
+    });
+    const list = Object.values(pairs);
+    if (list.length === 0) return;
+    const idx = await db.getAll(...list.map(p => db.collection('vendorCatalogIndex').doc(docKey(p.vendor, String(p.branchId)))));
+    const now = Date.now();
+    const due = list.filter((p, i) => {
+      const d = idx[i].exists ? idx[i].data() : null;
+      if (!d) return false;
+      const inUse = now - (d.lastUsedAt || now) <= CATALOG_IDLE_MS;
+      return inUse && now - (d.updatedAt || 0) > 26 * 60 * 60 * 1000;
+    });
+    const done = [];
+    const failed = [];
+    await runWithConcurrency(due, 3, async p => {
+      try {
+        await ingestVendorCatalog(p.vendor, String(p.branchId));
+        await ingestVendorPromotions(p.vendor, String(p.branchId)).catch(() => {});
+        done.push(`${p.vendor}:${p.branchId}`);
+      } catch (e) { failed.push(`${p.vendor}:${p.branchId}: ${e && e.message}`); }
+    });
+    console.log('retryStaleCatalogs: done', { due: due.length, refreshed: done, failed });
+  }
+);
+
 exports.refreshVendorBranches = onSchedule(
   { schedule: 'every 168 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
   async () => {
