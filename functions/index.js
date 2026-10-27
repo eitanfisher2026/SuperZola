@@ -105,8 +105,30 @@ const DAILY_CALL_CAPS = {
   confirmItemBarcode: 300,
   getVendorBranches: 100,
   parseShoppingList: 60,
+  refreshMyCatalogs: 6,
 };
+// ── SYSTEM PAUSE ──────────────────────────────────────────────────────────────
+// appConfig/maintenance.paused — the admin's full stop: the nightly catalog
+// refresh and branch refresh skip their runs, and every metered function
+// (all of them go through enforceDailyCap) refuses everyone but the admin.
+// Read at most every 30s per server instance, so a busy function doesn't pay
+// a read per call just to learn nothing changed.
+let PAUSE_CACHE = { at: 0, paused: false };
+async function isSystemPaused() {
+  if (Date.now() - PAUSE_CACHE.at < 30000) return PAUSE_CACHE.paused;
+  const snap = await db.collection('appConfig').doc('maintenance').get();
+  PAUSE_CACHE = { at: Date.now(), paused: !!(snap.data() || {}).paused };
+  return PAUSE_CACHE.paused;
+}
+async function assertNotPaused(uid) {
+  if (!(await isSystemPaused())) return;
+  const u = await db.collection('users').doc(uid).get();
+  if ((u.data() || {}).role === 'admin') return;
+  throw new HttpsError('unavailable', 'המערכת מושהית זמנית — נסו שוב מאוחר יותר');
+}
+
 async function enforceDailyCap(uid, fnName) {
+  await assertNotPaused(uid);
   let cap = DAILY_CALL_CAPS[fnName];
   const limitsSnap = await db.collection('appConfig').doc('limits').get();
   const configured = (limitsSnap.data() || {})[fnName + 'DailyCap'];
@@ -759,8 +781,8 @@ function docKey(vendor, branchId) { return `${vendor}__${branchId}`; }
 // actually empty" state). Each item is its own tiny document in a
 // subcollection instead, which also turns a per-barcode price lookup into a
 // cheap point read instead of downloading the whole catalog.
-async function writeCatalogItems(key, items) {
-  const barcodes = Object.keys(items);
+async function writeCatalogItems(key, items, onlyBarcodes) {
+  const barcodes = onlyBarcodes || Object.keys(items);
   const BATCH_SIZE = 400; // Firestore caps a batch at 500 writes; keep margin
   for (let i = 0; i < barcodes.length; i += BATCH_SIZE) {
     const batch = db.batch();
@@ -773,6 +795,40 @@ async function writeCatalogItems(key, items) {
     });
     await batch.commit();
   }
+}
+// A refresh used to rewrite every item of every branch every night (~220k
+// document writes a day for 23 branches) although only a small share of
+// prices change from one day to the next. Each branch now keeps a compact
+// fingerprint of its whole catalog (vendorCatalogPrints, a few documents:
+// barcode -> short hash of that item's fields) and a refresh writes only
+// the items whose fingerprint differs. The first refresh of a branch has no
+// fingerprint yet and writes everything once, as before.
+const PRINTS_PER_DOC = 6000;
+function catalogPrints(items) {
+  const crypto = require('crypto');
+  const out = {};
+  Object.keys(items).forEach(bc => { out[bc] = crypto.createHash('sha1').update(JSON.stringify(items[bc])).digest('base64').slice(0, 10); });
+  return out;
+}
+async function readCatalogPrints(key, shards) {
+  if (!shards) return null;
+  const snaps = await db.getAll(...Array.from({ length: shards }, (_, i) => db.collection('vendorCatalogPrints').doc(key + '__' + i)));
+  if (snaps.some(s => !s.exists)) return null;
+  const out = {};
+  snaps.forEach(s => Object.assign(out, JSON.parse((s.data() || {}).p || '{}')));
+  return out;
+}
+async function writeCatalogPrints(key, prints) {
+  const entries = Object.entries(prints);
+  const shards = Math.max(1, Math.ceil(entries.length / PRINTS_PER_DOC));
+  const batch = db.batch();
+  // One string field, not a map: thousands of map keys would each be
+  // auto-indexed (and hit the per-document index cap); a string is one value.
+  for (let i = 0; i < shards; i++) {
+    batch.set(db.collection('vendorCatalogPrints').doc(key + '__' + i), { p: JSON.stringify(Object.fromEntries(entries.slice(i * PRINTS_PER_DOC, (i + 1) * PRINTS_PER_DOC))) });
+  }
+  await batch.commit();
+  return shards;
 }
 async function readAllCatalogItems(key) {
   const snap = await db.collection('vendorCatalogs').doc(key).collection('items').get();
@@ -1218,9 +1274,16 @@ async function ingestVendorCatalog(vendor, branchId) {
   const sizeBytes = Buffer.byteLength(JSON.stringify(items));
   const updatedAt = Date.now();
   const key = docKey(vendor, branchId);
-  await writeCatalogItems(key, items);
-  await db.collection('vendorCatalogIndex').doc(key).set({ updatedAt, sizeBytes, itemCount: Object.keys(items).length });
-  console.log('ingestVendorCatalog: saved', vendor, branchId);
+  const indexRef = db.collection('vendorCatalogIndex').doc(key);
+  const prevIndex = (await indexRef.get()).data() || {};
+  const prints = catalogPrints(items);
+  const oldPrints = await readCatalogPrints(key, prevIndex.printShards).catch(() => null);
+  const changed = oldPrints ? Object.keys(items).filter(bc => oldPrints[bc] !== prints[bc]) : Object.keys(items);
+  await writeCatalogItems(key, items, changed);
+  const printShards = await writeCatalogPrints(key, prints);
+  // merge: keeps lastUsedAt (see markCatalogsUsed) across refreshes.
+  await indexRef.set({ updatedAt, sizeBytes, itemCount: Object.keys(items).length, printShards, lastWriteCount: changed.length }, { merge: true });
+  console.log('ingestVendorCatalog: saved', vendor, branchId, 'items=', Object.keys(items).length, 'written=', changed.length);
   return items;
 }
 
@@ -1317,25 +1380,50 @@ const CATALOG_MEMO_MAX = 12;
 // vendorPromoPrices was never populated at all and no sale price ever
 // showed up anywhere, for any vendor. Real report: 2026-09-10, a known
 // in-store promotion at יוחננוף wasn't reflected in the app.
+// Only branches someone actually used in the last week are refreshed
+// (lastUsedAt, stamped by getBasketPrices) — an idle branch just keeps its
+// last prices, and whoever comes back to it sees how old they are and can
+// refresh it with one tap (refreshMyCatalogs). More memory and fewer at a
+// time than before: several chains' price files used to stop updating for
+// days with no trace, the run most likely dying part-way (every failure was
+// swallowed silently) — each failure is now logged.
+const CATALOG_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
 exports.refreshActiveVendorCatalogs = onSchedule(
-  { schedule: 'every 24 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
+  { schedule: 'every 24 hours', region: REGION, timeoutSeconds: 540, memory: '2GiB' },
   async () => {
+    if (await isSystemPaused()) { console.log('refreshActiveVendorCatalogs: system paused, skipping'); return; }
     const snap = await db.collectionGroup('vendorProfiles').get();
-    const pairs = {};
+    const allPairs = {};
     snap.forEach(doc => {
       const p = doc.data();
-      if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) pairs[`${p.vendor}:${p.branchId}`] = p;
+      if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) allPairs[`${p.vendor}:${p.branchId}`] = p;
     });
+    const list = Object.values(allPairs);
+    const idx = list.length ? await db.getAll(...list.map(p => db.collection('vendorCatalogIndex').doc(docKey(p.vendor, String(p.branchId))))) : [];
+    const now = Date.now();
+    const pairs = {};
+    const idle = [];
+    list.forEach((p, i) => {
+      const d = idx[i].exists ? idx[i].data() : null;
+      // No usage stamp yet (branches from before this existed): counted as
+      // used now, so it gets a full week before it can go idle.
+      if (d && !d.lastUsedAt) idx[i].ref.set({ lastUsedAt: now }, { merge: true }).catch(() => {});
+      const lastUsed = d ? (d.lastUsedAt || now) : now;
+      if (now - lastUsed > CATALOG_IDLE_MS) idle.push(`${p.vendor}:${p.branchId}`);
+      else pairs[`${p.vendor}:${p.branchId}`] = p;
+    });
+    const failed = [];
     // Bounded concurrency, not Promise.all over every pair at once — a
     // vendorProfiles doc's branchId is now validated at write time (see
     // firestore.rules) against the vendor's real known branches, but this
     // is a second line of defense: even a legitimate, large fleet of
     // tracked branches shouldn't be able to open unlimited simultaneous
     // live FTP/HTTP connections to third-party price feeds in one run.
-    await runWithConcurrency(Object.values(pairs), 10, async p => {
-      await ingestVendorCatalog(p.vendor, String(p.branchId)).catch(() => {});
-      await ingestVendorPromotions(p.vendor, String(p.branchId)).catch(() => {});
+    await runWithConcurrency(Object.values(pairs), 4, async p => {
+      await ingestVendorCatalog(p.vendor, String(p.branchId)).catch(e => { failed.push(`${p.vendor}:${p.branchId} catalog: ${e && e.message}`); });
+      await ingestVendorPromotions(p.vendor, String(p.branchId)).catch(e => { failed.push(`${p.vendor}:${p.branchId} promo: ${e && e.message}`); });
     });
+    console.log('refreshActiveVendorCatalogs: done', { refreshed: Object.keys(pairs).length, idleSkipped: idle.length, idle, failed });
   }
 );
 
@@ -1348,6 +1436,7 @@ exports.refreshActiveVendorCatalogs = onSchedule(
 exports.refreshVendorBranches = onSchedule(
   { schedule: 'every 168 hours', region: REGION, timeoutSeconds: 540, memory: '512MiB' },
   async () => {
+    if (await isSystemPaused()) { console.log('refreshVendorBranches: system paused, skipping'); return; }
     await Promise.all(VENDOR_IDS.map(v => ingestVendorBranches(v).catch(() => {})));
   }
 );
@@ -2292,6 +2381,17 @@ exports.getBasketPrices = onCall(
       return { prices, promoPrices, profiles: activeProfiles, refreshResult: { refreshedCount: refreshedBranches.length, skippedSameDayCount: skippedBranches.length } };
     }
 
+    // How fresh each branch's prices are (the app shows it and offers a
+    // refresh when they're old), and the "someone uses this branch" stamp
+    // the nightly refresh relies on — written at most twice a day a branch.
+    const catalogUpdatedAt = {};
+    const idxSnaps = await db.getAll(...relevantProfiles.map(p => db.collection('vendorCatalogIndex').doc(docKey(p.vendor, p.branchId))));
+    const nowMs = Date.now();
+    relevantProfiles.forEach((p, i) => {
+      const d = idxSnaps[i].exists ? idxSnaps[i].data() : {};
+      catalogUpdatedAt[p.id] = d.updatedAt || null;
+      if (idxSnaps[i].exists && !(nowMs - (d.lastUsedAt || 0) < 12 * 60 * 60 * 1000)) idxSnaps[i].ref.set({ lastUsedAt: nowMs }, { merge: true }).catch(() => {});
+    });
     await Promise.all(relevantProfiles.map(async (p) => {
       const dKey = docKey(p.vendor, p.branchId);
       const [promoSnap, itemsByBarcode] = await Promise.all([
@@ -2312,6 +2412,43 @@ exports.getBasketPrices = onCall(
         if (it && it.name) names[p.id][barcode] = it.unit ? { name: it.name, unit: it.unit } : { name: it.name };
       });
     }));
-    return { prices, promoPrices, names, profiles: activeProfiles };
+    return { prices, promoPrices, names, catalogUpdatedAt, profiles: activeProfiles };
+  }
+);
+
+// A user's own "refresh these prices now" — for branches whose prices are
+// old (an idle branch the nightly refresh skipped, or a night the chain's
+// file didn't arrive). Only the caller's own active branches, only ones not
+// refreshed in the last 12 hours, and a small daily cap — each refresh is a
+// live download from the chain, so it can't be triggered without limit.
+exports.refreshMyCatalogs = onCall(
+  { timeoutSeconds: 300, memory: '2GiB', region: REGION, enforceAppCheck: true },
+  async (request) => {
+    requireSignedIn(request);
+    await enforceDailyCap(request.auth.uid, 'refreshMyCatalogs');
+    const { profileIds } = request.data || {};
+    const active = await getUserActiveProfiles(request.auth.uid);
+    const wanted = active.filter(p => !Array.isArray(profileIds) || profileIds.includes(p.id));
+    const byKey = {};
+    wanted.forEach(p => { const k = docKey(p.vendor, p.branchId); (byKey[k] = byKey[k] || { p, ids: [] }).ids.push(p.id); });
+    const results = {};
+    await runWithConcurrency(Object.values(byKey), 3, async ({ p, ids }) => {
+      const ref = db.collection('vendorCatalogIndex').doc(docKey(p.vendor, p.branchId));
+      const before = ((await ref.get()).data() || {}).updatedAt || 0;
+      let r;
+      if (Date.now() - before < 12 * 60 * 60 * 1000) r = { ok: true, updatedAt: before, alreadyFresh: true };
+      else {
+        try {
+          await ingestVendorCatalog(p.vendor, p.branchId);
+          await ingestVendorPromotions(p.vendor, p.branchId).catch(() => {});
+          r = { ok: true, updatedAt: (((await ref.get()).data()) || {}).updatedAt || Date.now() };
+        } catch (e) {
+          console.error('refreshMyCatalogs: failed', p.vendor, p.branchId, e && e.message);
+          r = { ok: false, updatedAt: before || null };
+        }
+      }
+      ids.forEach(id => { results[id] = r; });
+    });
+    return { results };
   }
 );

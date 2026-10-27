@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.79";
+const VERSION = "v2.80";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -182,8 +182,11 @@ function useMaintenanceMode(active) {
   const [enabled, setEnabled] = useState(false);
   useEffect(() => {
     if (!active) return;
+    // A full system pause (appConfig/maintenance.paused) shows the same
+    // screen — the server refuses everything during it anyway.
     return db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
-      setEnabled(!!(snap.data() || {}).enabled);
+      const d = snap.data() || {};
+      setEnabled(!!(d.enabled || d.paused));
     });
   }, [active]);
   return enabled;
@@ -452,6 +455,7 @@ const DEFAULT_DAILY_CAPS = {
   confirmItemBarcode: 300,
   getVendorBranches: 100,
   parseShoppingList: 60,
+  refreshMyCatalogs: 6,
 };
 function useAppLimits() {
   const [limits, setLimits] = useState(Object.assign(
@@ -4548,9 +4552,20 @@ function AdminOptionsScreen({ uid, onBack }) {
     setRole(effectiveRole(data.role || null));
   }), [uid]);
 
+  const [systemPaused, setSystemPaused] = useState(false);
+  const [confirmPauseOn, setConfirmPauseOn] = useState(false);
   useEffect(() => db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
     setMaintenanceMode(!!(snap.data() || {}).enabled);
+    setSystemPaused(!!(snap.data() || {}).paused);
   }), []);
+  // The full stop: no nightly price refresh, no server work for anyone but
+  // the admin, users see the maintenance screen. For stretches nobody uses
+  // the app, so nothing keeps costing money. Prices are simply as old as
+  // the last refresh when it's switched back on.
+  function setPause(on) {
+    db.collection("appConfig").doc("maintenance").set({ paused: on }, { merge: true })
+      .then(() => setToast(on ? "המערכת הושהתה" : "המערכת חזרה לפעול"), () => setToast("שגיאה בשמירה"));
+  }
   // Turning it off never disrupts anyone, so that happens immediately —
   // only turning it ON (which boots every non-admin out mid-session) asks
   // for confirmation first, with a headcount so the admin knows the blast
@@ -4877,6 +4892,21 @@ function AdminOptionsScreen({ uid, onBack }) {
               </div>
               <span className={"text-xs font-bold flex-shrink-0 " + (maintenanceMode ? "text-[#B8462F]" : "text-[#A79A7C]")}>
                 {maintenanceMode ? "פעיל" : "כבוי"}
+              </span>
+            </button>
+            <button onClick={() => systemPaused ? setPause(false) : setConfirmPauseOn(true)}
+              className={"w-full mt-2 flex items-center justify-between px-3 py-3 rounded-xl border transition " + (systemPaused ? "bg-[#FBEAE5] border-[#E0B0A5]" : "bg-[#F7F2E4] border-transparent")}>
+              <div className="flex items-center gap-3">
+                <span className="text-lg w-7 text-center">⏸️</span>
+                <div className="text-right">
+                  <div className="text-sm font-semibold text-[#2B2418]">השהיית מערכת</div>
+                  <div className="text-xs text-[#A79A7C]">
+                    {systemPaused ? "מושהית — אין ריענון מחירים ואין עבודת שרת, משתמשים רואים מסך תחזוקה" : "פועלת — ריענון לילי ושירותי השרת פעילים"}
+                  </div>
+                </div>
+              </div>
+              <span className={"text-xs font-bold flex-shrink-0 " + (systemPaused ? "text-[#B8462F]" : "text-[#A79A7C]")}>
+                {systemPaused ? "מושהית" : "פועלת"}
               </span>
             </button>
           </div>
@@ -5541,6 +5571,11 @@ function AdminOptionsScreen({ uid, onBack }) {
           message={`למחוק לצמיתות את ${confirmDeleteUserAccount.displayName || confirmDeleteUserAccount.email || confirmDeleteUserAccount.id}? החשבון, ההתחברות, הרשימות, הסניפים וכל ההיסטוריה שלו יימחקו, והוא ייעלם מרשימת המשתמשים. אם יתחבר שוב, ייפתח לו חשבון חדש וריק. פעולה זו אינה ניתנת לביטול.`}
           confirmLabel="ניתוק לצמיתות"
           onConfirm={() => deleteUserAccountAction(confirmDeleteUserAccount)} onClose={() => setConfirmDeleteUserAccount(null)} />
+      )}
+      {confirmPauseOn && (
+        <ConfirmDialog
+          message="להשהות את המערכת? ריענון המחירים הלילי ייעצר, השרת יפסיק לעבוד לכל מי שאינו מנהל, ומשתמשים יראו מסך תחזוקה. אתה ממשיך לראות הכל. כשתחזיר — המחירים יהיו מהריענון האחרון, ואפשר לרענן."
+          confirmLabel="השהיה" onConfirm={() => setPause(true)} onClose={() => setConfirmPauseOn(false)} />
       )}
       {confirmMaintenanceOn && (
         <ConfirmDialog
@@ -7247,6 +7282,9 @@ function ListScreen({ uid, listId, listName, onBack }) {
   const [nameMap, setNameMap] = useState({});
   const [onlineNameMap, setOnlineNameMap] = useState({});
   const [repicking, setRepicking] = useState(false);
+  const [catalogUpdated, setCatalogUpdated] = useState({}); // { profileId: updatedAt }
+  const [refreshingCatalogs, setRefreshingCatalogs] = useState(false);
+  const [pricesReload, setPricesReload] = useState(0);
   const [pricesLoading, setPricesLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [viewMode, setViewMode] = useState("list");
@@ -7350,11 +7388,12 @@ function ListScreen({ uid, listId, listName, onBack }) {
       setPriceMap(res.data.prices || {});
       setPromoMap(res.data.promoPrices || {});
       setNameMap(res.data.names || {});
+      setCatalogUpdated(prev => Object.assign({}, prev, res.data.catalogUpdatedAt || {}));
       setPricesLoading(false);
     }).catch(() => { if (seq === priceRequestSeq.current) setPricesLoading(false); });
   }
 
-  useEffect(() => { fetchPrices(); }, [barcodeKey, activeProfiles.length]);
+  useEffect(() => { fetchPrices(); }, [barcodeKey, activeProfiles.length, pricesReload]);
 
   // ── On-demand online price resolution ────────────────────────────────────
   // Online vendors are auto-provisioned, not chosen deliberately like
@@ -7407,12 +7446,13 @@ function ListScreen({ uid, listId, listName, onBack }) {
       });
       setOnlineOverlay(overlay);
       setOnlineNameMap(res.data.names || {});
+      setCatalogUpdated(prev => Object.assign({}, prev, res.data.catalogUpdatedAt || {}));
       setOnlinePriceMap(prices);
       setOnlinePromoMap(promoPrices);
       setOnlinePricesLoading(false);
     }).catch(() => { if (seq === onlineRequestSeq.current) setOnlinePricesLoading(false); });
     // eslint-disable-next-line
-  }, [wantsOnline, knownBarcodesKey, JSON.stringify(onlineProfilesVisible.map(p => p.id))]);
+  }, [wantsOnline, knownBarcodesKey, JSON.stringify(onlineProfilesVisible.map(p => p.id)), pricesReload]);
 
   // Items enriched with the on-demand online overlay (never persisted on
   // the original doc) — used for every render/consumer instead of the raw
@@ -7847,6 +7887,45 @@ function ListScreen({ uid, listId, listName, onBack }) {
             <Spinner2 /> משלים מחירים לרשתות שנוספו...
           </div>
         )}
+        {(() => {
+          // Branches whose prices are more than a day and a half old — an
+          // idle branch the nightly refresh skips, or a night the chain's
+          // file didn't arrive. Says so, and offers to fetch them now.
+          const STALE_MS = 36 * 60 * 60 * 1000;
+          const stale = visibleProfiles.filter(p => catalogUpdated[p.id] && Date.now() - catalogUpdated[p.id] > STALE_MS);
+          if (stale.length === 0) return null;
+          const oldest = Math.min(...stale.map(p => catalogUpdated[p.id]));
+          const days = Math.max(2, Math.round((Date.now() - oldest) / 86400000));
+          return (
+            <div className="no-print mb-2 bg-[#FBF0D9] border border-[#E9D8A6] rounded-xl px-3 py-2 flex items-center gap-2">
+              <p className="flex-1 text-xs text-[#8A5A15] leading-snug">
+                ⏳ המחירים ב{[...new Set(stale.map(p => profileLabel(p, visibleProfiles)))].join(", ")} מלפני {days} ימים.
+              </p>
+              <button disabled={refreshingCatalogs} onClick={() => {
+                setRefreshingCatalogs(true);
+                fns.httpsCallable("refreshMyCatalogs", { timeout: 300000 })({ profileIds: stale.map(p => p.id) }).then(res => {
+                  const results = (res.data && res.data.results) || {};
+                  const failed = stale.filter(p => results[p.id] && !results[p.id].ok);
+                  setCatalogUpdated(prev => {
+                    const next = Object.assign({}, prev);
+                    Object.entries(results).forEach(([id, r]) => { if (r && r.updatedAt) next[id] = r.updatedAt; });
+                    return next;
+                  });
+                  setPricesReload(n => n + 1);
+                  setRefreshingCatalogs(false);
+                  setToast(failed.length > 0
+                    ? `ב${[...new Set(failed.map(p => profileLabel(p, visibleProfiles)))].join(", ")} הרשת לא פרסמה מחירים חדשים`
+                    : "המחירים עודכנו");
+                }, err => {
+                  setRefreshingCatalogs(false);
+                  setToast(err && (err.code === "functions/resource-exhausted" || err.code === "functions/unavailable") ? err.message : "הרענון נכשל — נסו שוב מאוחר יותר");
+                });
+              }} className="flex-shrink-0 bg-[#2E4A3B] text-[#FBF4E7] rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-60">
+                {refreshingCatalogs ? "מרענן... עד דקה" : "רענון"}
+              </button>
+            </div>
+          );
+        })()}
         {!priceTipDismissed && viewMode !== "table" && Object.keys(effectivePriceMap).length > 0 && (items || []).length > 0 && (
           <div className="no-print mb-2 bg-[#EEF5EC] border border-[#B9D9B0] rounded-xl px-3 py-2 flex items-center gap-2">
             <p className="flex-1 text-xs text-[#3F5A38] leading-snug">
