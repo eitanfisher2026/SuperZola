@@ -181,8 +181,11 @@ service cloud.firestore {
     // else while still testing live under their own account). Every
     // signed-in user needs read access to know whether to show the
     // maintenance screen; only admin can flip it.
+    // Readable before sign-in too: during a full pause a visitor sees the
+    // pause message instead of a sign-in screen. Holds no secrets — only
+    // on/off flags and that message.
     match /appConfig/maintenance {
-      allow read: if signedIn();
+      allow read: if true;
       allow write: if isAdmin();
     }
 

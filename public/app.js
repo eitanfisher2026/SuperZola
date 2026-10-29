@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.80";
+const VERSION = "v2.81";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -178,18 +178,25 @@ function useUserDoc(uid) {
 // mid-deploy. Only read once signed in (`active`) since the Firestore rule
 // requires signedIn(); a signed-out visitor just sees the normal sign-in
 // screen either way.
+// { on, paused, message } — on: show the maintenance screen (maintenance
+// or a full pause; the server refuses everything during a pause anyway).
+// message: the admin's own text for a pause (PAUSE_DEFAULT_MESSAGE if none).
+const PAUSE_DEFAULT_MESSAGE = "המערכת מושבתת בגלל חוסר שימוש מתמשך. בקשה לחידוש הפעלה אפשר לשלוח במייל ל-eitanfisher.apps@gmail.com";
 function useMaintenanceMode(active) {
-  const [enabled, setEnabled] = useState(false);
+  const [state, setState] = useState({ on: false, paused: false, message: "" });
   useEffect(() => {
     if (!active) return;
-    // A full system pause (appConfig/maintenance.paused) shows the same
-    // screen — the server refuses everything during it anyway.
     return db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
       const d = snap.data() || {};
-      setEnabled(!!(d.enabled || d.paused));
-    });
+      setState({ on: !!(d.enabled || d.paused), paused: !!d.paused, message: d.pauseMessage || "" });
+    }, () => {});
   }, [active]);
-  return enabled;
+  return state;
+}
+// Plain text with any e-mail address turned into a tappable mailto link.
+function linkifyEmails(text) {
+  return String(text || "").split(/([\w.+-]+@[\w-]+(?:\.[\w-]+)+)/).map((part, i) =>
+    i % 2 === 1 ? <a key={i} href={"mailto:" + part} className="underline font-semibold text-[#2E4A3B]" dir="ltr">{part}</a> : part);
 }
 // A single limit(1) live query rather than loading every thread (which
 // FeedbackDialog only does once it's actually open) — cheap enough to keep
@@ -1079,13 +1086,18 @@ function SignInScreen({ error }) {
   );
 }
 
-function MaintenanceScreen({ onSignOut }) {
+function MaintenanceScreen({ onSignOut, onSignIn, paused, message }) {
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center gap-4 bg-[#FBF4E7] px-6 text-center" dir="rtl">
-      <div className="text-5xl">🚧</div>
-      <h1 className="text-2xl" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>רגע של תחזוקה</h1>
-      <p className="text-sm text-[#8A7F66] max-w-xs">אנחנו מעדכנים את האפליקציה. נחזור לפעילות בקרוב — נסו שוב בעוד כמה דקות.</p>
-      <button onClick={onSignOut} className="text-xs text-[#A79A7C] underline mt-2">התנתקות</button>
+      <div className="text-5xl">{paused ? "⏸️" : "🚧"}</div>
+      <h1 className="text-2xl" style={{ fontFamily: "'Suez One', serif", color: "#2E4A3B" }}>{paused ? "המערכת מושבתת זמנית" : "רגע של תחזוקה"}</h1>
+      <p className="text-sm text-[#5B5749] max-w-xs leading-relaxed">
+        {paused ? linkifyEmails(message || PAUSE_DEFAULT_MESSAGE) : "אנחנו מעדכנים את האפליקציה. נחזור לפעילות בקרוב — נסו שוב בעוד כמה דקות."}
+      </p>
+      {onSignOut && <button onClick={onSignOut} className="text-xs text-[#A79A7C] underline mt-2">התנתקות</button>}
+      {/* Visitors who aren't signed in see the pause too — the admin still
+          needs a way in to switch it back on. */}
+      {onSignIn && <button onClick={onSignIn} className="text-[11px] text-[#C7B78E] underline mt-6">כניסת מנהל</button>}
     </div>
   );
 }
@@ -3384,7 +3396,7 @@ function Home({ uid, displayName, email, onOpenList, onOpenVendors, onOpenAdminO
   const hasUnreadFeedback = useHasUnreadFeedback(uid, simulatedIsAdmin);
   // Only admin needs this listener — a regular user never sees the badge,
   // so there's no reason to subscribe them to it too.
-  const maintenanceMode = useMaintenanceMode(isAdmin);
+  const maintenanceMode = useMaintenanceMode(isAdmin).on;
   const categories = useCategories();
   const [allProfiles, setAllProfiles] = useState(null); // active + inactive — needed by provisionOnlineVendorProfiles
   const onlineVendors = useOnlineVendors();
@@ -4554,10 +4566,16 @@ function AdminOptionsScreen({ uid, onBack }) {
 
   const [systemPaused, setSystemPaused] = useState(false);
   const [confirmPauseOn, setConfirmPauseOn] = useState(false);
+  const [pauseMessage, setPauseMessage] = useState(null); // null until loaded
   useEffect(() => db.collection("appConfig").doc("maintenance").onSnapshot(snap => {
     setMaintenanceMode(!!(snap.data() || {}).enabled);
     setSystemPaused(!!(snap.data() || {}).paused);
+    setPauseMessage(prev => prev === null ? ((snap.data() || {}).pauseMessage || PAUSE_DEFAULT_MESSAGE) : prev);
   }), []);
+  function savePauseMessage() {
+    db.collection("appConfig").doc("maintenance").set({ pauseMessage: (pauseMessage || "").trim() || PAUSE_DEFAULT_MESSAGE }, { merge: true })
+      .then(() => setToast("ההודעה נשמרה"), () => setToast("שגיאה בשמירה"));
+  }
   // The full stop: no nightly price refresh, no server work for anyone but
   // the admin, users see the maintenance screen. For stretches nobody uses
   // the app, so nothing keeps costing money. Prices are simply as old as
@@ -4909,6 +4927,15 @@ function AdminOptionsScreen({ uid, onBack }) {
                 {systemPaused ? "מושהית" : "פועלת"}
               </span>
             </button>
+            <div className="mt-2 bg-[#F7F2E4] rounded-xl px-3 py-2.5">
+              <label className="text-xs font-semibold text-[#5B5749] block mb-1">ההודעה שמשתמשים יראו בזמן השהיה</label>
+              <textarea value={pauseMessage || ""} onChange={e => setPauseMessage(e.target.value)} rows={3}
+                className="w-full border border-[#C7B78E] bg-white rounded-lg px-3 py-2 text-sm text-right outline-none resize-none" />
+              <div className="flex items-center justify-between gap-2 mt-1.5">
+                <button onClick={() => setPauseMessage(PAUSE_DEFAULT_MESSAGE)} className="text-[11px] text-[#8A7F66] underline">חזרה לנוסח ברירת המחדל</button>
+                <button onClick={savePauseMessage} className="bg-[#2E4A3B] text-[#FBF4E7] rounded-lg px-3 py-1.5 text-xs font-bold">שמירת ההודעה</button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -8545,7 +8572,10 @@ function App() {
   const [screen, setScreen] = useState({ view: "home" });
   const [signInError, setSignInError] = useState(null);
   const userDoc = useUserDoc(user ? user.uid : null);
-  const maintenanceMode = useMaintenanceMode(!!user);
+  // Read for everyone, signed in or not, so a full pause greets a visitor
+  // with its message before they bother signing in.
+  const maintenance = useMaintenanceMode(true);
+  const maintenanceMode = maintenance.on;
   const isAdminUser = (userDoc || {}).role === "admin";
 
   useEffect(() => {
@@ -8572,12 +8602,14 @@ function App() {
   let content;
   if (user === undefined) {
     content = <Loading />;
+  } else if (!user && maintenance.paused) {
+    content = <MaintenanceScreen paused message={maintenance.message} onSignIn={signIn} />;
   } else if (!user) {
     content = <SignInScreen error={signInError} />;
   } else if (userDoc === null) {
     content = <Loading />;
   } else if (maintenanceMode && !isAdminUser) {
-    content = <MaintenanceScreen onSignOut={signOut} />;
+    content = <MaintenanceScreen onSignOut={signOut} paused={maintenance.paused} message={maintenance.message} />;
   } else if (screen.view === "list") {
     content = (
       <ListScreen
