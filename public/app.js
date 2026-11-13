@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useMemo } = React;
 
-const VERSION = "v2.81";
+const VERSION = "v2.82";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -1662,7 +1662,12 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   const mixedMatches = itemMatchKind(draft, activeVendorIds) === "different";
   const scopeLabel = searchScope ? vendorLabel(searchScope) : null;
 
-  const runSearch = (vendorId, queryOverride) => {
+  // auto: a plain search by name across all chains — the server also picks
+  // the usual product at each chain and it is applied right away, so the
+  // result reads like a barcode scan (one product, a price per chain) and
+  // the full list is one tap away ("החלפה"). A replace or a one-chain
+  // search shows the list as before: there the person wants to choose.
+  const runSearch = (vendorId, queryOverride, auto) => {
     const q = (queryOverride != null ? queryOverride : searchQuery || draft.name || "").trim();
     if (!q) return;
     setIsResolving(true);
@@ -1674,16 +1679,26 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     const scopedProfiles = vendorId ? (activeProfiles || []).filter(p => p.vendor === vendorId) : (activeProfiles || []);
     const payload = { items: [q], force: true, profileIds: scopedProfiles.map(p => p.id) };
     if (vendorId) payload.vendors = [vendorId];
-    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(payload).then(res => {
+    const useAuto = !!auto && !vendorId;
+    fns.httpsCallable("resolveItemBarcodes", { timeout: 180000 })(useAuto ? Object.assign({ autoPick: true }, payload) : payload).then(res => {
       setIsResolving(false);
       setHasSearched(true);
       const r = (res.data.results || {})[q];
-      setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [], payload, q });
+      const vendors = (r && r.missingVendors) || (vendorId ? [vendorId] : []);
+      const plainPayload = Object.assign({}, payload);
+      setCandidates({ vendors, list: (r && r.candidates) || [], payload: plainPayload, q });
+      if (useAuto && r && r.picks) {
+        const picks = picksFromResult(r, vendors);
+        if (Object.keys(picks).length > 0) {
+          applyAutoPicks(picks, vendors, true);
+          setCandidates(null);
+        }
+      }
     }, () => { setIsResolving(false); showToast("שגיאה בחיפוש"); });
   };
 
   useEffect(() => {
-    if (!hasAnyMatch) runSearch(null, draft.name);
+    if (!hasAnyMatch) runSearch(null, draft.name, true);
     // eslint-disable-next-line
   }, []);
 
@@ -1803,7 +1818,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
   // Same commit path as ticking the boxes by hand, just one vendor at a
   // time with that vendor's own cheapest pick — so the checkboxes below
   // simply show what got chosen, and any of them can be changed.
-  function applyAutoPicks(autoPicks) {
+  function applyAutoPicks(autoPicks, searchedVendors, quiet) {
     const autoPickVendors = Object.keys(autoPicks);
     if (autoPickVendors.length === 0) { showToast("לא נמצא מוצר שמתאים בוודאות — אפשר לבחור ידנית"); return; }
     setDraft(prev => {
@@ -1838,7 +1853,11 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
     // reuse. An automatic guess isn't a confirmation — recording it there
     // made one user's auto-pick turn up as a "confirmed" product in other
     // people's lists. Only a product someone picks by hand is recorded.
-    const missed = (candidates.vendors || []).length - autoPickVendors.length;
+    const missed = (searchedVendors || (candidates && candidates.vendors) || []).length - autoPickVendors.length;
+    if (quiet) {
+      if (missed > 0) showToast(`ב-${missed} רשתות לא נמצא מוצר מתאים — לחיצה על הרשת מחפשת בה`);
+      return;
+    }
     showToast(missed > 0
       ? `נבחר מוצר ב-${autoPickVendors.length} רשתות — ב-${missed} לא נמצא מוצר מתאים, אפשר לבחור ידנית`
       : `נבחר מוצר בכל ${autoPickVendors.length} הרשתות — אפשר לשנות`);
@@ -1893,7 +1912,7 @@ function PriceMatchStep({ draft, setDraft, activeProfiles, showToast, priceMap, 
             Enter check — many mobile keyboards' "go"/"search" action button
             don't reliably fire a keydown with key:"Enter" (a well-known gap,
             especially on Android), but they do reliably submit a form. */}
-        <form onSubmit={e => { e.preventDefault(); if (searchQuery.trim() && !isResolving) runSearch(searchScope); }} className="flex gap-2">
+        <form onSubmit={e => { e.preventDefault(); if (searchQuery.trim() && !isResolving) runSearch(searchScope, null, !replacing && !searchScope); }} className="flex gap-2">
           <input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); if (onQueryChange) onQueryChange(e.target.value); }}
             autoFocus={replacing || !!searchScope}
             className="flex-1 min-w-0 border border-[#C7B78E] bg-white rounded-xl px-3 py-2.5 text-sm outline-none" />
